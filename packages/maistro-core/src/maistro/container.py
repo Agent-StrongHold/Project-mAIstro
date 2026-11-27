@@ -61,10 +61,7 @@ from maistro.memory.working.manager import (
     WorkingMemoryManager as HotWorkingMemoryManager,
 )
 from maistro.memory.working.projection import WorkingMemoryManager
-from maistro.memory.working.wiring import (
-    wire_in_memory_working_memory,
-    wire_working_memory,
-)
+from maistro.memory.working.wiring import wire_working_memory
 from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
 from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
@@ -2582,13 +2579,14 @@ async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
     return wire_in_memory_campaign_store()
 
 
-async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
-    """Working memory follows the SQLite pool for the same reason campaigns
-    do (#301): the observation log is only lossless if it outlives the
-    process, and the in-memory fallback says so loudly when there is no pool."""
-    if db_pool is not None:
-        return await wire_working_memory(db_pool)
-    return wire_in_memory_working_memory()
+async def _wire_working_memory_backend(
+    db_pool: Any, *, pg_pool: Any = None
+) -> WorkingMemoryManager:
+    """Working memory follows the pool the deployment selected, PostgreSQL
+    first, for the same reason campaigns and Goals do (#301, #105): the
+    observation log is only lossless if it outlives the process, and the
+    in-memory fallback says so loudly when there is no database at all."""
+    return await wire_working_memory(db_pool, pg_pool=pg_pool)
 
 
 async def _provision_configured_workspace(
@@ -2907,7 +2905,7 @@ async def create_container(
         # The authorized `goal_reader` seam is derived on
         # the Container from this store and the Workspace store.
         goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
-        working_log = await _wire_working_memory_backend(db_pool)
+        working_log = await _wire_working_memory_backend(db_pool, pg_pool=pg_pool)
         node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
         # Same backend the spine just chose (#1176): claims beside the Runs they
         # reconcile, or the tiers cannot answer a restart the same way.

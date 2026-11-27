@@ -11,21 +11,32 @@
 #
 # Job order is deliberate:
 #
-#   guard ──> wheels ──> pypi     (environment: release)
-#         └──────────┴─> images   (environment: release)
-#                        └──────> github-release
+#   guard ──> wheels ──> images ──> pypi   (both environment: release)
+#         └──────────┴─────────┴─────────> github-release
 #
 # Everything expensive AND everything falsifiable happens before the gate, so
 # the approval prompt only ever appears for a release that already built and
 # imported cleanly. `images` waits on `wheels` for that reason alone — it has
 # no artifact dependency on it.
 #
+# RC soak + byte-equivalent promotion (ADR §6, #89): candidate tags BUILD —
+# wheels, quarantine images, scans, Canvas proof — and freeze a machine-
+# readable artifact identity record (`release-evidence.json`). Final tags
+# never build: they adopt the latest same-version RC's wheels (sha256-verified
+# byte-for-byte) and image digests (re-tagged by `imagetools create`), and
+# only after `soak-evidence.json` — bound to those exact artifacts and
+# configuration — reports pass on clean install, real-model execution,
+# security hot path, backup/restore and the #860 multi-replica soak, with
+# every invariant-invalidating finding routed to an issue. The logic lives in
+# scripts/promote_release.py; the promotion linkage ships as release assets.
+#
 # NOT YET EXERCISED. At the time this landed the repository had zero tags and
 # no registered PyPI trusted publisher, so this workflow has never run. It is
 # statically verified (actionlint + shellcheck + yaml parse) and its non-YAML
-# logic lives in scripts/release_guard.py and scripts/release_notes.py, which
-# have unit tests (tests/test_release_guard.py). The maintainer prerequisites
-# are listed at the bottom of this file.
+# logic lives in scripts/release_guard.py, scripts/release_notes.py and
+# scripts/promote_release.py, which have unit tests
+# (tests/test_release_guard.py, tests/test_promote_release.py). The maintainer
+# prerequisites are listed at the bottom of this file.
 
 name: release
 
@@ -66,6 +77,9 @@ jobs:
       target_branch: ${{ steps.guard.outputs.target_branch }}
       moves_latest: ${{ steps.pointers.outputs.moves_latest }}
       moves_minor: ${{ steps.pointers.outputs.moves_minor }}
+      # Finals only (with --verify-rc-tree): the candidate whose soaked artifacts
+      # the final must adopt. Empty for a candidate tag — candidates build.
+      rc_tag: ${{ steps.guard.outputs.rc_tag }}
     steps:
       # fetch-depth: 0 is load-bearing, not hygiene — the ancestry check below
       # cannot run on the shallow single-ref clone checkout does by default.
@@ -83,10 +97,14 @@ jobs:
       # ADR §2: package versions never carry the rc suffix, so `vX.Y.Z` and
       # `vX.Y.Z-rcN` both have to equal VERSION once `-rcN` is stripped. The
       # script also runs scripts/bump_version.py --check (all 32 version sites)
-      # and asserts CHANGELOG.md carries a `## [X.Y.Z]` heading.
-      - name: Version + CHANGELOG guard
+      # and asserts CHANGELOG.md carries a `## [X.Y.Z]` heading. For finals,
+      # require the exact tree of the numerically latest same-version RC:
+      # a promotion merge may change the commit ID, never the soaked source.
+      # The selected candidate is emitted as `rc_tag` — the reuse path below
+      # adopts THAT candidate's artifacts instead of rebuilding (#89, ADR §6).
+      - name: Version + CHANGELOG + RC source-tree guard
         id: guard
-        run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
+        run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --verify-rc-tree --github-output "${GITHUB_OUTPUT}"
 
       # The guard above proves the tag matches VERSION and that notes exist for
       # it. This proves the surrounding story is still whole at tag time (#83):
@@ -258,7 +276,13 @@ jobs:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
 
+      # ADR-073126-c4e1 §6: "the final release ships the artifacts the last rc
+      # already validated" (#89). Candidates build here; finals adopt the
+      # soaked candidate's bytes instead of rebuilding — a rebuild is a
+      # different byte sequence (zip mtimes, re-resolved inputs), and
+      # publishing it would void the soak's evidential value.
       - name: Build sdist + wheel for the publish set
+        if: needs.guard.outputs.prerelease == 'true'
         run: |
           set -euo pipefail
           rm -rf dist
@@ -272,6 +296,39 @@ jobs:
             echo "::endgroup::"
           done
           ls -1 dist/
+
+      # Freeze the candidate artifact identity: the tag, commit, git tree,
+      # run, and the sha256 of every built artifact. The images job completes
+      # this record with the image digests; the final promotion validates the
+      # downloaded candidate bytes against it (scripts/promote_release.py).
+      - name: Record the candidate artifact identity (#89)
+        if: needs.guard.outputs.prerelease == 'true'
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/promote_release.py record-evidence \
+            --tag "${GITHUB_REF_NAME}" --version "${VERSION}" \
+            --dist dist/ --output release-evidence.json
+
+      # Final runs: download the selected candidate's evidence and dist
+      # artifacts and verify EVERY file against the recorded sha256 — byte for
+      # byte, not "rebuilt from the same tree". Any mismatch, missing file, or
+      # extra file fails the release here, before PyPI sees anything.
+      - name: Adopt the soaked RC wheels (#89)
+        if: needs.guard.outputs.prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          RC_TAG: ${{ needs.guard.outputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          test -n "${RC_TAG}" || { echo "::error::guard emitted no rc_tag; promotion has no candidate to adopt"; exit 1; }
+          rm -rf dist
+          python scripts/promote_release.py adopt-wheels \
+            --tag "${GITHUB_REF_NAME}" --version "${VERSION}" --rc-tag "${RC_TAG}" \
+            --dist-dir dist/ --evidence-out release-evidence.json \
+            --github-output "${GITHUB_OUTPUT}"
 
       # A wheel that builds but has malformed metadata uploads to PyPI and then
       # renders as a broken project page that cannot be replaced (versions are
@@ -339,7 +396,20 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
-          retention-days: 7
+          # Final promotion adopts the RC run's dist artifact (adopt-wheels),
+          # so it must survive the full soak + approval window, like the
+          # 90-day evidence record it is verified against.
+          retention-days: 90
+
+      # The candidate identity record travels with the run: candidates so the
+      # images job can complete it and soak lanes can bind to it, finals so
+      # the promotion linkage ships with the release (github-release below).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-evidence-wheels
+          path: release-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
   # ---------------------------------------------------------------------------
   # pypi — trusted publishing (OIDC), gated by the `release` environment.
@@ -357,7 +427,10 @@ jobs:
   # ---------------------------------------------------------------------------
   pypi:
     name: Publish to ${{ needs.guard.outputs.prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
-    needs: [guard, wheels, m1-closeout]
+    # Final publication is irreversible: images must first validate the exact
+    # RC's soak evidence (including finding routing). Running these jobs in
+    # parallel would let PyPI publish even when that promotion gate fails.
+    needs: [guard, wheels, m1-closeout, images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -436,11 +509,22 @@ jobs:
       contents: read
       packages: write
       id-token: write # keyless cosign signing
+      # Finals adopt the soaked RC run's evidence and soak artifacts via the
+      # Actions API; the top-level default does not survive a job-level
+      # permissions override, so it is re-granted here (#89).
+      actions: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      # The wheels job's artifact identity record: candidates complete it with
+      # the image digests, finals validate their adopted digests against it.
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-evidence-wheels
+          path: .
 
       # These are the tags the release will publish — computed here, applied
       # only after the scan passes (the promote step below consumes them). The
@@ -487,8 +571,12 @@ jobs:
       # digest; the promote step applies the release tags to it afterwards.
       # `outputs.digest` is the manifest/index digest in the registry, and it
       # is what every later step (scan, promote, sign, attest, SBOM) binds to.
+      # Finals do NOT run this step: they adopt the soaked candidate's digests
+      # from the evidence record instead (the rc_evidence step below) — a
+      # final build would be a new, unsoaked artifact (ADR §6, #89).
       - name: Build + push maistro-engine (release candidate)
         id: engine
+        if: needs.guard.outputs.prerelease == 'true'
         uses: docker/build-push-action@v7.4.0
         with:
           context: .
@@ -502,6 +590,29 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # Finals: gate on the soak evidence bound to the candidate's exact
+      # artifacts and configuration, then emit the digests every later step
+      # promotes. The promote step below re-tags those digests byte-for-byte
+      # at the manifest level — the final run never builds an image
+      # (ADR §6, #89). Missing or non-binding soak evidence fails here,
+      # before any release tag exists. This runs FIRST among digest consumers:
+      # on a final run no build step produced a digest, and every downstream
+      # step resolves its digests through this step's outputs.
+      - name: Adopt the soaked RC digests (#89)
+        id: rc_evidence
+        if: needs.guard.outputs.prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          RC_TAG: ${{ needs.guard.outputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          test -n "${RC_TAG}" || { echo "::error::guard emitted no rc_tag; promotion has no candidate to adopt"; exit 1; }
+          python scripts/promote_release.py adopt-digests \
+            --evidence release-evidence.json --version "${VERSION}" --rc-tag "${RC_TAG}" \
+            --soak-out soak-evidence/soak-evidence.json \
+            --github-output "${GITHUB_OUTPUT}"
+
       # #1825: the release consumes the digest the Canvas proof tested. The
       # same script CI's docker-build job runs on the local candidate is run
       # here against the exact pushed digest — import on image contents only
@@ -510,25 +621,27 @@ jobs:
       # canvas_store_wired, and an authenticated Canvas create/read through
       # /v2/canvas. Proof runs BEFORE signing: a digest that cannot serve its
       # advertised Canvas surface is not signed, attested, or announced.
-      # The build above is push-only into the `-rc` quarantine repo, so nothing
-      # exists under the production name yet and nothing was loaded into this
-      # runner's Docker daemon — pull the candidate digest by its `-rc`
-      # reference first (the script opens with `docker image inspect`) and run
-      # the proof against that same reference. Promotion below is a byte-for-
-      # byte manifest-level re-tag, so the digest proven here is the digest
-      # the release tags resolve to. (The promotion vocabulary is spelled out
-      # in the step that performs it; naming the command here too would make
-      # scripts/check-image-inventory.py read this proof step as the
-      # promotion step and mis-order the job.)
+      # The candidate build above is push-only into the `-rc` quarantine repo
+      # (finals adopted the candidate's digest instead of building), so
+      # nothing exists under the production name yet and nothing was loaded
+      # into this runner's Docker daemon — pull the candidate digest by its
+      # `-rc` reference first (the script opens with `docker image inspect`)
+      # and run the proof against that same reference. Promotion below is a
+      # byte-for-byte manifest-level re-tag, so the digest proven here is the
+      # digest the release tags resolve to. (The promotion vocabulary is
+      # spelled out in the step that performs it; naming the command here too
+      # would make scripts/check-image-inventory.py read this proof step as
+      # the promotion step and mis-order the job.)
       - name: Prove the pushed maistro-engine digest ships its Canvas surface (#1825)
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
         run: |
           docker pull "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
           scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
 
       - name: Build + push hive-conductor (release candidate)
         id: conductor
+        if: needs.guard.outputs.prerelease == 'true'
         uses: docker/build-push-action@v7.4.0
         with:
           context: .
@@ -549,7 +662,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
-          image-ref: ${{ env.IMAGE_NAMESPACE }}/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+          image-ref: ${{ env.IMAGE_NAMESPACE }}/maistro-engine-rc@${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
@@ -559,7 +672,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
-          image-ref: ${{ env.IMAGE_NAMESPACE }}/hive-conductor-rc@${{ steps.conductor.outputs.digest }}
+          image-ref: ${{ env.IMAGE_NAMESPACE }}/hive-conductor-rc@${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
@@ -570,8 +683,8 @@ jobs:
       # resolve) and the same pinned tarball + checksum.
       - name: Grype scan the candidate digests (cross-check, blocking)
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
         run: |
           set -euo pipefail
           curl -sSfL -o grype.tgz https://github.com/anchore/grype/releases/download/v0.116.0/grype_0.116.0_linux_amd64.tar.gz
@@ -609,8 +722,8 @@ jobs:
       # these bytes. Scan the installed Conductor bundle, not a local rebuild.
       - name: Generate release-digest license inventory
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
         run: |
           set -euo pipefail
           for frontend in packages/hive-conductor/frontend packages/maistro-canvas/frontend; do
@@ -672,11 +785,14 @@ jobs:
       # re-tags the candidate manifest byte-for-byte — the release tags
       # resolve to exactly the digest the scans admitted, not a rebuild of
       # equivalent inputs. This is the first write to the production
-      # repositories, and it only runs because the scans above passed.
+      # repositories, and it only runs because the scans above passed. On a
+      # final run the digest being re-tagged is the soaked candidate's —
+      # adopted above and re-admitted by the same scans — not a new build
+      # (ADR §6, #89).
       - name: Promote the scanned digests to the release tags
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
           ENGINE_TAGS: ${{ steps.tags.outputs.maistro_engine }}
           CONDUCTOR_TAGS: ${{ steps.tags.outputs.hive_conductor }}
         run: |
@@ -701,8 +817,8 @@ jobs:
       - name: Sign the pushed digests (keyless)
         env:
           COSIGN_YES: "true"
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
         run: |
           set -euo pipefail
           cosign sign "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
@@ -714,8 +830,8 @@ jobs:
       # provider. These are the exact flags the release notes tell users to run.
       - name: Verify the signatures
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
           IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
         run: |
           set -euo pipefail
@@ -740,8 +856,8 @@ jobs:
       # the same registry quality/image-pins.json holds CI to.
       - name: Provenance attestations must name every pinned base digest
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
         run: |
           set -euo pipefail
           cosign download attestation \
@@ -755,8 +871,8 @@ jobs:
 
       - name: SBOMs for both images (syft, CycloneDX-JSON)
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
         run: |
           set -euo pipefail
           mkdir -p sboms
@@ -778,11 +894,33 @@ jobs:
       # The digests belong in the run summary: PINNED_IMAGES in
       # maistro_bootstrap/delivery.py resolves by tag, and anyone wanting a
       # digest pin needs them from somewhere other than a registry lookup.
-      - name: Record digests
+      # This step also completes the artifact identity record (#89):
+      # candidates bind the scanned digests into it so soak lanes can bind
+      # against the finished record; finals record that they ADOPTED the
+      # candidate's digests (and from which run), and publish both the record
+      # and the soak evidence that gated the promotion as run artifacts the
+      # release page attaches.
+      - name: Record digests + bind promotion evidence (#89)
         env:
-          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+          RC_TAG: ${{ needs.guard.outputs.rc_tag }}
+          RC_RUN_ID: ${{ steps.rc_evidence.outputs.rc_run_id }}
         run: |
+          set -euo pipefail
+          if [ "${PRERELEASE}" = "true" ]; then
+            python3 scripts/promote_release.py finalize-evidence \
+              --evidence release-evidence.json \
+              --engine-digest "${ENGINE_DIGEST}" --conductor-digest "${CONDUCTOR_DIGEST}" \
+              --output release-evidence.json
+          else
+            python3 scripts/promote_release.py finalize-evidence \
+              --evidence release-evidence.json \
+              --engine-digest "${ENGINE_DIGEST}" --conductor-digest "${CONDUCTOR_DIGEST}" \
+              --adopted-from-rc-tag "${RC_TAG}" --adopted-from-run-id "${RC_RUN_ID}" \
+              --output release-evidence.json
+          fi
           {
             echo "### Published images"
             echo
@@ -797,6 +935,24 @@ jobs:
             python3 scripts/check-image-pins.py --base-digests Dockerfile packages/hive-conductor/Dockerfile
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-evidence
+          path: release-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+
+      # Finals only: the soak evidence that gated this promotion, preserved as
+      # a run artifact and attached to the release page. A candidate run has
+      # no soak evidence yet — the soak happens during the candidate window.
+      - uses: actions/upload-artifact@v7
+        if: needs.guard.outputs.prerelease == 'false'
+        with:
+          name: soak-evidence
+          path: soak-evidence/soak-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
   # ---------------------------------------------------------------------------
   # github-release — the release page, from the tag, with everything attached.
@@ -833,6 +989,22 @@ jobs:
           name: release-compliance
           path: compliance/
 
+      # Machine-readable promotion evidence (#89): the artifact identity
+      # record always, and — for finals — the soak evidence that gated the
+      # promotion, bound to the exact promoted artifacts and configuration.
+      # Both ship as release assets under the SHA256SUMS below.
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-evidence
+          path: evidence/
+      # An RC has not been soaked yet. Finals must download this artifact;
+      # missing evidence is an error, not an optional release attachment.
+      - uses: actions/download-artifact@v8
+        if: needs.guard.outputs.prerelease == 'false'
+        with:
+          name: soak-evidence
+          path: soak-evidence/
+
       # Body = the curated CHANGELOG section (which carries the ADR-076 API
       # statement) + a verification block. The script appends the API statement
       # itself only when the section lacks one, so it is stated exactly once.
@@ -855,6 +1027,12 @@ jobs:
           cp compliance/release-compliance.json release/
           cp license-inventory/license-inventory-release.json release/
           cp license-inventory/license-inventory-release.tar.gz release/
+          cp evidence/release-evidence.json release/
+          # A candidate run has no soak evidence yet; a final MUST (the
+          # images job failed closed without it before this job could run).
+          if [ -f soak-evidence/soak-evidence.json ]; then
+            cp soak-evidence/soak-evidence.json release/
+          fi
           cp get.sh get.ps1 install.sh release/
           (cd release && sha256sum -- * > SHA256SUMS)
           cat release/SHA256SUMS
