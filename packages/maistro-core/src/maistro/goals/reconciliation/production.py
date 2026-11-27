@@ -190,6 +190,9 @@ class FactDrivenReconciliationPolicy:
         )
 
 
+_GOAL_ADMISSION_DECISION_KEY = "goal_admission_decision_key"
+
+
 class GoalRunAdmitter:
     """Fulfils a recorded admission as one canonical QUEUED pursuit Run.
 
@@ -232,6 +235,24 @@ class GoalRunAdmitter:
                 f"canonical Goal {admission.goal_id!r} does not exist for admission "
                 f"{admission.decision_key!r}"
             )
+        # The control-plane admission and the canonical Run are separate
+        # durable writes. If the process dies between them, repair repeats
+        # this call; find the already-created Run before creating another.
+        offset = 0
+        while True:
+            existing = await self._runs.list_recent_runs(
+                goal.workspace_id, limit=100, offset=offset
+            )
+            for run in existing:
+                if (
+                    run.goal_id == admission.goal_id
+                    and run.provenance.get(_GOAL_ADMISSION_DECISION_KEY) == admission.decision_key
+                ):
+                    return run.run_id
+            if len(existing) < 100:
+                break
+            offset += len(existing)
+
         # The canonical Goal is the revision authority. The control row's
         # revision can trail it (nothing in the control plane rewrites
         # desired state), so fulfilment binds the Run to the canonical
@@ -257,6 +278,7 @@ class GoalRunAdmitter:
             actor_principal_id=goal.agent_id,
             provenance={
                 GOAL_ID_KEY: admission.goal_id,
+                _GOAL_ADMISSION_DECISION_KEY: admission.decision_key,
                 GOAL_REVISION_KEY: str(goal.current_revision),
                 ACCOUNTABLE_AGENT_ID_KEY: goal.agent_id,
                 DESIRED_STATE_KEY: desired_state,

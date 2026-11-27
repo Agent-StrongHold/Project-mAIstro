@@ -246,6 +246,25 @@ async def test_an_admission_is_fulfilled_as_a_bound_queued_run(spine: Any) -> No
     assert context.accountable_agent_id == AGENT
 
 
+async def test_replayed_physical_admission_returns_the_existing_run(spine: Any) -> None:
+    runs, goals, project_id = spine
+    goal = await _canonical_goal(goals, project_id=project_id)
+    admitter = GoalRunAdmitter(runs, goals)
+    admission = GoalAdmission(
+        goal_id=goal.goal_id,
+        revision=1,
+        fence_epoch=1,
+        decision_key=f"{goal.goal_id}:restart-wake",
+    )
+
+    first = await admitter.admit(admission)
+    replay = await admitter.admit(admission)
+
+    assert replay == first
+    persisted = await runs.list_recent_runs(WORKSPACE)
+    assert len([run for run in persisted if run.goal_id == goal.goal_id]) == 1
+
+
 async def test_an_unknown_canonical_goal_refuses_loudly(spine: Any) -> None:
     runs, goals, _ = spine
     admitter = GoalRunAdmitter(runs, goals)
