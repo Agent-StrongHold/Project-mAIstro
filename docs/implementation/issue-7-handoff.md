@@ -1603,3 +1603,46 @@ condition is green first-hand at this head, and the remainder is mapped to
 maintainer-side prerequisites, not to in-tree defects. No test count changed,
 so no `docs/testing/inventory-notes/` delta applies. Disposition remains
 **BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
+
+## Round 29 — repair-round revalidation at 2bee89a9ea
+
+Round 29 reopened from the verifier's stale finding
+(jobs/36a00a3b.../check-4.log, `WorkspaceNotFound: 'hive-canonical-recovery'`
+at head 4134217158, pre-repair) and the failed worker runs
+(cebfc030/f3bd77de, `worker_error`, no artifacts). The actual repair
+(a34477e472: `_root_project_id` provisions the canonical Workspace before
+`create_root`, after the M1-A1 #37 fence landed via the develop sync) was
+already committed; this round re-proved it at the current head.
+
+Executed first-hand at 2bee89a9ea:
+
+- The verifier's exact check-4 command (`pytest
+  test_canonical_recovery_cadence.py test_design_shared_surfaces.py
+  test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q`) —
+  61 passed, 0 failed. The recorded validation failure does not reproduce.
+- Full hive-conductor backend suite — 4651 passed, 121 skipped.
+- `pytest packages/maistro-core/tests/goals` — 182 passed, 24 skipped.
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  clean.
+- `scripts/check-suite-inventory.py` — ok: 21 suites match (no test count
+  changed anywhere since a34477e472, so no inventory-note delta applies).
+- `scripts/check-release-consistency.py` — ok (released none, shipping 0.9.0
+  toward 1.0.0).
+- `scripts/check-backlog-consistency.py` — OK (167 items; gap markers and
+  closure evidence resolve).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact args, quality.yml:1668) — 1217
+  reviewed identities = 1217 findings; no ledger amendment needed.
+
+External-evidence spot-checks re-run, not trusted from earlier rounds:
+`git tag -l 'v*'` → 0 tags (release.yml unexercisable in-repo);
+`soak-evidence.json`/`release-evidence.json` absent from the tree and only
+emitted by release.yml (lines 613/952); no model credentials in the
+environment (`OPENAI*`/`ANTHROPIC*`/`LITELLM*`/`*_API_KEY` all unset), so the
+clean-machine real-model Graph E2E remains unproducible here.
+
+No production or test change is warranted this round: the in-tree repair was
+already landed and every locally reachable gate is green first-hand at this
+head. Disposition remains **BLOCKED** on external operator evidence (release
+workflow exercise, real-model E2E, RC soak + byte-equivalent promotion
+evidence, overnight operation). PR #2529 stays DRAFT.
