@@ -10,6 +10,7 @@ from services.permission_policy import (
     PROTECTED_OPERATIONS,
     ROLE_PERMISSIONS,
     UI_MUTATIONS,
+    permission_for_ui_action,
     protected_ops_by_method,
 )
 
@@ -44,6 +45,22 @@ def test_elevation_is_required_after_assignment_for_each_daily_permission() -> N
 def test_admin_role_is_break_glass_without_copying_daily_permissions() -> None:
     assert ROLE_PERMISSIONS["admin"] == ("*",)
     assert AuthMiddleware(app=None)._check_permission({"role": "admin"}, "config.write")
+
+
+def test_every_advertised_ui_action_resolves_through_the_policy() -> None:
+    """The elevation affordance resolves action names through the one policy.
+
+    Each advertised UI mutation must round-trip to exactly its own permission;
+    a resolver that guessed would let a renamed action silently grant whatever
+    the caller liked.
+    """
+    for operation in UI_MUTATIONS:
+        assert permission_for_ui_action(operation.action) == operation.permission
+
+
+def test_an_unknown_ui_action_fails_closed_with_key_error() -> None:
+    with pytest.raises(KeyError, match="unknown UI action"):
+        permission_for_ui_action("grant admin forever")
 
 
 @pytest.mark.parametrize(
