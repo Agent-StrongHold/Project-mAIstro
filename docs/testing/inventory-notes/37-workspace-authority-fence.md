@@ -15,7 +15,7 @@ mirror, a lost import journal, or a kept-in-configuration id could resurrect
 deleted authority. Production change: an admission fence verified on every
 `create_root` call (cache hit included), a `canonical_workspace_deletions`
 tombstone written in the delete's transaction on every store, the deferred
-foreign key added `NOT VALID` (migration 069) with a non-destructive orphan
+foreign key added `NOT VALID` (migration 072) with a non-destructive orphan
 disposition, and `_migrate_one` quarantining a legacy source whose id the
 canonical store refuses instead of replaying it. Five node groups over two
 suites:
@@ -49,7 +49,7 @@ id/membership/Root surviving a new pool (the new-process restart leg).
 Skips without `MAISTRO_TEST_PG_DSN`.
 
 `packages/maistro-core/tests/persistence/test_workspace_orphan_disposition_migration.py`
-(new, +2): migration 069's orphan disposition replayed end to end —
+(new, +2): migration 072's orphan disposition replayed end to end —
 downgrade to 068, seed orphan trees only the pre-fence schema accepts,
 upgrade to head. Non-run-owning orphans land in
 `canonical_orphan_project_quarantine` with their payload and a named reason

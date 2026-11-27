@@ -161,6 +161,9 @@ run everywhere.
   open under #37; these Hive/store tests do not prove its convergence.
   The preserved #37 authority-fence implementation checks canonical existence
   when resolving Root Projects and adds the PostgreSQL
-  `canonical_projects -> canonical_workspaces` foreign key in migration 069.
+  `canonical_projects -> canonical_workspaces` foreign key in migration 072
+  (`072_workspace_tombstones_and_project_fk`; numbered 069 when written
+  against the pre-sync base, renumbered past develop's landed trunk
+  migrations).
   This does not by itself prove the full delete/revoke/Run-admission race or
   the joint #1419 representation-purpose audit.
