@@ -26,6 +26,7 @@ from maistro.goals.reconciliation import (
     GoalDelegationUnsupported,
     GoalFacts,
     GoalPursuitUnresolvable,
+    GoalReconciler,
     GoalRunAdmitter,
     GoalStatus,
     WakeFact,
@@ -416,6 +417,64 @@ async def test_the_composed_container_reconciles_a_goal_into_a_canonical_run() -
         assert await container.reconcile_goals() == 0
         queued_again = await container.run_store.list_by_status(RunStatus.QUEUED)
         assert len([r for r in queued_again if r.goal_id == goal.goal_id]) == 1
+    finally:
+        await container.aclose()
+
+
+async def test_crash_after_run_insert_replays_one_canonical_run() -> None:
+    container, project_id = await _container()
+    try:
+        goal = await container.goal_store.create_goal(
+            workspace_id=WORKSPACE,
+            project_id=project_id,
+            agent_id=AGENT,
+            draft=DRAFT,
+            goal_id="g-restart-replay",
+        )
+        await container.goal_reconciliation_store.create_goal(
+            Goal(goal_id=goal.goal_id, workspace_id=WORKSPACE, project_id=PROJECT)
+        )
+
+        class CrashAfterPhysicalAdmission:
+            def __init__(self, inner: Any) -> None:
+                self.inner = inner
+                self.crash_once = True
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.inner, name)
+
+            async def complete_admission(self, admission_id: str, **kwargs: Any) -> bool:
+                if self.crash_once:
+                    self.crash_once = False
+                    raise RuntimeError("simulated process death after Run insert")
+                return await self.inner.complete_admission(admission_id, **kwargs)
+
+        interrupted = GoalReconciler(
+            CrashAfterPhysicalAdmission(container.goal_reconciliation_store),
+            container.goal_reconciliation_policy,
+            holder="crashed-after-run-insert",
+            admitter=container.goal_reconciliation_admitter,
+        )
+        with pytest.raises(RuntimeError, match="after Run insert"):
+            await interrupted.reconcile(goal.goal_id)
+
+        persisted = await container.run_store.list_recent_runs(WORKSPACE)
+        assert len([run for run in persisted if run.goal_id == goal.goal_id]) == 1
+
+        restarted = GoalReconciler(
+            container.goal_reconciliation_store,
+            container.goal_reconciliation_policy,
+            holder="restarted-after-run-insert",
+            admitter=container.goal_reconciliation_admitter,
+        )
+        outcome = await restarted.reconcile(goal.goal_id)
+
+        assert [admission.decision_key for admission in outcome.repaired] == [
+            f"{goal.goal_id}:discovery"
+        ]
+        persisted = await container.run_store.list_recent_runs(WORKSPACE)
+        assert len([run for run in persisted if run.goal_id == goal.goal_id]) == 1
+        assert await container.goal_reconciliation_store.pending_admissions(goal.goal_id) == []
     finally:
         await container.aclose()
 
