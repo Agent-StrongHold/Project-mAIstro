@@ -1,6 +1,115 @@
 # Issue #89 current repair validation
 
-## Current round: assigned head `4e6a254315`, base `618954f052`
+## Current round: assigned head `61e3ba7721`, base `618954f052`
+
+Job `3216c683221c4263b8c68fa02acb5e66`; frozen scope: issue #89, the named
+front-matter/coverage/vulture gates, and the standing operational soak
+contract. Worktree entered clean at the exact starting head; no driver
+`check-*.log` files were supplied in this job's directory (second round in a
+row), so every log cited here is a fresh worker execution under
+`/home/dev/maistro/jobs/3216c683221c4263b8c68fa02acb5e66/`.
+
+### New diagnostic fact this round: the remote Coverage-gate RED is fully explained and already repaired locally
+
+Captured check-run evidence for PR #2536's pushed head `5f6bff7d458f` shows
+`Coverage gate (publish-set floor + diff coverage)` = **failure** (front-matter
+= success, all other checks success). Diagnosis, from git evidence at this
+head:
+
+- The gate's diff half at that head compared base `3be6b665` (the PR's
+captured develop base) to `5f6bff7d45`. That delta touches exactly two
+measured production files — `scripts/promote_release.py` and
+`scripts/release_guard.py` — plus three test files that
+`scripts/check-diff-coverage.py` exempts by declaration.
+- At `5f6bff7d45`, `scripts/promote_release.py` measured 86.5% of 327 changed
+lines — under the 90% per-file floor; every uncovered line was a fail-closed
+seam body (`87ce1ab3de`'s commit message reproduces the measurement).
+- The repair, commit `87ce1ab3de` (20 seam-covering tests in
+`tests/test_promote_release.py`), is a **descendant** of `5f6bff7d45`:
+`git merge-base --is-ancestor 5f6bff7d45 61e3ba7721` holds, i.e. the pushed
+branch tip `origin/auto-89` == `5f6bff7d45` is stale and predates its own
+fix. Nothing further is broken in the tree; advancing the branch to this
+head is what turns the remote check green. This worker is prohibited from
+pushing, so that advance is the driver's/integrator's action.
+- The dispatched `queued` state for "Validate ADR/spec front-matter" does not
+correspond to any captured failure: the captured check-run for that name at
+`5f6bff7d458f` is `success`, and all 7 steps re-pass fresh below.
+
+### Fresh execution at `61e3ba7721` (all exit 0 unless stated)
+
+- Exact vulture gate (CI args
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+**1217 reviewed identities / 1217 findings**, unclassified 0,
+never_allowlist 0 (`check-vulture-local.log`). Ledger byte-identical to
+`origin/develop` — `git diff --numstat origin/develop -- quality/
+docs/testing/inventory/` prints nothing (`check-adjacent-local.log`). No
+amendment made; none warranted.
+- Front-matter gate, all 7 `registry.yml` steps
+(`check-registry-local.log`): registry/lifecycle tests **194 passed**;
+lifecycle lint baseline 0; strict registry lint **447 files, 0 errors / 0
+warnings** (199 pre-existing test-evidence debts); citation provenance with
+`RATCHET_BASE_REV=origin/develop` 0 exceptions; ADR-INDEX consistent;
+AC-Defined index regenerated, `git diff --exit-code docs/specs/README.md`
+clean; body-status language 0 contradictions.
+- Coverage gate, diff half: release battery
+**703 passed**; `coverage xml` →
+`check-diff-coverage.py --base 618954f0528090144683c308a18e19c6068d63f1`
+— **ok**, 2 changed measured production files at/above 90% lines / 80%
+branch arcs, 3 test files exempt by declaration
+(`check-release-coverage-local.log`). As every prior round recorded, the
+focused producer proves the diff half only; the combined hosted publish-set
+floor (87%) needs CI's six producers and stays UNVERIFIED locally.
+- Byte-verification mutation probe re-run with this round's own scripts
+(`probe_byte_verification.py` + `byte_probe_mutant.py` in the job dir):
+control exit 0; with `verify_dist` stubbed on the fixture-loaded module only,
+pytest exit 1 with `MUTANT ACTIVE` and the regression's own `assert 0 == 1`
+signature — mutant killed (`check-byte-mutation-local.log`).
+`git status` clean after the probe; no tracked mutation.
+- Policy/adjacent: `tests/test_check_required_checks.py
+  tests/test_mutation_targets.py tests/test_check_diff_coverage.py` —
+**141 passed**; `check-doc-links.py` 0 broken; `check-suite-inventory.py`
+21/21 suites, 37818 unique identities, 0 duplicates; release consistency,
+workflow inventory (33), write-safety, `ruff check .` and
+`ruff format --check .` (3717 files) all pass
+(`check-adjacent-local.log`, `check-inventory-local.log`,
+`check-static-local.log`). No tests added or removed this round — inventory
+delta 0, no note required.
+
+### Acceptance and disposition (unchanged in substance)
+
+Re-read the production seams at this head rather than trusting earlier notes:
+`scripts/promote_release.py:44-57` (cross-lane contract: the soak harness
+must upload an Actions artifact named exactly `soak-evidence` on the RC run;
+the #860 native boolean record does not satisfy it; adapting would weaken
+the gate), `:144` `SOAK_ARTIFACT`, `:150` `REQUIRED_SOAK_CHECKS`, `:259`
+`_validate_binding`, `:316-322` `invalidates_invariant` → `routed_issue`,
+`:333` `validate_soak`, `:351` `verify_dist`; and
+`.github/workflows/release.yml:946-953` — the workflow's own soak-evidence
+upload is finals-only because RC runs have none yet ("the soak happens during
+the candidate window"). Local green tests inject the download seam; they do
+not create the producer/transport, run a real soak, or publish anything.
+
+All eight operational acceptance criteria therefore stay exactly as the
+standing table below records: hosted RC build, functional soak, #860
+sustained multi-replica workload, real finding routing, replacement-soak on
+deployed change, actual RC/final byte pair, external verification, and real
+evidence binding remain UNVERIFIED and reserved to the release/soak owners
+(#860 lane / PR #1672) and the protected, tag-triggered pipeline with human
+approval (ADR-073126-c4e1, ADR-095). No source, test, workflow, gate, grant,
+or ledger defect was demonstrated this round; the only tree change is this
+note.
+
+Verdict unchanged: **BLOCKED on operational acceptance**, not on any
+reproduced local gate defect. The one reproduced remote gate failure
+(Coverage gate at `5f6bff7d458f`) is already repaired in this branch's local
+history by `87ce1ab3de` and re-proven green at this head; the remote advance
+itself is outside this worker's authority.
+
+Progress: checked 1 issue, done 1 focused validation/handoff round, skipped 0,
+unexpected errors 0. No push, tag, merge, or GitHub mutation. Writer handoff
+only; not integration approval or issue completion.
+
+## Previous round: assigned head `4e6a254315`, base `618954f052`
 
 Job `576c481701ce4b9e8910745cce4b6b5a`; frozen scope: issue #89,
 existing release implementation/tests, named registry/vulture/coverage gates.
