@@ -977,3 +977,29 @@ class TestReviewFindings:
         drift, failures, _ids = ledger.run_checks(["tests/"], expected)
         assert failures == []
         assert drift == [("tests/", 3, 4)], "the interaction must surface as drift"
+
+
+class TestPythonTestOwnership:
+    """Ownership is independent from suite counts (#2537)."""
+
+    def test_root_test_is_not_silently_ignored(self, gate):
+        assert gate.unowned_python_tests(
+            ["test_pg_store_coverage.py", "tests/test_owned.py"], ["tests/"]
+        ) == ["test_pg_store_coverage.py"]
+
+    def test_owned_formal_and_nested_tests_are_recognized(self, gate):
+        assert gate.unowned_python_tests(
+            ["formal/models/test_a.py", "pkg/tests/nested/a_test.py"],
+            ["formal/", "pkg/tests"],
+        ) == []
+
+    def test_prefix_is_a_directory_boundary(self, gate):
+        assert gate.unowned_python_tests(
+            ["tests_extra/test_a.py"], ["tests"]
+        ) == ["tests_extra/test_a.py"]
+
+    def test_runtime_tool_exceptions_are_exact(self, gate):
+        assert gate.unowned_python_tests(
+            [*gate.NON_TEST_MODULES, "packages/new/src/test_inventory.py", "conftest.py"],
+            ["tests/"],
+        ) == ["packages/new/src/test_inventory.py"]
