@@ -9,6 +9,7 @@ name: mutation-nightly
 
 permissions:
   contents: read
+  actions: read
 
 on:
   schedule:
@@ -32,8 +33,41 @@ jobs:
     timeout-minutes: 10
     outputs:
       packets: ${{ steps.plan.outputs.packets }}
+      ratchet_base: ${{ steps.ratchet-base.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # A scheduled/dispatch event has no PR merge base. Resolve a prior
+      # successful protected develop quality run; never compare HEAD to itself.
+      - name: Resolve independent trusted fitness baseline
+        id: ratchet-base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MEASURED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/develop ]]; then
+            echo "::error::Nightly mutation measurement must run on develop"
+            exit 1
+          fi
+          candidates=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+            -f branch=develop -f event=push -f status=success -F per_page=100 \
+            --jq '.workflow_runs[].head_sha')
+          while IFS= read -r sha; do
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+            [[ "$sha" != "$MEASURED_SHA" ]] || continue
+            git cat-file -e "$sha^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$sha" "$MEASURED_SHA"; then
+              echo "sha=$sha" >> "$GITHUB_OUTPUT"
+              echo "Trusted fitness baseline: $sha (prior successful develop quality run)"
+              exit 0
+            fi
+          done <<< "$candidates"
+          echo "::error::No independent successful develop quality ancestor in the last 100 runs"
+          exit 1
 
       - uses: actions/setup-python@v7
         with:
@@ -86,8 +120,22 @@ jobs:
       fail-fast: false
       matrix:
         packet: ${{ fromJSON(needs.nightly-plan.outputs.packets) }}
+    env:
+      RATCHET_BASE_REV: ${{ needs.nightly-plan.outputs.ratchet_base }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify planned baseline provenance
+        env:
+          MEASURED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RATCHET_BASE_REV" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RATCHET_BASE_REV" != "$MEASURED_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$MEASURED_SHA" ]]
+          git merge-base --is-ancestor "$RATCHET_BASE_REV" "$MEASURED_SHA"
 
       - uses: actions/setup-python@v7
         with:
@@ -101,17 +149,14 @@ jobs:
         with:
           name: mutation-plan
 
-      # Checkpoint cache: keyed by tool fingerprint + merge-base so unchanged
-      # sources are never re-mutated. mutation_resume re-validates every
-      # restored checkpoint against the live source/test hashes and the exact
-      # commit, so a stale hit is rejected rather than trusted.
+      # Cache isolation includes the independent fitness baseline and packet.
+      # A different base can change test outcomes even at the same source SHA.
+      # Never restore across either dimension.
       - name: Restore mutation checkpoints
         uses: actions/cache@v6
         with:
           path: mutation-checkpoints
-          key: mutation-checkpoints-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            mutation-checkpoints-${{ runner.os }}-${{ github.ref }}-
+          key: mutation-checkpoints-v2-${{ runner.os }}-${{ github.sha }}-${{ needs.nightly-plan.outputs.ratchet_base }}-${{ matrix.packet }}
 
       - name: Measure this packet
         run: |
@@ -131,10 +176,14 @@ jobs:
           uv run python scripts/mutation_packet.py packet-targets.tsv \
             --checkpoints mutation-checkpoints \
             --environment <(uv run python - <<'PY'
-          import json, sys
+          import hashlib, json, os, sys
           sys.path.insert(0, "scripts")
           import mutation_pr_gate
-          print(json.dumps(mutation_pr_gate.environment()))
+          environment = mutation_pr_gate.environment()
+          environment["tool_fingerprint"] = hashlib.sha256(
+              (environment["tool_fingerprint"] + ":" + os.environ["RATCHET_BASE_REV"]).encode()
+          ).hexdigest()
+          print(json.dumps(environment))
           PY
           ) \
             --commit "${{ github.sha }}" \

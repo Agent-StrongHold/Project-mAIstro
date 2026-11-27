@@ -76,6 +76,32 @@ can print nothing even when rows were replaced). `vulture-baseline.json` is a
 **multiset** — it carries intentional
 duplicates, so never pass its lists through `set()`.
 
+## Verification definition of done
+
+Apply these obligations to human and agent changes through the existing
+governed CI/RSI paths; a checklist is not a substitute for execution evidence.
+
+- **Test integrity:** new executable tests belong to a declared suite and run
+  in an applicable CI profile. Reconcile test inventory deltas, preserve
+  protected node identities, and show the regression fails before the fix.
+  Do not claim discovery or execution completeness until #2537 is proven.
+- **Mutation integrity:** preserve the trusted-base provenance guard and
+  per-source ratchet (#330). Missing measurements, skipped targets, tool errors
+  and unexplained critical survivors are not evidence. Seed floors only from
+  reviewed measured artifacts; a candidate cannot authorize its own baseline.
+  Do not lower existing configured thresholds.
+- **Replay integrity:** use canonical Run/NodeRun/Attempt and immutable
+  versioned golden oracles (#463/#62). Prove supported recovery across process
+  restart and version boundaries with real durable state, effect identity,
+  authorization and explicit uncertain outcomes. Do not claim a dimension
+  marked not-characterized as proven.
+- **Architectural integrity:** use the ADR -> spec -> AC -> passing test ->
+  reachable production path chain (#164/#165/#166), and applicable shared
+  adapter conformance (#965). A marker or source reference alone is not proof.
+- **Evidence integrity:** bind evidence to the exact candidate and applicable
+  profile, distinguish skipped/unsupported/unmeasured from passing, preserve
+  independent negative controls and base-authorized exceptions.
+
 ## Verifying your own work
 
 - **Confirm the push landed.** `git add -A && git commit … && git push` skips the
