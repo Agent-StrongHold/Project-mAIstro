@@ -172,3 +172,88 @@ requires its actual CI producers. No push or GitHub mutation performed.
 
 Progress: checked 1 assigned issue; completed 1 focused local validation;
 issue acceptance completed 0; skipped issues 0; unexpected gate failures 0.
+
+## Follow-up job `ac30894fe5be437cba88264a75c2cec3`
+
+Frozen snapshot: issue #89 only; assigned HEAD `1a1f93583e3d`, base
+`618954f0528090144683c308a18e19c6068d63f1` (= merge-base with
+origin/develop, verified fresh); the same release/registry/coverage/vulture
+gates and adjacent release tests. Prior rounds' claims were NOT trusted:
+every named gate below was re-executed fresh at this head with CI's exact
+arguments, and the production machinery was re-read from source. Worktree
+entered clean and stayed clean through every probe (no tracked mutation;
+the byte-mutation probe patches the fixture-loaded module in-process only,
+plugin stored outside the tree in the job directory).
+
+Dispatched states, resolved fresh:
+
+- **"Validate ADR/spec front-matter: queued" is an in-flight run state, not
+  a failure.** All seven `registry.yml` steps re-run at this head, exit 0:
+  registry/lifecycle tests **194 passed**; `tools/lint_lifecycle.py`
+  baseline 0; `maistro_registry.cli lint . --strict` **447 files, 0 errors /
+  0 warnings** (199 pre-existing test-evidence debts);
+  `check-citation-status-provenance.py` with `RATCHET_BASE_REV=origin/develop`
+  **0 exceptions**; `check-adr-index.py` consistent; spec AC-Defined index
+  regenerated, `git diff --exit-code docs/specs/README.md` clean;
+  `check-adr-status-language.py` **0 contradictions**. No repair warranted.
+- **PR #2536 Coverage-gate RED stays explained as a stale pushed head**:
+  fresh ancestry check `git merge-base --is-ancestor 87ce1ab3de HEAD` holds
+  (the fix is in the assigned HEAD) and `origin/develop` is an ancestor of
+  HEAD, so the branch is current with the assigned base. Diff-coverage half
+  re-proven: focused release battery **183 passed** under
+  `coverage run --branch --source=scripts`;
+  `check-diff-coverage.py <job>/coverage-release.xml --base 618954f0528090`
+  → **ok**, 2 changed production files at/above 90% lines / 80% branch arcs,
+  3 test files exempt by declaration. The hosted publish-set aggregate floor
+  (six-plus CI producers, Postgres-backed legs) remains CI-executed only and
+  UNVERIFIED locally.
+- **exact-debt-ledger / vulture** (CI-exact `packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): **1217 reviewed
+  identities / 1217 findings**, unclassified 0, exit 0; `git diff --numstat
+  origin/develop -- quality/ docs/testing/inventory/` empty — ledgers
+  byte-identical, no unbanked identity, no amendment warranted.
+- **Static battery**: `ruff check .`, `ruff format --check .` (3717 files),
+  `check-release-consistency.py`, `check-workflow-inventory.py` (33
+  workflows), `check-suite-inventory.py` (21/21 suites, 37818 unique node
+  identities) all exit 0. No tests added or removed; inventory delta 0.
+- **Byte-equivalence mutation probe re-derived fresh** (not copied): control
+  `test_adopt_wheels_fails_closed_on_tampered_bytes` **1 passed** (exit 0);
+  with `verify_dist` stubbed on the fixture-loaded module only via a
+  process-local plugin, the same test **FAILED** with `assert 0 == 1` and
+  `MUTANT ACTIVE: verify_dist bypassed on fixture module only` (exit 1,
+  expected) — the regression genuinely reaches byte verification; mutant
+  killed; tracked tree unchanged. Probe + control logs in the job directory.
+- **Production behavior re-read from source** (not from prior notes):
+  `scripts/promote_release.py:150-156` `REQUIRED_SOAK_CHECKS` = clean_install,
+  real_model, security_hot_path, backup_restore, multi_replica_soak;
+  `_validate_binding` (259) requires exact wheels/image digest match plus
+  64-hex config digest and config reference; `validate_soak` (333) binds soak
+  evidence to the promoted artifacts/configuration and rejects findings
+  without `routed_issue` (306-330); `verify_dist` (351) sha256-compares the
+  downloaded dist against the recorded candidate hashes, rejecting missing,
+  mismatched and extra files. `.github/workflows/release.yml` anchors
+  re-confirmed: candidate tags build (22-27), finals adopt the selected
+  candidate's artifacts via `record-evidence` (304-310), `adopt-wheels`
+  (328), `adopt-digests` (611) with soak evidence gating, and finals-only
+  evidence upload; candidate rc publishes to TestPyPI only (452).
+  `docs/adr/ADR-073126-c4e1` and `ADR-095` front matter: status Accepted.
+
+### Acceptance disposition (unchanged, third consecutive fresh round)
+
+All eight operational acceptance criteria of issue #89 remain UNVERIFIED
+from this worktree for the same reason as every prior round: they require a
+hosted, protected, tag-triggered pipeline execution with a real candidate
+tag/run and human release-environment approval. Pushing, tagging and
+releases are prohibited GitHub mutations for this worker, so the evidence
+chain (candidate build → soak incl. #860 multi-replica workload → external
+verification → final adoption) cannot be produced here. No source, test,
+workflow, gate, grant, or ledger defect was reproduced this round; the
+locally-reachable machinery is proven by the fresh gate results above and
+the killed byte-bypass mutant.
+
+Verdict: **BLOCKED on operational acceptance** — unchanged from the two
+prior fresh rounds. Writer handoff only; no push, tag, release, or GitHub
+mutation performed.
+
+Progress: checked 1 issue, done 1 focused validation round, skipped 0,
+unexpected errors 0.
