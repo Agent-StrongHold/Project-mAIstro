@@ -27,10 +27,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
+from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY, ModelChatEgress
@@ -42,6 +43,16 @@ from . import register_node
 from .base import BaseNode, NodeContext, ReplaySemantics, replay_effect_key
 from .discovery_context import DiscoveryContextProvider, default_discovery_context
 from .discovery_scout import ScoutedCandidate
+
+#: Sentinel distinguishing "no warden supplied" from an explicit `None` (a
+#: policy declared unavailable, which `scan_inbound` fails closed on) — the
+#: same shape as the A2A delegation node's wiring (#1137).
+_WARDEN_UNSET = object()
+
+#: The honest refusal channel for a completion the Warden refused: the same
+#: `refused:` strategy shape the budget refusal uses, so a surfaced set can
+#: never quietly omit that the curator's answer was blocked.
+_WARDEN_REFUSAL = "refused:curator completion refused by Warden"
 
 if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
@@ -212,6 +223,11 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         "registry": "provider_registry",
         "router": "llm_router",
         "discovery_context": "discovery_context",
+        # The output policy (#66, same authority the delegation node wires):
+        # the curator's completion is model output re-entering product
+        # context and is scanned before any verdict folds. The scan itself
+        # fails closed when absent.
+        "warden": "warden",
     }
     display_name: ClassVar[str] = "Discovery: curate candidates"
     description: ClassVar[str] = (
@@ -228,6 +244,7 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         registry: LLMProviderRegistry | None = None,
         router: LLMRouter | None = None,
         discovery_context: DiscoveryContextProvider | None = None,
+        warden: InboundWarden | None | object = _WARDEN_UNSET,
     ) -> None:
         self._effects = effect_context or default_effect_context()
         self._registry: LLMProviderRegistry = (
@@ -235,6 +252,12 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         )
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
         self._cycle = discovery_context or default_discovery_context()
+        # A completion is untrusted model output even though this node asked
+        # for it (#66/#1202): the default is the canonical detector, an
+        # explicitly unavailable policy fails closed in `scan_inbound`.
+        self._warden = (
+            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
+        )
 
     def logical_effect_key(self, inputs: DiscoveryCurateIn, ctx: NodeContext) -> str | None:
         return replay_effect_key(
@@ -260,6 +283,11 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         curated_at = str(ctx.metadata.get("cycle_curated_at") or "")
         if strategy == "model":
             out = await self._curate_model(inputs, ctx, notes, cycle, curated_at)
+            # A Warden-refused completion is the node's honest refusal
+            # output; it must not be re-labelled as a `model` result by the
+            # strategy stamp below.
+            if out.strategy.startswith("refused:"):
+                return out
         else:
             out = self._curate_lexical(inputs, notes, ctx.run_id, curated_at)
 
@@ -398,7 +426,15 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
             actor_id=str(ctx.user_id or ""),
         )
         raw = (result.body.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
-        return self._fold_verdicts(inputs, str(raw or ""), ctx.run_id, curated_at)
+        raw = str(raw or "")
+        # The completion is untrusted model output re-entering product
+        # context (#66/#1202's final-answer class): it is scanned before any
+        # verdict folds, and a refusal surfaces nothing from it — an
+        # injected "reason" must not ride a curated item into the Workspace.
+        verdict = await scan_inbound(self._warden, raw, boundary="discovery_curator_output")
+        if not verdict.clean:
+            return DiscoveryCurateOut(strategy=_WARDEN_REFUSAL)
+        return self._fold_verdicts(inputs, raw, ctx.run_id, curated_at)
 
     def _fold_verdicts(
         self, inputs: DiscoveryCurateIn, raw: str, run_id: str, curated_at: str

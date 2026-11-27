@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from services.engine import get_engine
+from services.engine import get_engine, process_warden
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
@@ -27,7 +27,6 @@ from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
 from maistro.policy import BudgetRule, SequencePolicyEngine
-from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
 
@@ -51,7 +50,13 @@ def _configured_harness_policy() -> SequencePolicyEngine:
 
 
 async def _get_manager() -> HarnessSessionManager:
-    """Lazily build a process-wide manager over the engine registry + Warden."""
+    """Lazily build a process-wide manager over the engine registry + Warden.
+
+    The Warden comes from `process_warden()`, the same canonical resolution
+    chat, voice and definition writes use (#66/#1171). A `Warden()` built here
+    would be a second detector judging the same inbound turns, and would stay
+    pattern-only even if canonical composition gained the LLM-judge tier.
+    """
     global _manager
     if _manager is not None:
         return _manager
@@ -92,7 +97,7 @@ async def _get_manager() -> HarnessSessionManager:
                 binding = await register_boot_binding(effects.bindings, binding)
             _manager = HarnessSessionManager(
                 engine.capabilities,
-                warden=Warden(),
+                warden=process_warden(),
                 policy=_configured_harness_policy(),
                 invocation_service=effects.invocations,
                 invocation_binding=binding,
