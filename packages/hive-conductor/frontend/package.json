@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --max-warnings 96",
+    "lint": "eslint . --max-warnings 96 && npm run check:keyboard",
+    "check:keyboard": "node scripts/check-keyboard-controls.mjs",
     "gen:api": "openapi-typescript openapi.json -o src/api/types.gen.ts"
   },
   "dependencies": {
