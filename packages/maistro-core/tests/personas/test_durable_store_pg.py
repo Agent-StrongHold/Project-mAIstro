@@ -223,13 +223,23 @@ async def test_persona_migration_cascade_is_enforced_by_the_database_itself() ->
 
         async with pool.acquire() as conn:
             # The fence first: deleting a Workspace that still owns Projects is
-            # refused outright, whatever the caller meant to cascade. RESTRICT
-            # breaches surface as SQLSTATE 23001 — asyncpg's RestrictViolationError,
-            # a sibling of ForeignKeyViolationError (23503), not a subclass of it.
-            with pytest.raises(asyncpg.exceptions.RestrictViolationError):
+            # refused outright, whatever the caller meant to cascade. The
+            # refusal is the database's; the SQLSTATE is the major's: up to
+            # PostgreSQL 17 the RESTRICT breach surfaces as 23503
+            # (ForeignKeyViolationError), PostgreSQL 18 reports it as 23001
+            # (RestrictViolationError) — siblings, neither a subclass of the
+            # other — so the fence is pinned by what the server refuses (the
+            # named constraint), not by which class one major happens to raise.
+            with pytest.raises(
+                (
+                    asyncpg.exceptions.RestrictViolationError,
+                    asyncpg.exceptions.ForeignKeyViolationError,
+                )
+            ) as excinfo:
                 await conn.execute(
                     "DELETE FROM canonical_workspaces WHERE workspace_id = $1", workspace_id
                 )
+            assert "fk_canonical_projects_workspace" in str(excinfo.value)
             # Projects before the Workspace row — the store delete's order —
             # and 064's cascade takes the Persona with the Workspace.
             await conn.execute(
