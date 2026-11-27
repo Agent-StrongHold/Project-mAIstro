@@ -226,6 +226,31 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
             rows.append(row)
         return rows, skipped_stale
 
+    @staticmethod
+    def _source_meta(
+        source: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> tuple[str, str, dict[str, str]]:
+        """URL, category and the provenance row recorded for one source."""
+        url = str(source.get("url") or "").strip()
+        category = str(result.get("category") or source.get("category") or "")
+        return url, category, {"url": url, "category": category}
+
+    async def _refusal_for_rows(self, rows: list[dict[str, str]]) -> str | None:
+        """The #66 boundary for accepted rows, as a refusal or `None`.
+
+        Accepted rows are peer-controlled content. They are scanned in their
+        canonical form — keys included — before they can flow toward the
+        curator's model prompt or the Workspace, and a refusal stops the cycle
+        here: poisoned rows are never silently dropped into a weaker
+        downstream.
+        """
+        if not rows:
+            return None
+        verdict = await scan_inbound(self._warden, rows, boundary="discovery_source")
+        if verdict.clean:
+            return None
+        return "discovery source content refused by Warden"
+
     async def _execute(
         self, inputs: DiscoverySourceFetchIn, ctx: NodeContext
     ) -> DiscoverySourceFetchOut:
@@ -251,12 +276,11 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
         for source in sources:
             if len(entries) >= inputs.limit:
                 break
-            url = str(source.get("url") or "").strip()
             per_source = min(inputs.max_entries_per_source, inputs.limit - len(entries))
             result = await self._invoke_source(source, binding, ctx, inputs, per_source)
             sources_queried += 1
-            category = str(result.get("category") or source.get("category") or "")
-            sources_meta.append({"url": url, "category": category})
+            _url, category, meta = self._source_meta(source, result)
+            sources_meta.append(meta)
             rows, stale = self._accept_entries(
                 result,
                 category,
@@ -265,17 +289,9 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
                 remaining=inputs.limit - len(entries),
             )
             skipped_stale += stale
-            # The boundary (#66): accepted rows are peer-controlled content.
-            # They are scanned in their canonical form — keys included —
-            # before they can flow toward the curator's model prompt or the
-            # Workspace, and a refusal stops the cycle here: poisoned rows
-            # are never silently dropped into a weaker downstream.
-            if rows:
-                verdict = await scan_inbound(self._warden, rows, boundary="discovery_source")
-                if not verdict.clean:
-                    return DiscoverySourceFetchOut(
-                        refusal="discovery source content refused by Warden"
-                    )
+            refusal = await self._refusal_for_rows(rows)
+            if refusal:
+                return DiscoverySourceFetchOut(refusal=refusal)
             entries.extend(rows)
         return DiscoverySourceFetchOut(
             entries=entries,
