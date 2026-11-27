@@ -1030,3 +1030,64 @@ ledger edits. The local evidence commit is a handoff only. Remaining work is
 policy/producer composition and operator acceptance evidence, not scanner
 bookkeeping. Gate item checkpoint:
 `{checked: 1, done: 1, skipped: 0, errors: 0, next: "resolve milestone production-policy/producer gaps and obtain operator evidence in separately bounded work"}`.
+
+## Round 15 — independent verification at the develop-synced head
+
+Job `ce9e343bf7fb4700a9f6162daaa00b5c` (phase: verify); starting HEAD
+`2d1ba0582cda8cef4c36acaf00a3e01f01a37ea8` (exact match); declared develop
+base `80242f28521bba184f4d5d62cda972c1c8928f36`. Worktree clean at the
+assigned head — no uncommitted salvage. Delta since the round-14 head
+`cc0b03ac52` is the branch docs commit `160c889767` (handoff-only) plus the
+develop merge `80242f2852` (M5-B RSI quarantine); no lane behavior changed,
+so the round-14 acceptance boundary carries forward unchanged.
+
+### Executed this round (all commands exited 0 unless noted)
+
+Driver logs in the job directory (`check-0.log` … `check-4.log`): `uv sync
+--locked --extra dev`, `uv run ruff check .` (all checks passed), `uv run
+ruff format --check .` (3701 files), lane pytest batch (61 passed), suite
+inventory `--suite packages/hive-conductor/backend/tests` (4757 IDs, no
+duplicate evidence). Re-executed independently at the head: lane pytest +
+`tests/test_ci_vulture_ownership.py` → **141 passed**; `uv run ruff check .`
+→ passed; exact-CI-args Vulture gate
+`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` with `RATCHET_BASE_REV=80242f2852…` → **1218
+reviewed = 1218 findings** (row count moved with the new declared base, both
+sides consistent); `scripts/check-ratchet-provenance.py` → OK, 55 consumers,
+0 violations; `scripts/check-release-consistency.py` → ok (released none,
+shipping 0.9.0, target 1.0.0); suite inventory → ok.
+
+### Deterministic acceptance re-execution (row boundary unchanged)
+
+- Rows 2/5 (release workflow exercised; RC soak/byte-equivalent promotion):
+  `.github/workflows/release.yml:23-24` still self-declares "NOT YET
+  EXERCISED … has never run"; local `git tag -l 'v*'` count = **0**. No
+  operator evidence obtainable in-lane → UNMET/UNVERIFIED.
+- Row 8 (persistent Agent decide-half): `container.py:1426-1427`
+  `reconcile_goals` returns 0 when `goal_reconciliation_policy` is None
+  (field default `None` at `container.py:535`); repo-wide non-test grep for
+  a `goal_reconciliation_policy` **assignment** across `packages/` and
+  `scripts/` → **zero hits**. Tick/fencing/failover tests pass with injected
+  policy; no operational decision policy is composed → NOT MET.
+- Row 12 (Dreaming→user-fact→recall producer): `promote_evidence` occurs in
+  production `packages/*/src` only as definition (`promotion.py:154`),
+  re-export (`user_model/__init__.py:10,51`) and docstrings
+  (`user_model/service.py:10`, `hive-conductor discovery.py:30`) — no
+  production caller → NOT MET.
+- Rows 3/4/17 (clean-machine/live-model E2E, backup/restore escrow drill,
+  live overnight discovery fire): no operator/deployed evidence supplied or
+  creatable in-lane → UNVERIFIED; #1051 pipeline remains production-wired
+  but live-half PARTIAL.
+- PR #2529 live read-only refresh at verification time: still DRAFT, head
+  matches the assigned SHA, **all 26 CI checks QUEUED** — no green-CI or
+  integration claim is possible.
+- Closure-keyword scan: PR body ("Refs #7") and every commit message in
+  `80242f28…HEAD` → no fixes/closes/resolves keywords; no premature issue
+  closure.
+
+**Verdict: NEEDS-REPAIR for issue #7, carried on the same narrowed basis as
+round 14.** Deterministic quality gates pass; the unmet rows are policy/
+producer composition (rows 8/12) and operator acceptance evidence
+(rows 2/3/4/5/17), unreachable from this lane. No GitHub mutations, no
+ledger edits, no gate changes. Checkpoint:
+`{checked: 19, done: 0, skipped: 0, errors: 0, next: "compose an operational goal-reconciliation policy and a production Dreaming promotion caller; obtain operator release/E2E/soak evidence; re-verify when CI on the PR completes"}`.
