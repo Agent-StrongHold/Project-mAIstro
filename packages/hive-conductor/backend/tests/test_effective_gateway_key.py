@@ -443,3 +443,29 @@ class TestOneMatrixAcrossCompositions:
             proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
             master_alias=os.environ.get("LITELLM_MASTER_KEY"),
         )
+
+    def test_a_winning_leg_is_resolved_without_touching_the_ones_beneath(
+        self,
+    ) -> None:
+        """Regression (#2247 round): the wrapper must hand its settings-backed
+        legs over as resolvers, not eagerly resolved values. An eager
+        `litellm_key=litellm_api_key(settings)` argument read the alias
+        beneath a winning operator key — opening `LITELLM_API_KEY`'s vault
+        name and reading `Settings.litellm_api_key` even when the operator
+        key answered — and AttributeError'd on duck-typed settings that only
+        carry the aliases the deployment actually states (the stub in
+        test_provider_pin_registration.py). Leg resolution stays as lazy as
+        the pre-#2247 chain it replaced; only the ordering moved to core."""
+
+        class _OperatorKeyOnlySettings:
+            """Exactly the #2185 provider-pin stub: one alias, no others."""
+
+            maistro_llm_api_key = "sk-operator-answers"
+
+            @property
+            def litellm_api_key(self) -> str:  # pragma: no cover - proves non-eagerness
+                raise AssertionError("a winning earlier leg must not read the alias beneath it")
+
+        from services.secrets import effective_llm_gateway_key
+
+        assert effective_llm_gateway_key(_OperatorKeyOnlySettings()) == "sk-operator-answers"

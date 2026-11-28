@@ -116,13 +116,17 @@ def effective_llm_gateway_key(settings: Settings) -> str | None:
     (``maistro.config.gateway_key.effective_gateway_key``), which the
     engine's ``_gateway_credential`` resolves through too (#2247): the
     precedence decision lives in core, so the two compositions cannot
-    reassemble it differently and drift onto different credentials.
+    reassemble it differently and drift onto different credentials. The
+    settings-backed legs are handed over as resolvers, not values: leg
+    resolution opens vault names and reads settings attributes, so a
+    deployment whose operator key already answers must never read the
+    aliases beneath it — the matrix evaluates a leg only if reached.
     """
     from maistro.config.gateway_key import effective_gateway_key
 
     return effective_gateway_key(
-        maistro_key=maistro_llm_api_key(settings),
-        litellm_key=litellm_api_key(settings),
+        maistro_key=lambda: maistro_llm_api_key(settings),
+        litellm_key=lambda: litellm_api_key(settings),
         proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
         master_alias=os.environ.get("LITELLM_MASTER_KEY"),
     )

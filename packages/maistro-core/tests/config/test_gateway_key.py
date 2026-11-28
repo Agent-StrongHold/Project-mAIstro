@@ -24,6 +24,8 @@ arrives as `""` while `LITELLM_API_KEY` carries the real credential).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from maistro.config.gateway_key import effective_gateway_key
@@ -120,6 +122,63 @@ class TestBothCompositionsResolveThroughOneOrdering:
         assert (
             effective_gateway_key(
                 maistro_key=None, litellm_key="", proxy_alias=None, master_alias=""
+            )
+            is None
+        )
+
+
+class TestLegsResolveOnlyIfReached:
+    """A leg may be a zero-arg resolver (Hive hands its vault-backed alias
+    reads over that way): leg resolution is side-effectful — it opens vault
+    names and walks settings — so the matrix must evaluate a leg only when
+    every earlier leg is unset. An eager evaluation of all four would widen
+    the secret-read surface (vault["LITELLM_API_KEY"] opened even when the
+    operator key won) and break duck-typed settings that only carry the
+    aliases a deployment actually states."""
+
+    def test_a_winning_earlier_leg_never_evaluates_a_later_one(self) -> None:
+        def beyond() -> str:
+            raise AssertionError("a reached earlier leg must answer before this resolver runs")
+
+        assert (
+            effective_gateway_key(
+                maistro_key="sk-operator-wins",
+                litellm_key=beyond,
+                proxy_alias=beyond,
+                master_alias=beyond,
+            )
+            == "sk-operator-wins"
+        )
+        assert effective_gateway_key(maistro_key="sk-only", master_alias=beyond) == "sk-only"
+
+    def test_resolvers_run_in_matrix_order_until_one_answers(self) -> None:
+        evaluated: list[str] = []
+
+        def leg(name: str, value: str | None) -> Callable[[], str | None]:
+            def resolve() -> str | None:
+                evaluated.append(name)
+                return value
+
+            return resolve
+
+        assert (
+            effective_gateway_key(
+                maistro_key=leg("maistro", None),
+                litellm_key=leg("litellm", ""),
+                proxy_alias=leg("proxy", "sk-proxy-answers"),
+                master_alias=leg("master", "sk-never-reached"),
+            )
+            == "sk-proxy-answers"
+        )
+        assert evaluated == ["maistro", "litellm", "proxy"]
+
+    def test_every_resolver_unset_still_resolves_to_none(self) -> None:
+        assert (
+            effective_gateway_key(
+                maistro_key=lambda: None,
+                litellm_key=lambda: "",
+                proxy_alias=lambda: None,
+                master_alias=lambda: None,
             )
             is None
         )

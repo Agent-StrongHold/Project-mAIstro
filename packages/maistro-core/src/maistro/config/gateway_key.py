@@ -45,13 +45,22 @@ get past.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+#: One matrix leg: the resolved value, or a zero-arg resolver for it. A
+#: callable leg is evaluated only if every earlier leg is unset — leg
+#: resolution is side-effectful (a vault read, a duck-typed settings walk),
+#: so a deployment whose operator key wins must never pay for the aliases
+#: beneath it.
+Leg = str | Callable[[], str | None] | None
+
 
 def effective_gateway_key(
     *,
-    maistro_key: str | None = None,
-    litellm_key: str | None = None,
-    proxy_alias: str | None = None,
-    master_alias: str | None = None,
+    maistro_key: Leg = None,
+    litellm_key: Leg = None,
+    proxy_alias: Leg = None,
+    master_alias: Leg = None,
 ) -> str | None:
     """Resolve the effective gateway credential from the matrix's four legs.
 
@@ -61,8 +70,16 @@ def effective_gateway_key(
     and a fully unconfigured deployment gets ``None`` — never ``""`` — so a
     caller can distinguish "unset" from a real empty value and fail closed
     rather than dispatch a blank bearer token.
+
+    A leg may be a zero-arg callable; it is resolved only if reached, so a
+    caller with side-effectful or lazily-typed legs (Hive resolves each
+    alias vault-first, and later aliases must not be read — let alone
+    opened in the vault — when an earlier leg already answers) keeps the
+    exact short-circuit its pre-#2247 chain had. The *ordering* still lives
+    only here.
     """
     for leg in (maistro_key, litellm_key, proxy_alias, master_alias):
-        if leg:
-            return leg
+        value = leg() if callable(leg) else leg
+        if value:
+            return value
     return None
