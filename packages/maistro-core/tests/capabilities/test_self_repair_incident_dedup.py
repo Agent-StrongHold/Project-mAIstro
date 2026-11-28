@@ -194,20 +194,27 @@ async def test_rule_based_repair_admits_stable_effect_key() -> None:
         keys.append(effect_key)
         return f"run-{len(keys)}"
 
-    monitor_proposal = RepairProposal(
-        resource="docker:litellm",
-        symptom="container unhealthy",
-        action="restart_container",
-        params={"name": "litellm"},
-    )
     for _ in range(2):
+        # A distinct proposal object per "process": equal durable facts, fresh
+        # allocation. ``id(proposal)`` differs across the two objects, so only
+        # the stable digest keeps both admissions on one incident. This is the
+        # #2405 mutation oracle for restoring ``id(proposal)`` — sharing one
+        # proposal object made the two identities coincide and the old key
+        # derivation passed for the wrong reason.
+        proposal = RepairProposal(
+            resource="docker:litellm",
+            symptom="container unhealthy",
+            action="restart_container",
+            params={"name": "litellm"},
+        )
         repair = RuleBasedRepair(
             infra_monitor=None,
             effect_invoker=None,
             approval_admittor=admit,
             autonomy="approve_all",
         )
-        await repair._admit_approval(monitor_proposal)
+        await repair._admit_approval(proposal)
+    assert len(keys) == 2
     assert keys[0] == keys[1]
 
 
@@ -282,6 +289,173 @@ async def test_concurrent_admission_of_same_incident_converges_on_one_run() -> N
         approval for approval in approvals._items.values() if approval.run_id == record_a.run.run_id
     ]
     assert len(scoped) == 1
+
+
+async def test_duplicate_occurrence_loser_reconciles_to_winner() -> None:
+    """A true cross-process race is decided by the claim, never the probe.
+
+    The loser's probe misses (the winner commits between probe and insert),
+    the loser's ``create_run`` raises ``DuplicateOccurrence``, and the loser
+    must reconcile to the winner's Run: one insert, no replacement Run, no
+    chained claim for a live winner. The in-memory gather above cannot reach
+    this branch (its probe always sees the winner), and check-then-insert
+    alone is explicitly not the authority (#2405 slice 1).
+    """
+    from types import SimpleNamespace
+
+    from maistro.capabilities.durable_hitl_approval import _resolve_incident_claim
+    from maistro.graph.definitions import Graph, Node
+    from maistro.runs.store import DuplicateOccurrence
+
+    resource = "docker:litellm"
+    action = "restart_container"
+    params = {"name": "litellm"}
+    effect_key = stable_effect_key(resource, action, params)
+    workspace_id = "ws-2405"
+    project_id = "project-2405"
+    graph = Graph(
+        graph_id="self-repair-approval:race",
+        workspace_id=workspace_id,
+        project_id=project_id,
+        name="race fixture",
+        nodes=[
+            Node(
+                node_id="self_repair_action",
+                node_type="infra.approval_gated_action",
+                inputs={},
+                parameters={},
+                metadata={},
+            )
+        ],
+        edges=[],
+        metadata={},
+    )
+    winner = SimpleNamespace(
+        run_id="winner-run",
+        status=RunStatus.PAUSED,
+        provenance={"effect_key": effect_key},
+    )
+
+    class _WinnerCommitsBetweenProbeAndInsert:
+        """Two independent connections: the loser's probe misses, its insert loses."""
+
+        def __init__(self) -> None:
+            self.probes: list[dict[str, str]] = []
+            self.inserts: list[dict[str, str]] = []
+
+        async def find_occurrence_run(self, claim: Any) -> Any:
+            self.probes.append(dict(claim))
+            # The winner's claim resolves only once it has committed — i.e.
+            # not for the loser's first probe, which ran before the commit.
+            if len(self.probes) > 1 and claim.get(SCHEDULE_FIRE_ID_KEY) == episode_token:
+                return winner
+            return None
+
+        async def create_run(self, _graph: Any, **kwargs: Any) -> Any:
+            self.inserts.append(dict(kwargs.get("provenance") or {}))
+            if len(self.inserts) == 1:
+                raise DuplicateOccurrence(claim_scope, episode_token)
+            # A mutant that mints a replacement claim instead of reconciling
+            # gets its second insert through — and fails the assertions below.
+            return SimpleNamespace(run_id="loser-replacement-run")
+
+    claim = incident_claim(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        resource=resource,
+        action=action,
+        params=params,
+    )
+    episode_token = claim[SCHEDULE_FIRE_ID_KEY]
+    claim_scope = claim[SCHEDULE_ID_KEY]
+    store = _WinnerCommitsBetweenProbeAndInsert()
+
+    run_id, created = await _resolve_incident_claim(
+        run_store=store,
+        graph=graph,
+        base_provenance={"effect_key": effect_key},
+        claim=claim,
+        actor="loser",
+    )
+
+    assert created is False
+    assert run_id == winner.run_id
+    # The loser never minted a replacement Run for the live claim.
+    assert len(store.inserts) == 1
+    # The loser never chained the episode: the winner's claim is still live.
+    assert all(p[SCHEDULE_FIRE_ID_KEY] == episode_token for p in store.probes)
+
+
+async def test_cross_process_race_is_decided_by_the_claim_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both replicas probe before either claims: the unique claim still picks one.
+
+    In-memory ``asyncio.gather`` serializes admissions (the loser's probe
+    always sees the winner), so this test forces the real two-connection
+    interleaving: both probes complete before either claim, and the loser's
+    insert hits ``DuplicateOccurrence``. The assertion on the fence counter
+    keeps the test honest — a pass reached through check-then-insert alone
+    proves nothing (#2405 slice 1).
+    """
+    from maistro.runs.store import DuplicateOccurrence
+
+    durable, run_store, workspace_id, project_id = await _run_store()
+    approvals = InMemoryApprovalStore()
+    http = _FakeHttp()
+
+    dup_seen = {"count": 0}
+    original_find = type(run_store).find_occurrence_run
+    original_create = type(run_store).create_run
+
+    async def slow_find(self: Any, claim: Any) -> Any:
+        # Cross-process latency: both replicas probe before either commits.
+        await asyncio.sleep(0)
+        return await original_find(self, claim)
+
+    async def racing_create(self: Any, graph: Any, **kwargs: Any) -> Any:
+        # The probe→insert window: the loser's insert lands after the winner's
+        # claim and is refused by the claim (the durable backends' unique
+        # index), never by a re-probe.
+        await asyncio.sleep(0)
+        try:
+            return await original_create(self, graph, **kwargs)
+        except DuplicateOccurrence:
+            dup_seen["count"] += 1
+            raise
+
+    monkeypatch.setattr(type(run_store), "find_occurrence_run", slow_find)
+    monkeypatch.setattr(type(run_store), "create_run", racing_create)
+
+    record_a, record_b = await asyncio.gather(
+        _admit(
+            store=durable,
+            run_store=run_store,
+            approvals=approvals,
+            http=http,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        ),
+        _admit(
+            store=durable,
+            run_store=run_store,
+            approvals=approvals,
+            http=http,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        ),
+    )
+
+    # The fence, not a lucky probe, resolved the race.
+    assert dup_seen["count"] >= 1
+    assert record_a.run.run_id == record_b.run.run_id
+    final = await durable.get(record_a.run.run_id)
+    assert final is not None
+    assert final.run.status is RunStatus.PAUSED
+    canonical = await run_store.get_run(record_a.run.run_id)
+    assert canonical is not None
+    assert is_incident_claim(canonical.provenance)
+    assert http.calls == []
 
 
 async def test_restart_admission_reuses_parked_wait_without_second_run() -> None:
