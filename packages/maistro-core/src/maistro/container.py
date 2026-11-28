@@ -37,6 +37,7 @@ from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 from maistro.events.publisher import CanonicalEventPublisher
+from maistro.events.wiring import CanonicalProjection
 from maistro.goals.authorization import ScopedGoalStore
 from maistro.goals.reconciliation.production import (
     FactDrivenReconciliationPolicy,
@@ -509,6 +510,13 @@ class Container:
     # legacy-only projection (`_recovery_events`), never a second authority.
     recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
+    # Replayable canonical-Envelope -> durable-log projection (#2506): the
+    # per-stream replay cursor (registered at the canonical watermark,
+    # claimed under a lease, advanced under a fence) and the poison
+    # bookkeeping for events whose log append keeps failing. `None` only on
+    # a hand-built Container; then `process_durable_events` keeps the
+    # bridge-only ingress and cannot heal a failed bridge append.
+    canonical_projection: CanonicalProjection | None = None
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
     handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -1239,6 +1247,14 @@ class Container:
         call repeatedly (idempotent invocations dedupe redelivery) and safe
         to call from more than one replica at once.
 
+        The tick first replays the canonical-Envelope -> durable-log
+        projection (#2506): canonical Events a bridge append failed after
+        their canonical commit become durable log rows here, through the
+        log's source-`event_id` dedupe, before the legacy pass below
+        dispatches them. Healing is therefore reachable only through this
+        ordinary production tick — never a direct bus emit or a test-only
+        repair call.
+
         The cursor is a resume optimisation, not the correctness backstop --
         that is `InvocationStore.claim` (ADR-082426-82c7: "the occurrence is
         the claim, not the cursor"). What `consumer_cursor_store.claim` adds
@@ -1278,6 +1294,35 @@ class Container:
             # Another replica currently holds the tick lease; ticking anyway
             # would only repeat work its lease already covers this round.
             return self.durable_event_cursor
+
+        from maistro.events.processing import project_canonical_events
+
+        # Projection pass first (#2506): canonical Events the bridge failed to
+        # append become log rows now, so the legacy pass below dispatches the
+        # healed occurrence in the same tick. Its own per-stream leases make
+        # the pass shared across replicas, and the log's source-id dedupe
+        # makes a row the bridge did write come back unchanged — never a
+        # second occurrence.
+        if self.canonical_projection is not None:
+            from maistro.events.publisher import canonical_log_append_kwargs
+
+            outcome = await project_canonical_events(
+                projection_store=self.canonical_projection.projection_store,
+                event_store=self.capability_effects.event_store,
+                event_log=self.durable_event_log,
+                failure_store=self.canonical_projection.failure_store,
+                append_kwargs=canonical_log_append_kwargs,
+                holder=self._durable_events_holder,
+                limit=limit,
+            )
+            if outcome.projected or outcome.dead_lettered:
+                logger.info(
+                    "Canonical-log projection healed %d event(s), dead-lettered %d, "
+                    "across %d stream(s) this tick",
+                    outcome.projected,
+                    outcome.dead_lettered,
+                    outcome.streams_scanned,
+                )
 
         from maistro.events.processing import process_events_batch
 
@@ -3245,6 +3290,27 @@ async def create_container(
         )
         from maistro.credentials.types import CredentialRecord
 
+        # The replayable canonical-Envelope -> durable-log projection (#2506),
+        # composed beside the canonical EventStore the container actually
+        # publishes through. That store decides the projection's backend and
+        # connection — pool, SQLite connection, or in-memory — because a
+        # caller may inject a composed `effect_context` whose event authority
+        # is not the container's own database (#2506 review): an injected
+        # context skips `wire_canonical_events`' schema work, so selecting the
+        # projection from the container's pools could build the registry on a
+        # database that has no `canonical_event_stream_watermarks` table
+        # (every publisher emission then fails at registration), or read
+        # another database's watermark. The publisher registers streams here
+        # before appending, and `process_durable_events` scans them, so a
+        # bridge append that fails after the canonical commit heals on the
+        # ordinary processing tick instead of leaving a persisted Event
+        # permanently invisible to its only durable trigger processor.
+        from maistro.events.wiring import wire_canonical_projection
+
+        canonical_projection = await wire_canonical_projection(
+            event_store=capability_effects.event_store,
+        )
+
         model_chat_binding = Binding(
             workspace_id=config.workspace_id,
             project_id="default",
@@ -3283,8 +3349,13 @@ async def create_container(
         # sequencing authority. It projects each inserted Event onto `event_bus`
         # so the durable-log bridge and legacy trigger/notification fan-out keep
         # firing on recovery facts, as the pre-canonical path delivered them.
+        # The projection registry (#2506) makes the durable trigger-log ingress
+        # replayable: the legacy bridge stays at-most-once compatibility
+        # delivery, never the only path a committed Event can reach the log by.
         canonical_event_publisher = CanonicalEventPublisher(
-            capability_effects.event_store, legacy_bus=event_bus
+            capability_effects.event_store,
+            legacy_bus=event_bus,
+            projection_registry=canonical_projection.projection_store,
         )
         from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
@@ -3402,6 +3473,7 @@ async def create_container(
             canonical_event_publisher=canonical_event_publisher,
             recovery_event_sink=recovery_event_sink,
             durable_event_log=durable_event_log,
+            canonical_projection=canonical_projection,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
             handler_invocation_store=handler_invocation_store,

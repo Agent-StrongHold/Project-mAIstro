@@ -508,9 +508,12 @@ def _assert_losslessly_migrated() -> None:
     # #1064's Evolve domain store renumbers past that landed run as `070`,
     # #69's Sentinel decision-integrity revision appends past that as
     # `071`, the per-Workspace working log (#301, M4-H; #105) appends past
-    # that as `072`, and #37's tombstone/Project-FK fences renumber past
-    # that landed revision as `073`.
-    assert _versions() == {"073"}
+    # that as `072`, #37's tombstone/Project-FK fences renumber past that
+    # landed revision as `073`, and the canonical-Envelope -> durable-log
+    # projection (#2506) appends past that as `074` — additive only (an
+    # `event_log` column and two projection tables), so it touches none of
+    # the ownership rows asserted above.
+    assert _versions() == {"074"}
 
 
 class TestMixedDataMigratesLosslessly:
