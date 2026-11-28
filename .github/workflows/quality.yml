@@ -575,60 +575,25 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  coverage-gate:
-    name: Coverage gate (publish-set floor + diff coverage)
+  # 2026-11-28 CI-latency repair, measured on #2559's PR run (81 checks, wall
+  # 04:59:10 -> 05:55:55): the gate previously executed the seven non-publish
+  # producers serially inside its combine step — root tests/ 17m39s, hive
+  # backend 7m16s, ~4m40s of smaller producers, per its own capacity
+  # comments — which made it the critical path behind the parallel 41m
+  # `test` job. The suites, sources, floors and thresholds are unchanged:
+  # the same commands moved from the gate's serial block into parallel
+  # producer jobs following the documented ADDING A PRODUCER pattern above,
+  # and the gate became download + combine + floors + diff only. Coverage
+  # chain wall time drops from ~57m to the slowest producer
+  # (coverage-scripts, ~18m).
+  coverage-scripts:
+    name: coverage (scripts producer)
     runs-on: ubuntu-latest
-    # 15 -> 30 on 2026-09-26: capacity, not scope. The `combine` step below
-    # runs the non-publish suites serially after the publish-set floor (six
-    # when measured; maistro-registry has since made it seven), and they are
-    # essentially the whole job: on #1591 (run 36207106537) it took 11m07s of
-    # 11m25s, of which the root `tests/` suite (the `--source=scripts`
-    # producer) was 7m49s and hive-conductor 2m16s with its requirements
-    # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
-    # cancelled gate never reports, so it blocks the PR without measuring
-    # anything. The suites, sources, floor and diff thresholds are unchanged.
-    #
-    # 30 -> 45 on 2026-10-26: the same class again. #1532's gate (run
-    # 40380074341, job 121782351343) started 18:58:48Z and was killed at
-    # 19:29:06Z — 30m18s, eighteen seconds past this ceiling — leaving the
-    # run's conclusion `cancelled` and reding `gates-ran` on a measurement
-    # that never happened. The same serial combine step on a slower runner is
-    # the whole story; no suite, source, floor or diff threshold changes
-    # here. 45 keeps a 1.5x margin over the observed 30m18s, the same ratio
-    # the 15 -> 30 bump gave #1581.
-    #
-    # 30 -> 45 on 2026-11-24: capacity, not scope. The #1064 candidate grew
-    # the two heaviest serial producers with tests that measure real code:
-    # the hive-conductor backend producer rose 2m16s -> 7m16s (the Evolve
-    # restart/replay suites' server-less legs) and the root `tests/` producer
-    # measured 17m39s (6081 tests). Measured at head
-    # 8fc5b6d on run 45447298201, where every suite the gate executed PASSED
-    # (4486 passed/100 skipped, then 6081 passed/140 skipped) and the job was
-    # cancelled at 30m16s by THIS limit before `coverage xml` could run — so
-    # the required check reported nothing and gates-ran failed it as
-    # "non-executed". The remaining producers (~4m40s) plus floor/combine
-    # (~2m) put the need at ~32-33m; 45 keeps the gate under one hour while
-    # leaving headroom for runner variance. Same rationale as the 15 -> 30
-    # raise: a gate that cannot finish measures nothing and blocks every PR.
-    timeout-minutes: 45
-    needs: [coverage-unit, coverage-archive, coverage-postgres]
+    timeout-minutes: 40
     env:
-      # The combine step re-runs the root suite as the `scripts` producer, and
-      # that suite carries the shipped-state `check-*` self-checks. On a push
-      # to `develop` the resolver's local fallback degenerates to HEAD and the
-      # #534 self-reference refusal fires, reding this job for "cannot
-      # compare" rather than any coverage regression (#1235). Name the event's
-      # own base, exactly as vulture-ratchet.yml does, so the trusted baseline is
-      # the revision this push replaces. tests/conftest.py captures this value
-      # and keeps it away from every test except the gate self-checks that opt in.
-      #
-      # `before` is right only for a protected-branch push, which really does
-      # replace that revision. A topic branch's `before` is its own previous
-      # tip, orphaned by any rebase and therefore unfetchable even at
-      # `fetch-depth: 0`, so the ratchet refuses with "base revision could not
-      # be resolved" and this job reds on a candidate whose pull-request run is
-      # green on identical content. Topic pushes use the integration base their
-      # PR run uses.
+      # The root suite carries the shipped-state `check-*` self-checks, which
+      # ratchet against THIS repository and need the same named base the gate
+      # previously provided (see #1235/#534 context in the removed gate env).
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
@@ -641,6 +606,212 @@ jobs:
             || github.ref == 'refs/heads/main'
             && github.event.before
             || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The root suite's shipped-state ratchet self-checks resolve
+          # RATCHET_BASE_REV (origin/develop) with git; a shallow checkout
+          # cannot, and the ratchet fail-closes by design ("a ratchet cannot
+          # judge monotonicity without the state it is judging against").
+          # Same full-history guarantee the old in-gate placement had.
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --all-extras
+      # The gates themselves (#257). Every one of #160's five mandates is
+      # enforced by a file in scripts/, and they were the only Python here
+      # that no gate governed. The root suite is what exercises them —
+      # tests/test_check_*.py import each script and drive its pure logic —
+      # so this is the producer that puts them in coverage.xml.
+      #
+      # Its PostgreSQL-dependent legs skip in this job, which has no server.
+      # That is fine for this --source: no gate script needs a database.
+      #
+      # The #981 lifecycle-proof test is named here for the same reason
+      # tests/test_check_citation_status.py is named in the registry
+      # producer: the suite that exercises a measured scripts/ file lives
+      # in a package suite this producer would otherwise never run, so the
+      # file's changed lines would measure 0% and the diff-coverage gate
+      # would fail on evidence that exists and passes.
+      #
+      # tests/test_model_check_consumer_claim.py is named for #884 (M8-A4):
+      # it is in tests/ so this producer would run it anyway, but naming it
+      # also roots scripts/model_check_consumer_claim.py for
+      # scripts/check-reachability.py, which matches tooling call paths by
+      # literal filename in workflow text.
+      - name: pytest with coverage (line + branch)
+        run: |
+          set -euo pipefail
+          uv run coverage run --branch --source=scripts \
+            -m pytest tests/ tests/test_model_check_consumer_claim.py packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=60 -q
+          # --timeout=60 (not the 30 used elsewhere): the shipped-state AST
+          # censuses (e.g. check_model_egress) walk the whole tree under
+          # coverage tracing and land near 30s on slower runners — measured
+          # flaky at the boundary in CI attempt 5. Same assertions, more
+          # infrastructure headroom.
+      - name: upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-scripts
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-hive-backend:
+    name: coverage (hive-conductor backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --all-extras
+      # hive-conductor's pytest-bdd is declared in that workspace member's
+      # OWN `dev` extra, and `--all-extras` includes every optional
+      # dependency of the ROOT project only — not of each member. So the
+      # sync above actively REMOVES pytest-bdd (`- pytest-bdd==8.1.0` in a
+      # dry run) and the two BDD step-def modules abort collection.
+      #
+      # `uv sync --all-packages` is the obvious fix and does not work here:
+      # hive-conductor's wheel config rewrites a path prefix
+      # (`sources = { "backend" = "hive_conductor" }`), and hatchling
+      # refuses an editable install for a prefix rewrite rather than a
+      # removal (editables#20), so the sync fails to build the member. The
+      # dry run passes because it never builds. Do not re-try that flag
+      # without changing that `sources` mapping first.
+      #
+      # Installed at job start rather than beside `uv sync`, so a version it
+      # resolves outside the lock (it pulls protobuf 5.29.6 -> 7.36.0)
+      # cannot perturb any other producer — this job records exactly one.
+      - run: uv pip install -r packages/hive-conductor/backend/requirements.txt
+      - name: pytest with coverage (line + branch)
+        run: |
+          set -euo pipefail
+          uv run coverage run --branch --source=packages/hive-conductor/backend \
+            -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
+      - name: upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-hive-backend
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-server-turing:
+    name: coverage (server + turing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --all-extras
+      - name: pytest with coverage (line + branch)
+        run: |
+          set -euo pipefail
+          uv run coverage run --branch --source=packages/maistro-server/src/maistro_server \
+            -m pytest packages/maistro-server/tests --timeout=30 -q
+          uv run coverage run --append --branch --source=packages/maistro-turing/src/maistro_turing \
+            -m pytest packages/maistro-turing/tests --timeout=30 -q
+          # maistro-turing carries a second FastAPI service under backend/ with
+          # its own suite. Measuring only src/ would leave that half of the
+          # package silently unscored, which is the hole this item closes.
+          uv run coverage run --append --branch --source=packages/maistro-turing/backend \
+            -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
+      - name: upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-server-turing
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-design-registry-ext:
+    name: coverage (design + registry + extensions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --all-extras
+      - name: pytest with coverage (line + branch)
+        run: |
+          set -euo pipefail
+          uv run coverage run --branch --source=packages/maistro-design/src/maistro_design \
+            -m pytest packages/maistro-design/tests --timeout=30 -q
+          # maistro-registry joins the measured set with #1096: its linker
+          # performs the caller-influenced GitHub fetch that the SSRF sweep
+          # (#67, ADR-102) routed through the central guard — the one tree
+          # where an unmeasured change would be indistinguishable from a
+          # tested one, because nothing else ran its suite under coverage.
+          # The #374 citation-status policy (maistro_registry.citations) is
+          # exercised by the root suite, not by this package's own five tests;
+          # without naming that file here the module's changed lines measure
+          # 0% in this producer and the diff-coverage gate fails on tests
+          # that exist and pass but were never pointed at this --source.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the scripts producer
+          # measures --source=scripts only, so cli.py's changed lines scored
+          # 0% here until that file was named in this producer's pytest args
+          # too. Same shape as #812 (merged from develop): the CLI's
+          # cited-test-path lint and the validator's test-evidence debts are
+          # exercised by root tests under tests/tools/registry/ (this
+          # package's own suite has no cli or validator cases), so those two
+          # files are named here or the changed lines measure 0% and the
+          # diff-coverage gate rejects the commit.
+          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
+              tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
+          # The extension host harness (#974) joins the measured set: it is
+          # the code third-party CI executes, so an unmeasured change there
+          # would be indistinguishable from a tested one. Its suite needs no
+          # services (stdlib-only runtime), so this producer cannot flake on
+          # infrastructure the job does not have.
+          uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
+            -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
+      - name: upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-design-registry-ext
+          include-hidden-files: true
+          path: .coverage
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-gate:
+    name: Coverage gate (publish-set floor + diff coverage)
+    runs-on: ubuntu-latest
+    # 45 -> 15 on 2026-11-28: scope, not capacity — the seven serial
+    # non-publish producers moved into the parallel jobs above, so the gate
+    # is now download + rename + combine + floors + diff-coverage only
+    # (measured shape: producers' floor/combine arithmetic was ~2m of the
+    # old job; the rest was the serial suites). The suites, sources, floors
+    # and diff thresholds are unchanged.
+    timeout-minutes: 15
+    needs: [coverage-unit, coverage-archive, coverage-postgres, coverage-scripts, coverage-hive-backend, coverage-server-turing, coverage-design-registry-ext]
+    # Historical capacity raises (15 -> 30 on 2026-09-26, 30 -> 45 on
+    # 2026-10-26 and 2026-11-24) were all driven by the serial non-publish
+    # producers that used to run inside this job; those moved to the
+    # parallel producer jobs above, so the raises are superseded.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -671,12 +842,14 @@ jobs:
           found=0
           for dir in coverage-data/*/; do
             name="$(basename "$dir")"
-            if [ "$name" = coverage-postgres ]; then
-              # Hive Conductor is measured for changed-line coverage below, but
-              # is outside the publish-set aggregate floor. Keep its producer
-              # data separate until that floor has been evaluated.
-              continue
-            fi
+            case "$name" in
+              coverage-postgres|coverage-scripts|coverage-hive-backend|coverage-server-turing|coverage-design-registry-ext)
+                # Non-publish-set producers (measured for changed-line
+                # coverage below). Held out of the publish-set aggregate
+                # floor and appended to the diff-gate database after it.
+                continue
+                ;;
+            esac
             if [ -s "${dir}.coverage" ]; then
               mv "${dir}.coverage" ".coverage.${name}"
               found=$((found + 1))
@@ -752,106 +925,21 @@ jobs:
             echo "::error::producer coverage-postgres contributed no coverage data"
             exit 1
           fi
-          #
-          # Every --source here must also appear in MEASURED_ROOTS in
-          # scripts/check-diff-coverage.py; tests/test_check_diff_coverage.py
-          # asserts the two agree. Adding a producer here without declaring it
-          # there leaves the package unscored and the log says so; declaring it
-          # there without a producer here fails every PR that touches it.
-          uv run coverage run --append --branch --source=packages/maistro-server/src/maistro_server \
-            -m pytest packages/maistro-server/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-turing/src/maistro_turing \
-            -m pytest packages/maistro-turing/tests --timeout=30 -q
-          # maistro-turing carries a second FastAPI service under backend/ with
-          # its own suite. Measuring only src/ would leave that half of the
-          # package silently unscored, which is the hole this item closes.
-          uv run coverage run --append --branch --source=packages/maistro-turing/backend \
-            -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
-          uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
-            -m pytest packages/maistro-design/tests --timeout=30 -q
-          # maistro-registry joins the measured set with #1096: its linker
-          # performs the caller-influenced GitHub fetch that the SSRF sweep
-          # (#67, ADR-102) routed through the central guard — the one tree
-          # where an unmeasured change would be indistinguishable from a
-          # tested one, because nothing else ran its suite under coverage.
-          # The #374 citation-status policy (maistro_registry.citations) is
-          # exercised by the root suite, not by this package's own five tests;
-          # without naming that file here the module's changed lines measure
-          # 0% in this producer and the diff-coverage gate fails on tests
-          # that exist and pass but were never pointed at this --source.
-          # The same holds for the #813 walk/disposition logic in
-          # maistro_registry.cli: its tests live in the root suite's
-          # tests/tools/registry/test_cli.py, and the root producer measures
-          # --source=scripts only, so cli.py's changed lines scored 0% here
-          # until that file was named in this producer's pytest args too.
-          # Same shape as #812 (merged from develop): the CLI's
-          # cited-test-path lint and the validator's test-evidence debts are
-          # exercised by root tests under tests/tools/registry/ (this
-          # package's own suite has no cli or validator cases), so those two
-          # files are named here or the changed lines measure 0% and the
-          # diff-coverage gate rejects the commit.
-          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
-            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
-              tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
-          # The extension host harness (#974) joins the measured set: it is
-          # the code third-party CI executes, so an unmeasured change there
-          # would be indistinguishable from a tested one. Its suite needs no
-          # services (stdlib-only runtime), so this producer cannot flake on
-          # infrastructure the job does not have.
-          uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
-            -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
-          # maistro-ext-sdk joins the measured set with #949: the manifest
-          # contract an external author codes against is exactly the tree
-          # where an uncovered bug bites hardest, and nothing else runs its
-          # suite under coverage.
-          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
-            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
-          # hive-conductor's pytest-bdd is declared in that workspace member's
-          # OWN `dev` extra, and `--all-extras` includes every optional
-          # dependency of the ROOT project only — not of each member. So the
-          # sync above actively REMOVES pytest-bdd (`- pytest-bdd==8.1.0` in a
-          # dry run) and the two BDD step-def modules abort collection.
-          #
-          # `uv sync --all-packages` is the obvious fix and does not work here:
-          # hive-conductor's wheel config rewrites a path prefix
-          # (`sources = { "backend" = "hive_conductor" }`), and hatchling
-          # refuses an editable install for a prefix rewrite rather than a
-          # removal (editables#20), so the sync fails to build the member. The
-          # dry run passes because it never builds. Do not re-try that flag
-          # without changing that `sources` mapping first.
-          #
-          # ci.yml's `test` job already installs this requirements file before
-          # the same suite. Installed HERE rather than beside `uv sync`, so a
-          # version it resolves outside the lock (it pulls protobuf 5.29.6 ->
-          # 7.36.0) cannot perturb the three coverage runs above that are
-          # already recorded.
-          uv pip install -r packages/hive-conductor/backend/requirements.txt
-          uv run coverage run --append --branch --source=packages/hive-conductor/backend \
-            -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
-          # The gates themselves (#257). Every one of #160's five mandates is
-          # enforced by a file in scripts/, and they were the only Python here
-          # that no gate governed. The root suite is what exercises them —
-          # tests/test_check_*.py import each script and drive its pure logic —
-          # so this is the producer that puts them in coverage.xml.
-          #
-          # Its PostgreSQL-dependent legs skip in this job, which has no server.
-          # That is fine for this --source: no gate script needs a database.
-          #
-          # The #981 lifecycle-proof test is named here for the same reason
-          # tests/test_check_citation_status.py is named in the registry
-          # producer above: the suite that exercises a measured scripts/ file
-          # lives in a package suite this producer would otherwise never run,
-          # so the file's changed lines would measure 0% and the diff-coverage
-          # gate would fail on evidence that exists and passes.
-          #
-          # tests/test_model_check_consumer_claim.py is named for #884 (M8-A4):
-          # it is in tests/ so this producer would run it anyway, but naming
-          # it also roots scripts/model_check_consumer_claim.py for
-          # scripts/check-reachability.py, which matches tooling call paths by
-          # literal filename in workflow text — the same reason the
-          # outcome-routing bench has its own workflow.
-          uv run coverage run --append --branch --source=scripts \
-            -m pytest tests/ tests/test_model_check_consumer_claim.py packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
+          # The parallel non-publish producers (moved out of this job on
+          # 2026-11-28, same suites/sources) append the same way: outside the
+          # aggregate floor, inside the per-file diff gate.
+          for held in coverage-scripts coverage-hive-backend coverage-server-turing coverage-design-registry-ext; do
+            if [ -s "coverage-data/${held}/.coverage" ]; then
+              mv "coverage-data/${held}/.coverage" ".coverage.${held}"
+              uv run coverage combine --append
+            else
+              echo "::error::producer ${held} contributed no coverage data"
+              exit 1
+            fi
+          done
+          # Every --source still lives in the parallel producer jobs above and
+          # must also appear in MEASURED_ROOTS in scripts/check-diff-coverage.py;
+          # tests/test_check_diff_coverage.py asserts the file-wide set agrees.
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----

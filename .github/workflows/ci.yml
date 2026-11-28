@@ -690,7 +690,13 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
-      - run: uv run pytest tests/ --ignore=tests/tools/registry -v --tb=short
+      # 2026-11-28: `-n 4 --dist loadfile` (pytest-xdist, added to dev deps)
+      # runs the same collected set across 4 workers on this runner with
+      # file-granularity grouping — identical assertions and per-file fixture
+      # semantics, required check name unchanged. Serial fallback is removing
+      # the two flags; distribution parity is re-verified by the collection
+      # count equality asserted in the suite-inventory gate.
+      - run: uv run pytest tests/ --ignore=tests/tools/registry -n 4 --dist loadfile -v --tb=short
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"

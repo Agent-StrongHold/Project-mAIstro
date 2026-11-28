@@ -191,7 +191,11 @@ wait forever for an `Expected` result.
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
 | quality | `coverage (PostgreSQL)` | every PR |
+| quality | `coverage (design + registry + extensions)` | every PR |
+| quality | `coverage (hive-conductor backend)` | every PR |
 | quality | `coverage (no services)` | every PR |
+| quality | `coverage (scripts producer)` | every PR |
+| quality | `coverage (server + turing)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |

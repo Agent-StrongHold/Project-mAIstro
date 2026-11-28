@@ -137,6 +137,16 @@ dev = [
     # nonzero exit as "the tests killed this mutant", and the gate reports a
     # vacuous 100% kill rate having verified nothing.
     "pytest-timeout>=2.3",
+    # 2026-11-28 CI-latency repair: the ci.yml `test` job's root suite is the
+    # longest required check (~30-41m serial on one process). pytest-xdist
+    # (`-n 4 --dist loadfile`) runs the same collected set across 4 workers
+    # with file-granularity grouping — identical assertions, identical
+    # fixtures semantics per file, and the required check name `test` is
+    # preserved (a matrix split would rename it `test (1..N)` and orphan the
+    # required context). Loader is loadfile rather than default load so all
+    # tests in a file stay in one worker: no intra-file ordering or shared
+    # fixture state crosses process boundaries.
+    "pytest-xdist>=3.5",
     # Warden's RE2 acceleration is an *optional* extra on maistro-core, and
     # `uv sync --all-extras` at this root does not pull a member package's
     # extras — so without this line CI has no `re2`, the engine-equivalence
