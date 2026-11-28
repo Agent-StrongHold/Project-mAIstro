@@ -812,17 +812,6 @@ jobs:
         run: uv python install 3.12
       - name: uv sync (full dev deps)
         run: uv sync --locked --all-extras
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0   # full history: the diff gate needs the merge base
-
-      - name: Install uv
-        uses: ./.github/actions/setup-uv
-
-      - name: Setup Python 3.12
-        run: uv python install 3.12
-      - name: uv sync (full dev deps)
-        run: uv sync --locked --all-extras
 
       - name: download every producer's coverage data
         uses: actions/download-artifact@v8
