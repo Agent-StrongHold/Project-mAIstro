@@ -220,9 +220,10 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # landed run as `069` under the same convention; #69's Sentinel
     # decision-integrity revision appends past the Evolve pair as `071`, the
     # per-Workspace working log (#301, M4-H; #105) appends past that as
-    # `072`, and #37's tombstone/Project-FK fences renumber past that landed
-    # revision as `073`.
-    assert directory.get_heads() == ["073"]
+    # `072`, #37's tombstone/Project-FK fences renumber past that landed
+    # revision as `073`, and the canonical-Envelope -> durable-log
+    # projection (#2506) appends past that as `074`.
+    assert directory.get_heads() == ["074"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
