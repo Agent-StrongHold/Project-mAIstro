@@ -53,10 +53,6 @@ from .capability_effect import invoke_capability_effect
 #: Graph-metadata key carrying the Binding reference a restart re-resolves.
 BINDING_REFERENCE_KEY = "binding_reference"
 
-#: Pause metadata key naming the concrete infra action (already stamped by
-#: admission; kept as a named constant so recovery reads the same contract).
-PAUSE_ACTION_KEY = "action"
-
 
 class InfraApprovalActionIn(BaseModel):
     action: str
@@ -108,6 +104,17 @@ async def _require_approval_policy(
         reason="self-repair action requires human approval",
         rule="self-repair-hitl",
     )
+
+
+def _binding_reference_fields(reference: Mapping[str, Any]) -> dict[str, str]:
+    """The non-secret Binding-identity fields a resume re-resolves against."""
+    return {
+        "binding_id": str(reference.get("binding_id") or ""),
+        "workspace_id": str(reference.get("workspace_id") or ""),
+        "project_id": str(reference.get("project_id") or ""),
+        "node_id": str(reference.get("node_id") or ""),
+        "capability": str(reference.get("capability") or ""),
+    }
 
 
 @register_node  # noqa: V102 — instantiated by kind dispatch and by admission
@@ -179,8 +186,8 @@ class InfraApprovalActionNode(BaseNode[InfraApprovalActionIn, InfraApprovalActio
     async def _effective_binding(self) -> Binding:
         if self._binding is not None:
             return self._binding
-        reference = self._binding_reference or {}
-        binding_id = self._binding_id or str(reference.get("binding_id") or "")
+        reference = _binding_reference_fields(self._binding_reference or {})
+        binding_id = self._binding_id or reference["binding_id"]
         if not binding_id:
             raise LookupError(
                 "infra.approval_gated_action has no durable Binding reference; refusing dispatch"
@@ -188,10 +195,10 @@ class InfraApprovalActionNode(BaseNode[InfraApprovalActionIn, InfraApprovalActio
         context = self._effective_context()
         authorized = await context.bindings.resolve(
             binding_id,
-            workspace_id=str(reference.get("workspace_id") or ""),
-            project_id=str(reference.get("project_id") or ""),
-            node_id=str(reference.get("node_id") or ""),
-            capability=str(reference.get("capability") or ""),
+            workspace_id=reference["workspace_id"],
+            project_id=reference["project_id"],
+            node_id=reference["node_id"],
+            capability=reference["capability"],
         )
         if authorized.binding_id != binding_id:
             raise LookupError(f"invalid durable self_repair binding {binding_id!r}")

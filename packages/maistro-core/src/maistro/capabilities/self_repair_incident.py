@@ -35,7 +35,6 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from maistro.capabilities.approval_store import approval_request_digest
 from maistro.runs.sources import SCHEDULE_FIRE_ID_KEY, SCHEDULE_ID_KEY
 
 #: ``admission_source`` provenance value stamped on self-repair approval Runs.
@@ -138,11 +137,6 @@ def is_incident_claim(provenance: Mapping[str, Any] | None) -> bool:
         return False
     scope = provenance.get(SCHEDULE_ID_KEY)
     return isinstance(scope, str) and scope.startswith(f"{INCIDENT_CLAIM_PREFIX}:")
-
-
-def approval_request_scope(request: Mapping[str, Any]) -> str:
-    """The digest binding an approval to the exact requested effect payload."""
-    return approval_request_digest(dict(request))
 
 
 __all__ = [

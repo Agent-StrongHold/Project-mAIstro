@@ -107,6 +107,24 @@ def _approval_graph(
     )
 
 
+def _ensure_claim_matches_effect(
+    *, claim: dict[str, str], base_provenance: dict[str, Any], existing: Any
+) -> None:
+    """Refuse a live claim held for a different effect.
+
+    The claim namespace scopes one incident, so a different ``effect_key``
+    under the same claim would alias unrelated work — never reconcile, fail
+    closed instead.
+    """
+    expected_key = str(base_provenance.get("effect_key") or "")
+    claimed_key = str(existing.provenance.get("effect_key") or "")
+    if expected_key and claimed_key and expected_key != claimed_key:
+        raise RunIntegrityError(
+            f"incident claim {claim} is held by Run {existing.run_id!r} "
+            "for a different effect; refusing to alias unrelated work"
+        )
+
+
 async def _resolve_incident_claim(
     *,
     run_store: RunStore,
@@ -148,13 +166,9 @@ async def _resolve_incident_claim(
                     raise RunIntegrityError(
                         "self-repair incident claim was lost after DuplicateOccurrence"
                     ) from None
-        expected_key = str(base_provenance.get("effect_key") or "")
-        claimed_key = str(existing.provenance.get("effect_key") or "")
-        if expected_key and claimed_key and expected_key != claimed_key:
-            raise RunIntegrityError(
-                f"incident claim {current_claim} is held by Run {existing.run_id!r} "
-                "for a different effect; refusing to alias unrelated work"
-            )
+        _ensure_claim_matches_effect(
+            claim=current_claim, base_provenance=base_provenance, existing=existing
+        )
         if existing.status not in TERMINAL_RUN_STATUSES:
             return existing.run_id, False
         current_claim = chain_incident_claim(current_claim, existing.run_id)
@@ -222,6 +236,42 @@ def _admission_node(
     )
 
 
+def _require_admission_scope(workspace_id: str, project_id: str) -> None:
+    """The canonical authorization scope a durable approval wait needs."""
+    if not workspace_id.strip() or not project_id.strip():
+        raise ValueError("workspace_id and project_id are required for durable HITL scope")
+
+
+async def _claim_or_reuse_wait(
+    *,
+    store: DurableRunStore,
+    run_store: Any,
+    graph: Graph,
+    inputs: dict[str, Any],
+    provenance: dict[str, Any],
+    claim: dict[str, str],
+    actor: str,
+) -> tuple[str | None, DurableRunRecord | None]:
+    """Claim the incident episode when a canonical Run store exists.
+
+    Returns ``(run_id, existing_wait)``; both ``None`` when no ``run_store``
+    is configured (single-process admission claims nothing). A non-None
+    ``existing_wait`` is the durable record the episode's live claim already
+    parked — the caller returns it untouched instead of re-executing it.
+    """
+    if run_store is None:
+        return None, None
+    return await _claim_incident_run(
+        store=store,
+        run_store=run_store,
+        graph=graph,
+        inputs=inputs,
+        provenance=provenance,
+        claim=claim,
+        actor=actor,
+    )
+
+
 async def admit_self_repair_approval(
     *,
     store: DurableRunStore,
@@ -256,8 +306,7 @@ async def admit_self_repair_approval(
     """
     if not requires_durable_approval(action, params):
         raise ValueError(f"action {action!r} does not require durable approval")
-    if not workspace_id.strip() or not project_id.strip():
-        raise ValueError("workspace_id and project_id are required for durable HITL scope")
+    _require_admission_scope(workspace_id, project_id)
 
     if effect_context.approval_store is None:
         raise RuntimeError("CapabilityEffectContext has no ApprovalStore for durable HITL")
@@ -299,30 +348,28 @@ async def admit_self_repair_approval(
         provenance[INCIDENT_RESOURCE_KEY] = resource
     actor = actor_principal_id or "self-repair"
 
-    run_id: str | None = None
-    if run_store is not None:
-        run_id, existing_wait = await _claim_incident_run(
-            store=store,
-            run_store=run_store,
-            graph=graph,
-            inputs=inputs,
-            provenance=provenance,
-            claim=incident_claim(
-                workspace_id=workspace_id,
-                project_id=project_id,
-                resource=resource or effect_key,
-                action=action,
-                params=params,
-            ),
-            actor=actor,
-        )
-        if existing_wait is not None:
-            # Another admission (this process before a restart, or another
-            # replica) already holds the episode's live claim and its durable
-            # wait exists — PAUSED awaiting a human, or QUEUED with an answer
-            # being recovered. A second admission must not re-execute it or
-            # mint a second DurableApproval.
-            return existing_wait
+    run_id, existing_wait = await _claim_or_reuse_wait(
+        store=store,
+        run_store=run_store,
+        graph=graph,
+        inputs=inputs,
+        provenance=provenance,
+        claim=incident_claim(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            resource=resource or effect_key,
+            action=action,
+            params=params,
+        ),
+        actor=actor,
+    )
+    if existing_wait is not None:
+        # Another admission (this process before a restart, or another
+        # replica) already holds the episode's live claim and its durable
+        # wait exists — PAUSED awaiting a human, or QUEUED with an answer
+        # being recovered. A second admission must not re-execute it or
+        # mint a second DurableApproval.
+        return existing_wait
 
     record = await run_durable_graph(
         graph,

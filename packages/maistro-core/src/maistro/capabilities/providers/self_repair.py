@@ -166,43 +166,65 @@ class RuleBasedRepair:
         replica's first cycle — and restores the governor's in-flight guard
         from durable truth, not local bookkeeping.
         """
-        if self._pending_approvals_loader is not None and not self._pending_approval_runs:
-            try:
-                hydrated = await self._pending_approvals_loader()
-            except Exception as exc:
-                logger.warning("self_repair: pending approval hydration failed: %s", exc)
-                return False
-            for resource, run_id in hydrated.items():
-                if resource in self._pending_approval_runs:
-                    continue
-                self._pending_approval_runs[resource] = run_id
-                # Restore the in-flight guard without consuming budget or
-                # cooldown bookkeeping: the wait was dispatched (possibly by
-                # another process), and the governor must hold the resource
-                # until the Run settles. Cooldowns and budgets still gate any
-                # *new* dispatch — hydration removes neither.
-                self._governor.mark_in_flight(resource)
-        if not self._pending_approval_runs or self._approval_run_status is None:
+        if not await self._hydrate_pending_approvals():
+            return False
+        await self._release_settled_approvals()
+        return True
+
+    async def _hydrate_pending_approvals(self) -> bool:
+        """Restore the in-flight guard from the durable HITL-paused scan.
+
+        False means the durable surface exists but failed: admitting over
+        that blindness would guess, so the caller refuses the cycle.
+        """
+        if self._pending_approvals_loader is None or self._pending_approval_runs:
             return True
+        try:
+            hydrated = await self._pending_approvals_loader()
+        except Exception as exc:
+            logger.warning("self_repair: pending approval hydration failed: %s", exc)
+            return False
+        for resource, run_id in hydrated.items():
+            if resource in self._pending_approval_runs:
+                continue
+            self._pending_approval_runs[resource] = run_id
+            # Restore the in-flight guard without consuming budget or
+            # cooldown bookkeeping: the wait was dispatched (possibly by
+            # another process), and the governor must hold the resource
+            # until the Run settles. Cooldowns and budgets still gate any
+            # *new* dispatch — hydration removes neither.
+            self._governor.mark_in_flight(resource)
+        return True
+
+    async def _release_settled_approvals(self) -> None:
+        """Release in-flight resources whose approval Run settled terminally."""
+        if not self._pending_approval_runs or self._approval_run_status is None:
+            return
         settled: list[str] = []
         for resource, run_id in self._pending_approval_runs.items():
-            try:
-                status = await self._approval_run_status(run_id)
-            except Exception as exc:
-                logger.warning(
-                    "self_repair: approval run status lookup failed for %s (%s): %s",
-                    resource,
-                    run_id,
-                    exc,
-                )
-                continue
+            status = await self._pending_run_status(resource, run_id)
             if status is None or status not in _TERMINAL_APPROVAL_STATUSES:
                 continue
             self._governor.record_result(resource, recovered=(status == "completed"))
             settled.append(resource)
         for resource in settled:
             del self._pending_approval_runs[resource]
-        return True
+
+    async def _pending_run_status(self, resource: str, run_id: str) -> str | None:
+        """One wait's durable status; None on lookup failure (never settles)."""
+        status_of = self._approval_run_status
+        if status_of is None:
+            return None
+        try:
+            return await status_of(run_id)
+        except Exception as exc:
+            logger.warning(
+                "self_repair: approval run status lookup failed for %s (%s): %s",
+                resource,
+                run_id,
+                exc,
+            )
+            return None
 
     # --- per-proposal handling ---
     async def _handle(self, proposal: RepairProposal, dispatched: int) -> tuple[RepairResult, bool]:
