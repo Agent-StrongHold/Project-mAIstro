@@ -1224,6 +1224,72 @@ class TestNormativeMateriality:
         assert "the rule" in extracted and "the promise" in extracted
         assert "old story" not in extracted and "Test plan" not in extracted
 
+    def test_nested_subsections_stay_inside_their_normative_section(self, check):
+        """ADR-038 carries its obligations under `### 1. Retries` etc.; a
+        cut at the first heading of *any* level would reduce the Decision to
+        its intro line and let a subsection rewrite pass silently."""
+        base = (
+            "## Decision\nReliability is built from five named mechanisms.\n\n"
+            "### 1. Retries\nA port may retry a failed hop three times.\n\n"
+            "### 2. Circuit breakers\nA port opens after five failures.\n\n"
+            "## Consequences\nnone recorded\n"
+        )
+        head = base.replace("may retry", "must retry")
+        extracted = check.normative_text(head)
+        assert "opens after five failures" in extracted
+        assert "none recorded" not in extracted
+        edits = check.material_edits(check.normative_text(base), extracted)
+        assert edits and edits[0]["kind"] == "replace"
+
+    def test_a_sibling_section_still_ends_extraction(self, check):
+        base = "## Decision\nthe rule\n\n### detail\nkept\n\n## Context\nthe story\n"
+        extracted = check.normative_text(base)
+        assert "kept" in extracted and "the story" not in extracted
+
+    def test_an_operator_reversal_inside_code_is_material(self, check):
+        """SPEC-247's Decision is a fenced python contract whose `!=` / `==`
+        comparisons carry the whole obligation. Both are pure punctuation to
+        the prose filter, so reversing them was a one-invisible-token edit —
+        and it is also a one-*character* edit, under the typo budget a prose
+        repair gets. Code content is kept verbatim and given no budget."""
+        base = (
+            "## Decision\nAn elevation is valid only when `action_class != given` "
+            "and `request_hash == stored_hash`.\n"
+        )
+        head = (
+            "## Decision\nAn elevation is valid only when `action_class == given` "
+            "and `request_hash != stored_hash`.\n"
+        )
+        edits = check.material_edits(base, head)
+        assert edits, "an operator reversal must be a material edit"
+        assert "action_class==given" in edits[0]["now"]
+
+    def test_an_operator_flip_inside_a_fenced_block_is_material(self, check):
+        base = '## Decision\n```python\nif kind == "scoped_2fa":\n    return False\n```\n'
+        head = '## Decision\n```python\nif kind != "scoped_2fa":\n    return False\n```\n'
+        edits = check.material_edits(base, head)
+        assert edits and 'kind!="scoped_2fa"' in edits[0]["now"]
+
+    def test_code_reflow_and_backtick_styling_stay_editorial(self, check):
+        """Keeping code verbatim must not start firing on formatting: a
+        reflow inside the backticks (whitespace only) and wrapping or
+        unwrapping a prose word in code marks change no obligation."""
+        base = "## Decision\nthe gate accepts `x!=y` and rejects a bare x.\n"
+        reflowed = "## Decision\nthe gate accepts `x != y` and rejects a bare x.\n"
+        restyled = "## Decision\nthe gate accepts x!=y and rejects a bare `x`.\n"
+        assert check.material_edits(base, reflowed) == []
+        assert check.material_edits(base, restyled) == []
+
+    def test_prose_around_a_fenced_block_stays_in_the_stream(self, check):
+        """A fence splits the document into prose/fence/prose segments; the
+        prose processing must run per segment. Running it once over the last
+        segment only dropped every prose word outside the final fence — a
+        rewritten decision could hide behind any fenced block it added."""
+        base = "## Decision\na port must retry a failed hop.\n```python\nretry(n)\n```\n"
+        head = "## Decision\na port may skip every retry.\n```python\nretry(n)\n```\n"
+        edits = check.material_edits(base, head)
+        assert edits, "a prose rewrite beside a fence must still be material"
+
 
 class TestDecisionMandate:
     """A materially rewritten decision must close its own evidence gap (#2542)."""
@@ -1348,6 +1414,93 @@ class TestDecisionMandate:
             specs=[spec],
             head_corpus={"SPEC-500/AC-1": True},
             texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 0
+        assert rows and rows[0]["evidence"] == check.DECISION_EVIDENCE_OWNED
+
+    def test_qualified_implements_references_still_count_as_owned(self, check):
+        """`collect_specs()` keeps raw `implements:` entries, and the corpus
+        qualifies them (`maistro-engine#ADR-014` in SPEC-215). Ownership must
+        normalise via `adr_refs()` — as `collect_adrs()` already does — or a
+        rewritten ADR can never close with evidence from its real implementer."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        spec = self._spec("SPEC-500", "maistro-engine#ADR-002")
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            specs=[spec],
+            head_corpus={"SPEC-500/AC-1": True},
+            texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 0
+        assert rows and rows[0]["evidence"] == check.DECISION_EVIDENCE_OWNED
+
+    def test_an_exempt_owned_criterion_is_not_owned_evidence(self, check, capsys):
+        """`mandate_violations` exempts criteria carrying an `ac-state: unproven
+        AC-N` marker, so absence from its list is not proof (#2542 review): a
+        declared-only owned criterion with that marker must not close the
+        rewrite as `owned-evidence`. The gap is named instead."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        spec = self._spec("SPEC-500", "ADR-002", rung="declared")
+        spec["declared_unproven"] = ["AC-1"]
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            specs=[spec],
+            head_corpus={"SPEC-500/AC-1": True},
+            texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 1
+        assert rows and rows[0]["evidence"] == "unproven"
+        assert rows[0]["gap"] == ["SPEC-500/AC-1"]
+        assert "SPEC-500/AC-1" in capsys.readouterr().out
+
+    def test_a_standing_disposition_blocks_a_status_only_promotion(self, check, capsys):
+        """A prior change landed the rewrite with a `decision-unproven`
+        disposition; this candidate leaves every normative word alone and only
+        promotes `status: Implemented`. The promotion must not walk past the
+        standing marker just because the mandate's materiality diff is empty
+        (#2542 review): the disposition forbids implementation claims while it
+        stands, whatever change tries to make one."""
+        landed = self.MATERIAL + self.DISPOSITION_SUFFIX
+        promoted = landed.replace("status: Accepted", "status: Implemented")
+        assert promoted != landed, "promotion must change the status"
+        base = {
+            "ADR-002": self._facts(check, "ADR-002", landed, "docs/adr/ADR-002.md"),
+        }
+        head = {
+            "ADR-002": self._facts(
+                check,
+                "ADR-002",
+                promoted,
+                "docs/adr/ADR-002.md",
+                status="Implemented",
+            ),
+        }
+        code, rows = self._run(check, base, head, texts={"ADR-002": promoted})
+        assert code == 1
+        assert rows and rows[0]["evidence"] == "contradicted-disposition"
+        assert "Implemented" in rows[0]["problem"]
+        assert "ADR-002" in capsys.readouterr().out
+
+    def test_a_disposition_marked_and_proved_in_one_change_still_passes(self, check):
+        """The standing-disposition path must not condemn a stale marker once
+        real proof exists: owned criteria at the reachable rung supersede the
+        disposition, whatever its text still says."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        spec = self._spec("SPEC-500", "ADR-002", rung="reachable")
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            specs=[spec],
+            head_corpus={"SPEC-500/AC-1": True},
+            texts={"ADR-002": self.MATERIAL + self.DISPOSITION_SUFFIX},
         )
         assert code == 0
         assert rows and rows[0]["evidence"] == check.DECISION_EVIDENCE_OWNED
