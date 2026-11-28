@@ -247,5 +247,21 @@ fb322ab221607c0ea6fb0be541f4087c9f1839e8:tests/migrations/test_task_admission_ge
 # durable record columns keep public verification material only). Scope is
 # the introducing commit, path, rule and line; later edits to the file
 # remain fully scanned.
+#
+# #2538: #2533 landed as a SQUASH merge (05df0ac3), which re-cut the file —
+# the same two parameter annotations sit at lines 125 and 194 there, so the
+# branch-head fingerprints below stopped matching on develop's history while
+# remaining load-bearing for the open `auto-69` branch, whose history a
+# develop `--all` scan still includes. This is the fingerprint-drift failure
+# mode the `.gitleaks.toml` header warns about: the disposition must name the
+# commit whose blob carries the trigger, and a squash merge mints a new one.
+# The classification carries over unchanged — no literal exists to split, the
+# parameter accepts a key object the caller already holds, and no key bytes
+# appear in the file — so these two entries record the develop-side commit,
+# path, rule and line; renaming the public ``private_key`` keyword could not
+# have greened the gate (both commits are immutable history the ``--all`` arm
+# scans forever) and would have degraded the API for nothing.
+05df0ac31ba215c876a1ba406f6fa9c299b28628:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:125
+05df0ac31ba215c876a1ba406f6fa9c299b28628:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:194
 5fac53cdb3f5667bc40ab49a59193a3ee2c63936:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:111
 5fac53cdb3f5667bc40ab49a59193a3ee2c63936:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:150

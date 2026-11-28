@@ -150,6 +150,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Task-stream heartbeat bound re-calibrated to the runner noise floor (#2538 lane).**
+  The stalled-ownership-probe event-loop test asserted a 0.25s heartbeat gap —
+  below the scheduling noise a loaded CI runner registers on the same wall
+  clock (a green tree measured 0.38s, failing the job with no loop-blocking
+  regression). The bound moves to 1.0s: >2.5x the observed noise floor and
+  still half the 2s stall the test exists to catch, so an on-loop probe fails
+  the assertion just as hard. Red-checked both ways: a loop genuinely pinned
+  for 2s registers a ≥1.9s gap; the off-loop probe keeps gaps well under the
+  new bound.
+
 - **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
   Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
   `_maistro_replayed` marker) instead of collapsing to a text-only
@@ -711,6 +721,20 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Develop Gitleaks findings classified as type-annotation false positives and
+  re-keyed after a squash merge (#2538).** The two `generic-api-key` findings
+  the full-history develop scan reported in
+  `packages/maistro-core/src/maistro/security/sentinel/integrity.py` are
+  Python parameter type annotations: a parameter named for a private key,
+  annotated with the `cryptography` package's Ed25519 type. They are not
+  credentials, so there is nothing to revoke and no exposure. PR #2533's
+  disposition was keyed to its pre-squash branch head, so the squash merge
+  re-opened the findings on develop; two exact commit/path/rule/line
+  fingerprints replace the drifted coverage, the branch-head entries stay
+  (the `--all` arm still scans that branch's history), and no rule, path
+  allowlist, or scan scope changed. Classification and failing-to-green
+  evidence in `REPAIR-NOTES-2538-gitleaks-squash-drift.md`.
 
 - **Image lock reconciliation and canvas npm audit follow-up after #2305
   (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
