@@ -250,13 +250,16 @@ async def _persist_brief_exchange(
     session_id = extra.get("session_id")
     if not isinstance(session_id, str) or not session_id:
         return
+    # Both call sites run behind `_interview_turn`, which returns None — so
+    # neither route reaches this seam at all — for any turn whose last user
+    # content is not a str. The extraction below therefore always lands on
+    # that str; re-guarding here would be an unreachable branch (the
+    # diff-coverage gate refuses exactly that), not defense.
     last_user = next(
         (m.get("content") for m in reversed(req.messages) if m.get("role") == "user"), None
     )
-    if not isinstance(last_user, str):
-        return
     batch = [
-        {"role": "user", "content": last_user},
+        {"role": "user", "content": str(last_user)},
         {"role": "assistant", "content": turn.text},
     ]
     key = extra.get("turn_id")

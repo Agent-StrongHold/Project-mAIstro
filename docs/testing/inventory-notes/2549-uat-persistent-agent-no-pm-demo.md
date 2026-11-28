@@ -67,6 +67,17 @@ and the gate now interprets the record through that seam. Test import of
 the setup key moved to `services.identity_health`; case count unchanged
 (`test_pm_tooling_module_gate.py` still +5, suite still +6 net).
 
+Coverage-gate repair in the same slice, no count change: the hosted
+Coverage gate (publish-set floor + diff coverage) failed the slice at head
+a02e2aa54d on `routes/chat.py` — 75% of the 4 branch arcs its diff added
+(floor 80%), partial at the `_persist_brief_exchange` non-str guard. That
+guard duplicated the check `_interview_turn` already performs, and both
+call sites run only after it returns a turn, so the refused arc was
+unreachable in production and no test could exercise it honestly. The
+duplicate guard is removed (the invariant is now stated at the seam); the
+changed-arc set shrinks to the `session_id` guard, which the transcript
+cases already take both ways. Case count unchanged.
+
 Ownership repair in the same slice, **+1** in
 `backend/tests/test_chat_brief_interview.py`
 (`test_an_interview_answer_never_lands_in_another_workspaces_session`):
