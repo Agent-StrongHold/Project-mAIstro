@@ -359,3 +359,60 @@ exact commands:
 Residuals unchanged from the previous round (per-role live-browser walk,
 synthetic `ui-*` elevation task IDs, `frontend/e2e` CI ownership). Hosted CI
 has not reported at this head; the gate evidence above is local.
+
+## Independent verification round (head `4d22748717`, 2026-11-28)
+
+Third develop sync completed: `origin/develop` tip `547eb70afd64` merged into
+`auto-336` as `4d22748717` (ort strategy, auto-resolved with no conflict
+markers; `git merge-base HEAD origin/develop` == `547eb70afd64` exactly, tree
+clean). `git diff --numstat origin/develop -- quality/` shows only the
+intentional `frontend-typed-client-baseline.json` (+2/−37 debt elimination)
+and `shipped-surface-truth.json` (7/7) deltas — no ledger row loss from the
+merge. The merge touched no frontend files and none of `routes/setup.py`,
+`middleware/auth.py`, or `services/permission_policy.py`, so the permission
+surface is byte-identical to the previously verified heads; develop's new
+backend services (entra_jit, user_model, oauth_login, brief_chat) are
+orthogonal and covered by the suite below. `setup.spec.ts`, `Setup.tsx`, and
+`routes/setup.py` remain byte-identical to `10bfbe38`, so the live clean-setup
+8/8 proof carries over.
+
+Fresh evidence at this head (all executed locally, CI-exact arguments where
+applicable):
+
+- `uv run coverage run --branch --source=packages/hive-conductor/backend -m
+  pytest packages/hive-conductor/backend/tests --timeout=30 -q` -> **4666
+  passed, 120 skipped** (4786 total; +54 from the sync; suite-inventory gate
+  records 4786 and matches).
+- `uv run coverage run --append --branch --source=scripts -m pytest tests/
+  tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q` -> **6593 passed, 141 skipped**; targeted re-run of
+  `tests/test_check_conductor_permission_matrix.py` +
+  `tests/test_ci_quality_split.py` -> **100 passed**.
+- `uv run coverage xml -o coverage.xml` then `uv run python
+  scripts/check-diff-coverage.py coverage.xml --base 547eb70afd64` (CI's
+  `DIFF_BASE_SHA` = PR base = develop tip) -> **exit 0**, 4 changed files
+  measured, 3 test-file exemptions, "ok: every measured file this change
+  touches is at or above 90% lines / 80% branch arcs".
+- `uv run python scripts/check-conductor-permission-matrix.py` -> **exit 0**,
+  "permission matrix OK: 51 API entries, 23 UI mutations"; `UI_MUTATIONS` is
+  23 entries in code and `DAILY_USER_PERMISSIONS` stays derived from it
+  (`credentials.write`, `dags.write`, `schedules.write`, `workspaces.write`).
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-frontend-typed-client.py` -> **exit 0**, base auto-resolves
+  to `547eb70afd64`: 26/96 banked -> 16 raw fetch / 71 hand-typed tolerated,
+  none new.
+- `uv run python scripts/check-shipped-surface-truth.py` -> **exit 0**
+  ("complete").
+- `uv run ruff check .` and `uv run ruff format --check .` -> **clean**.
+- `npx playwright test --config playwright.permissions.config.ts` -> **6/6
+  passed** (elevation success, cancel-refusal without replay, daily-owner
+  elevate+restore, wrong-password explicit cause with retry, membership
+  denial not hidden by elevation).
+- Closure-keyword review: no `fixes/closes/resolves` in the PR body
+  ("Refs #336" only) or any `origin/develop..HEAD` commit message.
+
+Residuals unchanged (per-role live-browser walk of all 23 UI mutations —
+API-layer covered by the backend suite and the matrix gate; synthetic `ui-*`
+elevation task IDs; `frontend/e2e` CI ownership). Hosted CI has not reported
+at this head; the evidence above is local.
