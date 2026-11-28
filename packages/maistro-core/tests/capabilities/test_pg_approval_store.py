@@ -381,6 +381,18 @@ async def test_ensure_capability_schema_reconciles_the_alembic_legacy_constraint
         )
         """
     )
+    # Two physical visits of one (run_id, binding_id, effect_key): legal
+    # before effect scoping, a '' -scope collision after the swap unless the
+    # backfill runs first.
+    await pg_pool.execute(
+        """
+        INSERT INTO capability_approvals
+          (request_id, run_id, node_run_id, binding_id, effect_key, payload)
+        VALUES
+          ('req-legacy-a', 'run-legacy', 'visit-a', 'binding-1', 'write:1', '{}'),
+          ('req-legacy-b', 'run-legacy', 'visit-b', 'binding-1', 'write:1', '{}')
+        """
+    )
 
     await ensure_capability_schema(pg_pool)
 
@@ -391,6 +403,20 @@ async def test_ensure_capability_schema_reconciles_the_alembic_legacy_constraint
     )
     assert defn is not None
     assert "effect_scope" in str(defn)
+
+    # Legacy rows sharing (run_id, binding_id, effect_key) under different
+    # NodeRuns were valid under the physical-visit constraint; the ADD COLUMN
+    # default stamps effect_scope='' on all of them, so the scope-keyed
+    # constraint only installs if the backfill assigns each row its physical
+    # NodeRun scope first (#2405 review P2).
+    rows = await pg_pool.fetch(
+        "SELECT node_run_id, effect_scope FROM capability_approvals "
+        "WHERE run_id = 'run-legacy' ORDER BY node_run_id"
+    )
+    assert [(r["node_run_id"], r["effect_scope"]) for r in rows] == [
+        ("visit-a", "visit-a"),
+        ("visit-b", "visit-b"),
+    ]
 
     # And the store's own upsert works against the reconciled table: the
     # same effect identity inserts once and dedups without raising.

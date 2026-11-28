@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
+  packages/hive-conductor/backend/tests: +3
   packages/maistro-core/tests: +32
 ---
 
@@ -50,6 +50,23 @@ Run. Two replicas race: one run_id, one Run, one Approval, survivor PAUSED.
 Post-settlement: episode 1 admits with a new claim token and a different
 effect key. Full battery green with `MAISTRO_TEST_PG_DSN` set: graph+runs
 4659, hive 4739, capabilities 877.
+
+## Review rounds P1/P2 (+1 hive node ID; maistro-core count unchanged)
+
+- **Review P1 (+1 hive):** `test_self_repair_invoker_advances_effect_identity_after_settlement`
+  (`test_capabilities_wiring.py`) pins the wired auto-repair invoker's
+  settled-generation advance — a post-settlement dispatch derives its heir
+  effect key from the settled row's durable `invocation_id` instead of
+  replaying the settled COMPLETED ledger row. Added in commit e9a043286c but
+  never recorded in this ledger, which is the +1 drift the suite-inventory
+  gate reported (expected 4778, collected 4779).
+- **Review P2 (±0):**
+  `test_ensure_capability_schema_reconciles_the_alembic_legacy_constraint`
+  was strengthened in place — it now seeds two physical visits of one
+  `(run_id, binding_id, effect_key)` before the reconciliation and asserts
+  each row lands on its own physical NodeRun scope after it. No new node ID;
+  the red-check is the collision itself (neutering the backfill makes the
+  constraint swap die on `UniqueViolationError`).
 
 ## Round 1–2 coverage (+25 maistro-core, +2 hive node IDs)
 
