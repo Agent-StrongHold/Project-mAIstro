@@ -9,10 +9,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _DISPOSITIONS = _REPO_ROOT / "quality" / "reachability-dispositions.json"
 
 _GROUPS = {
+    # `services.entra_entitlements` is intentionally absent: the #492 JIT lane
+    # wires it (Settings validation + `EntraJitProvisioner`), so on this tree
+    # it is reachable and must not be pinned into the RETIRE group.
     "hive-unwired-services": {
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
-        "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.preference_calibration",
     },
