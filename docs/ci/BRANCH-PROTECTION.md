@@ -98,6 +98,7 @@ are visible in the read-back region below and recorded in `known_live_drift`.
 | `SAST / Semgrep` | adv | adv |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
+| `audit` | ○ | ○ |
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
@@ -112,11 +113,13 @@ are visible in the read-back region below and recorded in `known_live_drift`.
 | `hive-conductor-e2e` | adv | ● |
 | `hive-conductor-e2e-ui` | adv | ● |
 | `integration-scope` | ● | adv |
+| `issue-metadata-tests` | ○ | ○ |
 | `lint-and-type-check` | ● | ● |
 | `object storage (MinIO)` | adv | ● |
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `repair` | ○ | ○ |
 | `sandbox-conformance` | ● | ● |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
