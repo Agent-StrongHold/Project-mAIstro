@@ -4,6 +4,13 @@
 > **Time:** 10 minutes from zero to creating and inspecting a workflow.
 > The test stack intentionally has no core bridge or model gateway; it verifies
 > unavailable execution rather than manufacturing a Run (#1113).
+>
+> **#2549:** PM tooling is no longer a default, first-class product surface.
+> Everything below requires the explicit **Program Tooling** optional module:
+> select it in the setup wizard's Modules step (or include `"pm_tooling"` in
+> `optional_modules` when completing `/v1/setup/complete`). With the module
+> off, the PM Fleet persona is absent from the workspace-creation picker and
+> the standard first-run UX carries no PM/Jira/Confluence surfaces.
 
 ---
 

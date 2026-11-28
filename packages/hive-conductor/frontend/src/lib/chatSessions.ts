@@ -40,6 +40,18 @@ export function fetchModelsCatalog(): Promise<Response> {
   return fetch("/v1/settings/models", { credentials: "same-origin" });
 }
 
+/** One SSE frame of the `/v1/chat/stream` protocol (see Chat.tsx for the
+ * full frame set; the dock consumes the subset below). Under `lib/` for the
+ * typed-client ratchet. */
+export type ChatStreamFrame = {
+  type?: string;
+  content?: string;
+  message?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
+  summary?: string;
+};
+
 /** Streaming chat completion — bare fetch lives in lib/ for the ratchet. */
 export function openChatStream(
   body: {

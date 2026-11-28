@@ -24,6 +24,7 @@ from services.agent_materialization import (
     materialize_workspace_agents,
 )
 from services.default_workspace import DefaultWorkspaceUnavailable, resolve_default_workspace
+from services.optional_modules import picker_hidden_template_ids
 from services.persona_authoring import (
     PersonaTemplateIdConflict,
     all_persona_templates,
@@ -99,7 +100,16 @@ class PersonaTemplateOption(BaseModel):
 
 @router.get("/persona-templates", response_model=list[PersonaTemplateOption])
 def list_persona_templates() -> list[PersonaTemplateOption]:
-    """Every persona a workspace-creation picker can offer."""
+    """Every persona a workspace-creation picker can offer.
+
+    #2549: templates gated by a disabled optional module (pm_fleet under
+    `pm_tooling`) are absent from this listing, so the standard first-run
+    workspace dialog never advertises the PM-demo preset. The per-template
+    routes below (agents/checklist/feedback) and workspace creation itself
+    stay template-agnostic: an existing pm_fleet Workspace keeps resolving,
+    and the setup wizard re-enables the persona by selecting `pm_tooling`.
+    """
+    hidden = picker_hidden_template_ids()
     return [
         PersonaTemplateOption(
             id=template.id,
@@ -107,6 +117,7 @@ def list_persona_templates() -> list[PersonaTemplateOption]:
             tagline=template.brand.tagline,
         )
         for template in all_persona_templates().values()
+        if template.id not in hidden
     ]
 
 

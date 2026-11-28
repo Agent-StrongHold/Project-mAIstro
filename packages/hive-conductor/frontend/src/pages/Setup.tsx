@@ -1,25 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { apiGet, fallbackMessage, ApiError } from "../lib/api";
+import { apiGet, ApiError } from "../lib/api";
+import { completeSetup, loginSession } from "../lib/setup";
+import type { FirstRunQuestionMeta, IdentityStatus, ModelCheck, Preset } from "../lib/setup";
 import { SecretField, TextField } from "../components/shared";
 
-type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
-
-// One entry of the first-run question declaration served by
-// GET /v1/setup/questions — the same declaration the terminal wizard reads
-// directly (#443). The wizard seeds its state from these instead of
-// restating defaults, so identical answers produce an identical
-// /v1/setup/complete payload whichever path collected them.
-type FirstRunQuestionMeta = { key: string; label: string; default: unknown; required: boolean; description: string };
-
-type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" | "unavailable";
-
-// Gateway model-discovery lifecycle (#287): "pending" while the catalog fetch
-// is in flight, "ok" once the gateway answered with a non-empty, well-formed
-// catalog, "failed" for every distinguishable failure (auth, not found,
-// gateway error, network, malformed, empty). A failed check keeps the curated
-// list usable for offline setup, but it must never be presented as
-// successfully discovered gateway state.
-type ModelCheck = "pending" | "ok" | "failed";
+// The setup wizard's local shapes (Preset / FirstRunQuestionMeta /
+// IdentityStatus / ModelCheck) moved to `lib/setup.ts` (#2549, following the
+// 55204762ae convention): pages/ declarations are typed-client debt rows,
+// and eliminating the debt at the lib/ seam is the sanctioned in-lane fix
+// for rows these edits would otherwise shift.
 
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
@@ -30,6 +19,7 @@ const MODULES = [
   { id: "red_team", name: "Red Team + Stress Rehearsal", desc: "Weekly self-hardening security scans, chaos testing", requires: [] },
   { id: "dream_loop", name: "Dream Loop", desc: "Idle-time memory consolidation, autonomous learning cycles", requires: [] },
   { id: "skill_forge", name: "Skill Forge", desc: "Self-authoring skills, AI builder wizard, Warden security scanning", requires: [] },
+  { id: "pm_tooling", name: "Program Tooling", desc: "PM Fleet workspace persona with work-item drafts and the Jira/Confluence/Airtable bridge (#2549). Off by default — the standard product carries no project-management demo surfaces", requires: [] },
 ];
 
 export default function Setup() {
@@ -349,31 +339,22 @@ export default function Setup() {
       } catch {
         modelAvailability = "unverified";
       }
-      const res = await fetch("/v1/setup/complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conductor_name: conductorName,
-          default_model: routerModel.trim() || null,
-          // Final preflight verdict (#287): "verified" only when the gateway
-          // catalog was actually discovered AND lists the effective model.
-          model_availability: modelAvailability,
-          // An explicit pick wins; otherwise state the declared default. No
-          // declaration and no pick means the key is omitted and the server
-          // names the missing field rather than the SPA guessing.
-          hardware_preset: resolvedHardware ?? undefined,
-          optional_modules: modules,
-          admin_username: adminUsername,
-          admin_password: adminPassword,
-          user_username: userUsername,
-          user_password: userPassword,
-        }),
+      const data = await completeSetup({
+        conductor_name: conductorName,
+        default_model: routerModel.trim() || null,
+        // Final preflight verdict (#287): "verified" only when the gateway
+        // catalog was actually discovered AND lists the effective model.
+        model_availability: modelAvailability,
+        // An explicit pick wins; otherwise state the declared default. No
+        // declaration and no pick means the key is omitted and the server
+        // names the missing field rather than the SPA guessing.
+        hardware_preset: resolvedHardware ?? undefined,
+        optional_modules: modules,
+        admin_username: adminUsername,
+        admin_password: adminPassword,
+        user_username: userUsername,
+        user_password: userPassword,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail ?? fallbackMessage(res.status));
-      }
-      const data = await res.json();
       if (data.mnemonic) {
         setMnemonic(data.mnemonic);
         setDidKey(data.config?.user_did ?? null);
@@ -388,12 +369,7 @@ export default function Setup() {
   }
 
   async function autoLogin() {
-    const r = await fetch("/v1/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: userUsername, password: userPassword }),
-    });
-    if (!r.ok) throw new Error("auto-login failed");
+    await loginSession(userUsername, userPassword);
     // When Hive is served behind the maistro gateway at a sub-path,
     // redirecting to "/" dumps the user at the maistro catalog with no obvious
     // way back. Use the Vite base path so they land on the app index, which

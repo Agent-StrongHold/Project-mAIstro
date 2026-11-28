@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { Modal } from "./shared";
 
+// #2549: first-run copy describes the persistent-agent-first product. The
+// Workspace Agent is the primary surface on every page, so the walkthrough
+// leads with it — and carries no project-management demo heritage (no PM,
+// Jira, or Confluence anywhere in first-run copy).
 const STEPS = [
-  { title: "Welcome to Hive", body: "Your AI-powered project management assistant. Let's get you set up in under 60 seconds.", icon: "🐝" },
-  { title: "Chat with your PM", body: "Ask anything about your project. The AI has access to your Jira, Confluence, and team data.", icon: "💬" },
-  { title: "Run DAGs", body: "Automated workflows that research, write, and optimize — all scored by evals.", icon: "🔄" },
-  { title: "You're ready!", body: "The setup checklist on Home walks the rest: activate an LLM provider (admin), then switch to your daily-driver account for your first chat.", icon: "🚀" },
+  { title: "Welcome to Hive", body: "Your persistent Workspace Agent is ready. Setup takes under a minute — after that, most work starts with a conversation.", icon: "🐝" },
+  { title: "Meet your Workspace Agent", body: "One agent, available on every page. Ask it anything about your Workspace — it can answer questions, run workflows, and act for you.", icon: "💬" },
+  { title: "Run DAGs", body: "Automated workflows that research, write, and optimize — all scored by evals. Your Workspace Agent can build and run these for you.", icon: "🔄" },
+  { title: "You're ready!", body: "The setup checklist on Home walks the rest: activate an LLM provider (admin), then switch to your daily-driver account for your first conversation.", icon: "🚀" },
 ];
 
 export function Onboarding({ onComplete }: { onComplete: () => void }) {
