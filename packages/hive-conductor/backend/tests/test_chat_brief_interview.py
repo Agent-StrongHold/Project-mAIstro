@@ -615,6 +615,69 @@ def test_interview_turns_reach_the_dock_session_transcript(
     assert admin_history == []
 
 
+def test_an_interview_answer_never_lands_in_another_workspaces_session(
+    admin_client, authed_client, llm
+) -> None:
+    """Same user, two Workspaces: transcript scoping is per-Workspace.
+
+    Ownership alone is not authorization. The admitted path refuses a session
+    named from another Workspace (`chat_runs._owned_session` passes the named
+    ``workspace_id`` to ``require_owned`` — same 404 as list/get), so a same-
+    user cross-Workspace append is a write no admitted turn can perform. The
+    interview's persist seam must enforce the identical scoping: otherwise a
+    turn authorized in wsA (member, interview opens there) that names a wsB
+    session writes wsA's exchange into wsB's transcript.
+    """
+    import asyncio
+
+    from services import conversation_sessions
+
+    ws_a = _workspace(admin_client)  # shared with `user`; the interview opens here
+    ws_b = _workspace(admin_client)  # also shared with `user`
+    r = authed_client.post(
+        "/v1/chat/sessions", json={"title": "Other Workspace", "workspace_id": ws_b}
+    )
+    assert r.status_code == 200
+    sid_b = r.json()["id"]
+
+    # The turn is decided in the named Workspace (the interview answers), but
+    # the session it names belongs to wsB — the append must be refused.
+    events = _stream(
+        authed_client,
+        "Let's make a new video, let's start drafting a storyboard",
+        ws_a,
+        session_id=sid_b,
+        turn_id="turn-cross-1",
+    )
+    assert [e["type"] for e in events] == ["brief", "done"]
+
+    _record, history_b = asyncio.run(conversation_sessions.get("user", sid_b))
+    assert history_b == [], "a wsA interview exchange must not land in a wsB transcript"
+
+    # Control: the same exchange with a session in the NAMED Workspace lands,
+    # so the refusal above is the Workspace scoping, not a broken seam. (The
+    # full durability/idempotence shape is pinned by
+    # test_interview_turns_reach_the_dock_session_transcript.)
+    r = authed_client.post(
+        "/v1/chat/sessions", json={"title": "Named Workspace", "workspace_id": ws_a}
+    )
+    assert r.status_code == 200
+    sid_a = r.json()["id"]
+    events = _stream(
+        authed_client,
+        "Let's make a new video, let's start drafting a storyboard",
+        ws_a,
+        session_id=sid_a,
+        turn_id="turn-cross-2",
+    )
+    assert [e["type"] for e in events] == ["brief", "done"]
+    _record, history_a = asyncio.run(conversation_sessions.get("user", sid_a))
+    assert [(m["role"], m["content"]) for m in history_a] == [
+        ("user", "Let's make a new video, let's start drafting a storyboard"),
+        ("assistant", events[1]["content"]),
+    ]
+
+
 @pytest.mark.ac("SPEC-091726-7c2a/AC-13")
 def test_a_non_owner_confirmation_is_refused_without_writing(
     admin_client, authed_client, llm, brief_commit_facade

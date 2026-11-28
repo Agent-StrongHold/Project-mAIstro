@@ -238,9 +238,12 @@ async def _persist_brief_exchange(
     append never runs for these turns: they existed only in the client's
     in-memory `turns` state, and a closed Workspace Agent dock (which rehydrates
     from the SessionStore) lost them on reopen — including the commit
-    confirmation. The same seam and idempotence-key discipline as the admitted
-    path (`chat_runs._persist_transcript`) keeps the dock's durable session the
-    one transcript. Best-effort, like the admitted path: a transcript failure
+    confirmation. The same seam, Workspace scoping, and idempotence-key
+    discipline as the admitted path (`chat_runs._owned_session`) keeps the
+    dock's durable session the one transcript: a session named from another
+    Workspace is refused here exactly as `execute_turn` would refuse it, so an
+    interview answered in one Workspace can never land in another Workspace's
+    transcript. Best-effort, like the admitted path: a transcript failure
     must not turn a decided interview answer into an error the user never sees.
     """
     extra = req.model_extra or {}
@@ -258,8 +261,17 @@ async def _persist_brief_exchange(
     ]
     key = extra.get("turn_id")
     turn_id = key if isinstance(key, str) and key else str(uuid4())
+    # Same Workspace scoping as the admitted path's `_owned_session`: the
+    # session must belong to the Workspace the turn names, or it is refused
+    # (same 404 as list/get). Ownership alone is not enough — without this,
+    # an interview answered in wsA could append into a wsB session's
+    # transcript, a cross-Workspace write no admitted turn can perform.
+    raw_workspace = extra.get("workspace_id")
+    workspace_id = raw_workspace if isinstance(raw_workspace, str) and raw_workspace else None
     try:
-        conversation_sessions.require_owned(user_id_from_request(request), session_id)
+        conversation_sessions.require_owned(
+            user_id_from_request(request), session_id, workspace_id=workspace_id
+        )
         await conversation_sessions.append_turn(session_id, batch, turn_id=turn_id)
     except Exception:
         logger.warning(

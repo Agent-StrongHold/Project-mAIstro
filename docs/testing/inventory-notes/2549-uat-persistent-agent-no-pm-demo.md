@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +6
+  packages/hive-conductor/backend/tests: +7
 ---
 # 2549-uat-persistent-agent-no-pm-demo
 
@@ -66,3 +66,20 @@ consumer, so the tolerated-importer set stays at 78 instead of growing —
 and the gate now interprets the record through that seam. Test import of
 the setup key moved to `services.identity_health`; case count unchanged
 (`test_pm_tooling_module_gate.py` still +5, suite still +6 net).
+
+Ownership repair in the same slice, **+1** in
+`backend/tests/test_chat_brief_interview.py`
+(`test_an_interview_answer_never_lands_in_another_workspaces_session`):
+`_persist_brief_exchange` called `require_owned(user_id, session_id)`
+without the Workspace the turn names, while the admitted path
+(`chat_runs._owned_session`) passes `workspace_id` — so a same-user turn
+authorized in wsA (member, interview opens there) that names a wsB session
+appended wsA's exchange into wsB's transcript: a cross-Workspace write no
+admitted turn can perform. The seam now scopes on the named Workspace
+(same 404 as list/get, mirrored from `_owned_session`). The new case pins
+the refusal (wsB transcript stays empty while the answer still returns)
+with an in-test control (the same exchange into a session of the NAMED
+Workspace still lands), so a future failure names the scoping, not the
+seam. Red-checked: with the unscoped call restored the case fails on
+"a wsA interview exchange must not land in a wsB transcript" with exactly
+the two contaminated messages.

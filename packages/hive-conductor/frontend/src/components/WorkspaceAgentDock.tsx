@@ -20,9 +20,19 @@ import { useWorkspaces } from "../context/WorkspaceContext";
  * CLI, Credentials, Audit, Settings). It is the same durable chat seam as the
  * Chat page — `/v1/chat/sessions` rows plus the `/v1/chat/stream` SSE frames —
  * never a second store or a competing execution path. A turn executes on the
- * canonical Chat completion service for the active Workspace, so workspace
- * ops, workflows, runs, and approvals are accomplishable through this
- * conversation (AC-4), not only through dedicated page forms.
+ * canonical Chat completion service for the active Workspace, so a request
+ * made here reaches the same execution path (interview, admission, Run
+ * persistence, commit) as the same turn made on the Chat page.
+ *
+ * Honesty about what this surface does NOT yet render (#2549 review): the
+ * interview runs as plain conversation — every reply (question, draft notice,
+ * and the commit confirmation, which names the written Goal/Brief ids) is
+ * `done`-frame text, and the exchange is durable in the session transcript.
+ * The dock does not yet render the Chat page's structured brief panel
+ * (per-field interview state, draft form, `written` identities as UI), and no
+ * test drives a workflow or approval through this panel end-to-end. Widget
+ * composition (AC-4's other half) consumes the #1046 project-first contract,
+ * which is not merged at the time of this slice.
  *
  * With no active Workspace (a fresh daily-user account's first run — the
  * daily role holds no `workspaces.write`, so it cannot provision one), the
