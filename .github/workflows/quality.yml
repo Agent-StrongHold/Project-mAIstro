@@ -645,7 +645,12 @@ jobs:
         run: |
           set -euo pipefail
           uv run coverage run --branch --source=scripts \
-            -m pytest tests/ tests/test_model_check_consumer_claim.py packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
+            -m pytest tests/ tests/test_model_check_consumer_claim.py packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=60 -q
+          # --timeout=60 (not the 30 used elsewhere): the shipped-state AST
+          # censuses (e.g. check_model_egress) walk the whole tree under
+          # coverage tracing and land near 30s on slower runners — measured
+          # flaky at the boundary in CI attempt 5. Same assertions, more
+          # infrastructure headroom.
       - name: upload coverage data
         uses: actions/upload-artifact@v7
         with:
