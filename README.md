@@ -81,7 +81,7 @@ normalize their `/app` trees (`RUN chmod -R a+rX`) before dropping to the
 non-root runtime user, so the image itself is unaffected. Bind-mounted files
 keep their host modes regardless — if you bind-mount repo files (e.g.
 `./init-db.sql` into the Postgres first-boot init, or a `maistro.yaml`
-override), make them readable on the host (`chmod a+r <file>`) or the
+override), make them readable on the host (`chmod a+r init-db.sql`) or the
 container's runtime user cannot open them.
 
 Alembic and the application resolve that URL through the same function
