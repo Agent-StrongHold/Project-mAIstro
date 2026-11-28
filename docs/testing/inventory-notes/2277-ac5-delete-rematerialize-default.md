@@ -55,3 +55,31 @@ the successor, and the successor swaps like any other.
   resolve to 262 registered routes), `check-frontend-typed-client`,
   `check-api-route-contracts`, `check-route-permissions`,
   `check-public-routes` → all exit 0, none new.
+
+## CI repair (2026-11-28, head 20a57105d628): invented marker broke the AC-state ratchet
+
+CI at this head failed exactly one check, `Quality / Acceptance state`; the
+`Quality gate (Pillars 1–4, 7, 8)` failure was its dependency cascade. Cause:
+the pin test carried `@pytest.mark.ac("#2277/AC-5")`, an id no spec/ADR
+declares (`#2277` has no AC corpus entry), so `markers_without_criterion`
+rose 2 → 3 above its ceiling. Reproduced locally with CI-exact arguments:
+
+- `uv run python scripts/check-ac-state.py --run-tests --ratchet --mandate
+  547eb70afd64...` → `FAIL: the repository moved away from its recorded
+  state — markers_without_criterion: 3 exceeds the ceiling of 2`.
+- Fix: dropped the invented decorator; the test keeps
+  `ADR-092326-7ed7/AC-1` (declared; one stable Workspace Agent per
+  Workspace — the test asserts the successor's resolved id is stable and
+  differs from the predecessor's), and the docstring keeps the #2277/AC-5
+  linkage. Test count unchanged; inventory delta above still holds.
+- Same command after the fix → exit 0: `markers naming no criterion: 2`,
+  ratchet/meter/mandate/chain all `OK`.
+- Re-validation at the fix: targeted identity+routes suites 26 passed;
+  red-check re-proven (materialization default `program_manager` →
+  `pm_fleet` fails exactly
+  `test_after_delete_and_re_materialization_the_default_persona_returns`;
+  reverted, 0-diff); full backend suite 4739 passed / 38 skipped (Postgres
+  backed); `ruff check .` + `ruff format --check .` clean;
+  `check-suite-inventory.py --suite packages/hive-conductor/backend/tests`
+  ok; vulture CI-exact args exit 0 (1217 = 1217); the six parity/truth
+  gates above re-run, all exit 0.
