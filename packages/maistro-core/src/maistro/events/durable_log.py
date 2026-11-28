@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from maistro.events.bus import CANONICAL_EVENT_METADATA
 from maistro.observability.metrics import (
     publish_retention_table_health,
     retention_health_probe_due,
@@ -76,8 +77,17 @@ class EventLogStore(Protocol):
         entity_id: str = "",
         payload: dict[str, Any] | None = None,
         source: str = "",
+        source_event_id: str | None = None,
     ) -> LoggedEvent:
-        """Persist a new event and return it with its assigned id."""
+        """Persist a new event and return it with its assigned id.
+
+        ``source_event_id`` carries the canonical Event identity a row was
+        projected from (#2506). An append naming a source id already in the log
+        returns that existing row instead of writing a second one: the
+        legacy-bus bridge and the replay projector are two ingress paths for
+        one canonical fact, and the durable trigger cursor treats every row as
+        an occurrence, so the log itself must enforce one row per source event.
+        """
         ...
 
     async def get(self, event_id: int) -> LoggedEvent | None:
@@ -143,14 +153,25 @@ def require_json_encodable_payload(payload: dict[str, Any]) -> None:
 
 
 def append_from_bus_event(event: Event) -> dict[str, Any]:
-    """Map an in-memory bus :class:`~maistro.events.bus.Event` to append() kwargs."""
-    return {
+    """Map an in-memory bus :class:`~maistro.events.bus.Event` to append() kwargs.
+
+    A canonical projection carries its canonical identity in
+    ``payload[CANONICAL_EVENT_METADATA]``; it becomes the row's
+    ``source_event_id`` so the log can enforce one row per canonical Event
+    across the bridge and the replay projector (#2506). Non-canonical bus
+    events have no metadata and stay plain, unkeyed rows.
+    """
+    kwargs: dict[str, Any] = {
         "event_type": event.event_type,
         "entity_type": event.category.value,
         "entity_id": event.correlation_id,
         "payload": dict(event.payload),
         "source": event.source,
     }
+    metadata = event.payload.get(CANONICAL_EVENT_METADATA)
+    if isinstance(metadata, dict) and metadata.get("event_id"):
+        kwargs["source_event_id"] = str(metadata["event_id"])
+    return kwargs
 
 
 class InMemoryEventLog:
@@ -160,6 +181,7 @@ class InMemoryEventLog:
         self._events: list[LoggedEvent] = []
         self._next_id = 1
         self._replay_cursors: dict[str, int] = {}
+        self._by_source_event_id: dict[str, LoggedEvent] = {}
         self._lock = asyncio.Lock()
 
     async def append(
@@ -170,9 +192,14 @@ class InMemoryEventLog:
         entity_id: str = "",
         payload: dict[str, Any] | None = None,
         source: str = "",
+        source_event_id: str | None = None,
     ) -> LoggedEvent:
         require_json_encodable_payload(payload or {})
         async with self._lock:
+            if source_event_id is not None:
+                existing = self._by_source_event_id.get(source_event_id)
+                if existing is not None:
+                    return existing
             event = LoggedEvent(
                 id=self._next_id,
                 event_type=event_type,
@@ -183,6 +210,8 @@ class InMemoryEventLog:
             )
             self._next_id += 1
             self._events.append(event)
+            if source_event_id is not None:
+                self._by_source_event_id[source_event_id] = event
             return event
 
     async def get(self, event_id: int) -> LoggedEvent | None:
@@ -260,6 +289,17 @@ CREATE TABLE IF NOT EXISTS event_replay_cursors (
 );
 """
 
+#: Column added after the first release (#2506): the canonical-source identity
+#: a row was projected from. NULL for legacy/non-canonical rows — SQLite unique
+#: indexes treat NULLs as distinct, so unkeyed rows never collide, and the one
+#: keyed row per canonical Event is what makes the bridge and the replay
+#: projector two ingress paths onto one durable fact.
+_SOURCE_COLUMN_UPGRADE = (
+    "ALTER TABLE event_log ADD COLUMN source_event_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_event_log_source_event_id "
+    "ON event_log (source_event_id)",
+)
+
 
 class SqliteEventLog:
     """SQLite-backed :class:`EventLogStore` (homelab / single-instance)."""
@@ -271,6 +311,12 @@ class SqliteEventLog:
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)
+            columns = await self._conn.execute("PRAGMA table_info(event_log)")
+            present = {str(row[1]) for row in await columns.fetchall()}
+            if "source_event_id" not in present:
+                for upgrade in _SOURCE_COLUMN_UPGRADE:
+                    await self._conn.execute(upgrade)
+            await self._conn.commit()
 
     async def purge_expired(
         self,
@@ -333,14 +379,24 @@ class SqliteEventLog:
         entity_id: str = "",
         payload: dict[str, Any] | None = None,
         source: str = "",
+        source_event_id: str | None = None,
     ) -> LoggedEvent:
         created_at = time.time()
         require_json_encodable_payload(payload or {})
         async with self._lock:
+            if source_event_id is not None:
+                # One row per canonical Event (#2506). The pre-check is exact
+                # under this store's write lock; the INSERT's ON CONFLICT is
+                # the guard for a writer this process cannot see.
+                existing = await self._find_by_source(source_event_id)
+                if existing is not None:
+                    return existing
             cursor = await self._conn.execute(
                 """INSERT INTO event_log
-                   (event_type, entity_type, entity_id, payload, source, created_at)
-                   VALUES (?,?,?,?,?,?)""",
+                   (event_type, entity_type, entity_id, payload, source, created_at,
+                    source_event_id)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(source_event_id) DO NOTHING""",
                 (
                     event_type,
                     entity_type,
@@ -348,11 +404,16 @@ class SqliteEventLog:
                     json.dumps(payload or {}),
                     source,
                     created_at,
+                    source_event_id,
                 ),
             )
             await self._conn.commit()
-        row_id = cursor.lastrowid
-        assert row_id is not None  # nosec B101 - INSERT always assigns a rowid
+            row_id = cursor.lastrowid
+            if row_id is None and source_event_id is not None:
+                existing = await self._find_by_source(source_event_id)
+                if existing is not None:
+                    return existing
+            assert row_id is not None  # nosec B101 - INSERT always assigns a rowid
         return LoggedEvent(
             id=row_id,
             event_type=event_type,
@@ -362,6 +423,15 @@ class SqliteEventLog:
             source=source,
             created_at=created_at,
         )
+
+    async def _find_by_source(self, source_event_id: str) -> LoggedEvent | None:
+        cursor = await self._conn.execute(
+            "SELECT id, event_type, entity_type, entity_id, payload, source, created_at "
+            "FROM event_log WHERE source_event_id = ?",
+            (source_event_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_event(tuple(row)) if row is not None else None
 
     async def get(self, event_id: int) -> LoggedEvent | None:
         cursor = await self._conn.execute(

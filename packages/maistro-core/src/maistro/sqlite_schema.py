@@ -25,6 +25,23 @@ def _connection_lock(conn: Any) -> asyncio.Lock:
         return lock
 
 
+def connection_transaction_lock(conn: Any) -> asyncio.Lock:
+    """Return the shared write-transaction guard for one SQLite connection.
+
+    A SQLite transaction belongs to its connection, not to the store that
+    opened it: when two stores share one connection, the second store's bare
+    ``commit()`` can land between the first store's ``BEGIN IMMEDIATE`` and
+    its final write — committing half of the first store's work and leaving
+    its ``rollback()`` nothing to discard (#327). Stores that hold a
+    transaction across statements therefore either get their own connection
+    or hold this per-connection lock across the whole write (#2506 review:
+    the canonical projection registry must share the canonical EventStore's
+    connection — its registration reads that store's watermark table — so it
+    serializes on this guard with ``append_with_disposition`` instead).
+    """
+    return _connection_lock(conn)
+
+
 @asynccontextmanager
 async def serialized_schema_upgrade(conn: Any) -> AsyncIterator[None]:
     """Serialize one schema upgrade within and across processes.
