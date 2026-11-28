@@ -196,7 +196,7 @@ async def built_schemas():
     """Build both schemas side by side and hand back their catalogues."""
     import asyncpg
 
-    from maistro.events.pg_stores import _SCHEMA
+    from maistro.events.pg_stores import _SCHEMA, _SCHEMA_UPGRADES
 
     conn = await asyncpg.connect(_require_postgres())
     try:
@@ -210,6 +210,16 @@ async def built_schemas():
 
         await conn.execute("SET search_path TO agree_ensure")
         await conn.execute(_SCHEMA)
+        # Mirror `ensure_event_schema()` exactly: it applies `_SCHEMA` and
+        # then `_SCHEMA_UPGRADES`, and the legacy-column upgrades (including
+        # the `source_event_id` index, which must come after that column's
+        # `ADD COLUMN` on pre-074 databases) are part of the bootstrapped
+        # schema being compared. Today the upgrades are otherwise
+        # schema-neutral (`ADD COLUMN IF NOT EXISTS` on columns `_SCHEMA`
+        # already creates), so this fixture change only records where the
+        # index really comes from.
+        for statement in _SCHEMA_UPGRADES:
+            await conn.execute(statement)
 
         await conn.execute("SET search_path TO public")
         yield (

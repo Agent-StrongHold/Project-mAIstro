@@ -102,11 +102,15 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_type_id ON event_log(event_type, id);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
--- One row per canonical Event across both ingress paths (bridge + replay
--- projector, #2506). NULLs are distinct in a Postgres unique index, so legacy
--- and non-canonical rows never collide.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_event_log_source_event_id
-    ON event_log (source_event_id);
+-- The unique index on `source_event_id` is deliberately NOT created here:
+-- `ensure_event_schema` runs `_SCHEMA` before `_SCHEMA_UPGRADES`, and on a
+-- database bootstrapped before this column existed `CREATE TABLE IF NOT
+-- EXISTS` is a no-op, so the index statement would fail on the missing
+-- column before the upgrade below could add it. It is created (idempotently,
+-- after the `ADD COLUMN`) as the second `_SCHEMA_UPGRADES` statement: one row
+-- per canonical Event across both ingress paths (bridge + replay projector,
+-- #2506); NULLs are distinct in a Postgres unique index, so legacy and
+-- non-canonical rows never collide.
 
 CREATE TABLE IF NOT EXISTS event_replay_cursors (
     consumer_id TEXT PRIMARY KEY,
