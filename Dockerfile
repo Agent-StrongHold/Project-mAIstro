@@ -282,6 +282,20 @@ RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
            /app/venv/bin/pip* \
            /usr/local/lib/python3.13/site-packages/pip* \
            /usr/local/bin/pip*
+# #2546: COPY preserves the host files' modes. A build context checked out
+# under a restrictive umask (e.g. 077) lands every host-copied file
+# root-owned -rw------- — alembic.ini, alembic/, config/ and the two
+# packages' on-disk assets (agent YAML, prompts, migrations) included — and
+# the runtime user below cannot read any of them: maistro_server.entrypoint
+# then dies in run_migrations with "No 'script_location' key found in
+# configuration" because Config() sees no keys in an unreadable alembic.ini
+# (reproduced: image with -rw------- /app/alembic.ini, uid 65532 cat ->
+# Permission denied; same context + the chmod line -> readable, exit 0).
+# Normalize in one step before dropping privileges, independent of the
+# builder's umask: a+rX grants read everywhere and the execute bit only where
+# one already exists, so directories stay traversable and venv/bin + the
+# static docker CLI keep running; nothing becomes group/world-writable.
+RUN chmod -R a+rX /app
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.

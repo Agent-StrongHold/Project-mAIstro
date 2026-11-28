@@ -195,6 +195,12 @@ services:
       - "127.0.0.1:5433:5432"  # DevSkim: ignore DS162092 until 2027-12-31
     volumes:
       - pgdata:/var/lib/postgresql
+      # #2546: bind-mounted init scripts keep their host file modes. A repo
+      # checkout under a restrictive umask (e.g. 077) makes init-db.sql mode
+      # 600; the postgres container's entrypoint then cannot read it and
+      # first-boot init fails with "Permission denied", leaving a
+      # half-initialized volume that skips initialization on every restart.
+      # Keep the file readable on the host: `chmod a+r init-db.sql`.
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     depends_on:
       postgres-layout-check:

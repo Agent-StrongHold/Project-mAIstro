@@ -335,6 +335,17 @@ following = cron.next_fire(fall, timezone='Europe/Berlin')
 assert following.astimezone(UTC) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC), following
 print('tz cron smoke ok: spring gap skipped; fall fold fires once')
 PY
+# #2546: host-context COPYs preserve the builder's file modes. A worktree
+# checked out under a restrictive umask (e.g. 077) would land backend/,
+# cage/, eval/, dags/, agents/ and their contents root-owned -rw-------, and
+# the runtime user below could not read a single one (first request — and
+# the require_agents roster at import — would fail on unreadable files).
+# Normalize before dropping privileges, regardless of the builder umask:
+# a+rX grants read everywhere and keeps the execute bit only where one
+# already exists (dirs traversable, executables executable); /data keeps its
+# explicit 65532 ownership from the chown above (a+rX never touches owner
+# or write bits).
+RUN chmod -R a+rX /app
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.

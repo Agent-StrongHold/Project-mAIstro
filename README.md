@@ -74,6 +74,16 @@ replicas cannot race the schema. A migration failure keeps readiness down and
 terminates the container with a non-zero status. Do not shell-source `.env`:
 Compose reads it directly, preserving the JSON representation of `API_KEYS`.
 
+**Building under a restrictive umask (issue #2546):** `COPY` in a Dockerfile
+preserves the host files' permission modes. A repo checkout made under e.g.
+`umask 077` carries mode-600 files into the build context; the shipped images
+normalize their `/app` trees (`RUN chmod -R a+rX`) before dropping to the
+non-root runtime user, so the image itself is unaffected. Bind-mounted files
+keep their host modes regardless — if you bind-mount repo files (e.g.
+`./init-db.sql` into the Postgres first-boot init, or a `maistro.yaml`
+override), make them readable on the host (`chmod a+r <file>`) or the
+container's runtime user cannot open them.
+
 Alembic and the application resolve that URL through the same function
 (`require_database_url`, [#187](https://github.com/Agent-StrongHold/Project-mAIstro/issues/187)),
 so `DATABASE_URL` and the `DB_*` variables both work and mean the same thing.
