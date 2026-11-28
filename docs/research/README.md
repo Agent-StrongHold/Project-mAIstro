@@ -118,6 +118,7 @@ Every child research epic/leaf defines:
 | [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md) | M8-E1 | leaf [#930](https://github.com/Agent-StrongHold/Project-mAIstro/issues/930), epic #904 | WATCH |
 | [934 — heterogeneous local + cloud fleet benchmark](934-heterogeneous-fleet-benchmark.md) | M8-F1 | leaf [#934](https://github.com/Agent-StrongHold/Project-mAIstro/issues/934), epic #905 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
+| [2121 — opportunistic GPU-rental arbitrage, capability-aware fleet routing](2121-gpu-rental-arbitrage.md) | M8-F3 | leaf [#2121](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2121), epic #905 | WATCH (no-go this round) |
 | [897 — Lean/Leanstral + Rust/Aeneas correctness kernel](897-lean-leanstral-rust-aeneas-correctness-kernel.md) | M8-A | leaf [#897](https://github.com/Agent-StrongHold/Project-mAIstro/issues/897), epic #880 | WATCH |
 | [893 — stateful generated API workflows](893-stateful-api-workflows.md) | M8-A | leaf [#893](https://github.com/Agent-StrongHold/Project-mAIstro/issues/893), epic #880 | GRADUATE (this seam, this scope) |
 

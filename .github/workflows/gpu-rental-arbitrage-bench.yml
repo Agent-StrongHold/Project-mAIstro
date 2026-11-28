@@ -1,0 +1,73 @@
+name: GPU-rental arbitrage bench
+
+# Manual only, on purpose (same pattern as fleet-routing-bench.yml).
+#
+# This runs scripts/bench_gpu_rental_arbitrage.py — the #2121 (RESEARCH M8-F,
+# epic #905) measurement: opportunistic GPU-rental arbitrage over a versioned
+# marketplace-offer schema and a sparse model-capability registry, ranking
+# four routes (fixed-gpu, cheapest-listed, cheapest-eligible,
+# quality-adjusted) on expected accepted-task cost, replaying eight injected
+# failure modes under idempotent checkpoint/resume execution with a hard
+# billing cap, and pricing three ownership strategies at 22 and 24 h/day.
+# It is deterministic and offline (blake2b-hashed draws, no network — the
+# harness imports no network module, asserted by tests), so results are
+# comparable run-to-run; the checked-in numbers live in
+# docs/benchmarks/gpu-rental-arbitrage-baseline.json. It is not a gate and
+# not a per-PR job: run it when the offer schema, the capability registry,
+# or the cost model changes. The research disposition lives in
+# docs/research/2121-gpu-rental-arbitrage.md; nothing here provisions
+# infrastructure, reads credentials, spends money, or wires any route into
+# production.
+#
+# It is also what makes `scripts/bench_gpu_rental_arbitrage.py` a *real*
+# entry point rather than a script nobody can reach:
+# `scripts/check-reachability.py` roots tooling at the workflow steps that
+# execute it, matching on filename.
+on:
+  workflow_dispatch:
+    inputs:
+      tasks-per-class:
+        description: "Replay batch multiplier (report records it; default 40)"
+        required: false
+        default: "40"
+        type: string
+      seed:
+        description: "Replay seed (same seed reproduces the same run)"
+        required: false
+        default: "gpu-arb-v1"
+        type: string
+      hours:
+        description: "22 | 24 | both (annual-sensitivity utilization levels)"
+        required: false
+        default: "both"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-rental-arbitrage-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark GPU-rental arbitrage routes (offline, no provisioning)
+        run: >-
+          uv run python scripts/bench_gpu_rental_arbitrage.py
+          --tasks-per-class ${{ inputs.tasks-per-class }}
+          --seed ${{ inputs.seed }}
+          --hours ${{ inputs.hours }}
+          --output gpu-rental-arbitrage-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-rental-arbitrage-bench
+          path: gpu-rental-arbitrage-bench.json
