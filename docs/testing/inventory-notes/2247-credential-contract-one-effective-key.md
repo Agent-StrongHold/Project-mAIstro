@@ -73,3 +73,47 @@ winning-leg-resolves-without-touching-the-ones-beneath test fails
 `test_provider_pin_registration.py` CI failure) and
 `test_provider_pin_registration.py` fails with it again — the repair is
 named by the tests it re-enables.
+
+## Deep-review round 2 (2026-11-28, verifier b5a0f12 re-check at f91b3104e451)
+
+Adversarial re-examination of the round-1 findings against reachable
+production behavior. No production file changed; suite inventory unchanged.
+
+**Proven by direct execution this round** (beyond the suites above):
+- Engine ≡ core contract, probed through real `maistro_server.main.
+  _gateway_credential` (not the tests): conflicting aliases → operator key;
+  all four legs stated → `LITELLM_API_KEY` leg; blanked operator key falls
+  through; unconfigured → `""` (fail-closed); proxy-only → proxy alias.
+- Hive ≡ core, probed through real `services.secrets.
+  effective_llm_gateway_key`: same four scenarios agree, and a winning leg
+  is resolved without touching the settings beneath it (laziness holds).
+- Counterfactual: the pre-#2247 engine body answers `sk-gateway` where the
+  #2247 engine answers `sk-operator` — the new tests name the regression,
+  not a fixture value.
+- No bypass: `_gateway_credential` is the only production credential reader
+  in `maistro-server` (main.py:326-329; consumed at main.py:395,437,566).
+- Full mypy (CI's seven-package command): 976 files, no issues.
+- `check-closure-targets.py` with the real PR #2563 body: closes no issue.
+
+**Round-1 finding adjudication:**
+- Owner-decision artifact: CONFIRMED absent — all 8 #2247 comments and all
+  79 human-authored #1824 comments are bot progress markers; no ADR names
+  the matrix. Weight reduced: the matrix is verbatim the shipped operator
+  contract at the develop base (`.env.example:33-38`, since #2185 merge
+  a7a6dd9a29), and #2247's own body prescribes exactly this reconciliation
+  target; #1824 requires an owner disposition only "if no accepted contract
+  resolves them". Sub-claim "#2185's Codex review flagged the gap P1" is
+  REFUTED: the captured review is a 655-char receipt with no
+  gateway/credential/P1 content.
+- Weak tests: `TestBothCompositionsResolveThroughOneOrdering` is indeed
+  literal-only (misleading name; substance covered by the server/hive
+  composition suites). Downgraded: only 1 of the 4 new hive tests is a
+  `getsource` pin — the other three are behavioral.
+- Pre-existing non-matrix core readers re-confirmed at conductor.py:111,
+  llm_summarize.py:337, config/loader.py:74, browser/client.py:67; all are
+  overridden by the pool credential at model_chat.py:598 on the governed
+  path. Out of #2247 scope (engine/Hive contract readers only).
+- CI: live refresh at review time — 72 SUCCESS / 3 SKIPPED / 5 IN_PROGRESS
+  (test, coverage (no services), docker-build, Container scan, integration-
+  scope), 0 failures. Completion remains UNVERIFIED; the governance residue
+  (owner-gate provenance label) needs adjudication, not a code repair.
