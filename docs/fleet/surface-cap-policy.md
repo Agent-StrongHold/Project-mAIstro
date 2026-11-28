@@ -56,10 +56,20 @@ issues missing from it rank lowest.
 When overlap-parked lanes ≥ `starve_alarm_waits` coexist with live jobs ≤
 `starve_alarm_live_max` for two consecutive supervisor ticks, the
 supervisor raises a `surface-starvation` ATTENTION **once per incident**,
-naming the widest active holders with their surface counts (e.g. `12 lanes
-overlap-parked with 2 live; widest holders: L880 (581 surfaces) …`). A
+naming the widest active holders with their surface counts (e.g. the
+2026-10-24T16:25Z firing: `16 lanes overlap-parked with 2 live; widest
+holders: L880 (581 surfaces), L1690 (17 surfaces), L5 (11 surfaces)`). A
 non-qualifying tick resets the strike counter, so each incident alarms
 anew.
+
+### Deltas from the issue proposal
+
+The issue proposed owner sign-off for oversized plans, a wait reason carrying
+the blocking lane's priority, and an alarm after "> 2 ticks". The shipped
+policy (live 2026-10-22) resolves oversized plans autonomously from
+branch-diff evidence instead, parks with the fixed reason `surface overlap
+with active lane` (no priority annotation), and arms the alarm after two
+consecutive qualifying ticks — one alarm per incident.
 
 ## Operational evidence (2026-10-22 → 2026-11-28)
 
@@ -71,7 +81,8 @@ anew.
 
 ## Related
 
-- `docs/fleet/gate-c-repro-isolation.md` (PR #2251) — the adjacent
-  box-local ops governance page (lane repro isolation).
+- PR [#2251](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2251)
+  (closed unmerged) proposed the adjacent ops governance page (lane repro
+  isolation, `docker-compose.repro.yml`); that page is not in this tree.
 - Incident context: #795 (the 421-surface lane), board snapshot 2026-10-21
   22:47Z.
