@@ -29,3 +29,13 @@ Playwright UI coverage for the same issue (persistent-agent dock on every
 page, PM-free onboarding copy, PM-Fleet-free persona picker) lives in
 `hive-conductor/tests/e2e/workspace-agent-dock.spec.ts`, which is not a
 pytest suite and so contributes nothing here.
+
+Follow-up hardening in the same slice, from clean-harness reproduction: on a
+fresh CI hive the daily-role account holds no Workspace (and no
+`workspaces.write` to provision one), where the dock launcher used to open
+nothing while `aria-expanded` claimed a panel — a dead primary surface in
+exactly the first-run state this issue targets. The launcher now opens an
+honest "No workspace selected" panel (the Chat page's refusal pattern),
+pinned by the spec's zero-workspace journey test; the conversation tests
+stub the workspace/session seam (the `goal-run-roundtrip.spec.ts` pattern)
+so they no longer depend on ambient server state. No pytest suite changed.

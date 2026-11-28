@@ -2,8 +2,10 @@
  * Persistent Workspace Agent shell surface (#2549).
  *
  * AC-3: the persistent Workspace Agent is a shell-level surface — mounted
- * once in AppShell, present on every page, not a Chat-page-only feature.
- * AC-1: first-run onboarding copy describes the persistent-agent-first
+ * once in AppShell, present on every page, not a Chat-page-only feature —
+ * and its launcher opens the panel honestly in every state, including a
+ * fresh account with no Workspace at all (the daily role cannot provision
+ * one). AC-1: first-run onboarding copy describes the persistent-agent-first
  * product and carries zero PM-demo heritage (no project management / PM /
  * Jira / Confluence anywhere in the tour).
  * AC-2: the standard workspace-creation dialog offers no PM Fleet preset.
@@ -41,6 +43,53 @@ async function loginSeeded(page: Page) {
   await loginAsPM(page);
 }
 
+const STUB_WS_ID = "ws-dock-e2e";
+
+/** Deterministic active-Workspace for the conversation assertions.
+ *
+ * The daily-role account holds no `workspaces.write`, so it cannot provision
+ * a Workspace, and a fresh CI hive leaves it with none — the dock's
+ * conversation (session hydration, model catalog) must therefore run against
+ * a stubbed seam, the same pattern goal-run-roundtrip.spec.ts uses, instead
+ * of assuming ambient server state a previous spec may or may not have left
+ * behind. The `$`-anchored patterns match only the collection endpoints, so
+ * subresource routes still reach the real backend if a test needs them.
+ */
+async function stubWorkspaceSeam(page: Page) {
+  const workspace = {
+    id: STUB_WS_ID,
+    persona_template_id: "content_creator",
+    name: "Dock E2E Workspace",
+    theme_id: "theme-dark",
+    members: [],
+    tool_bindings: [],
+    active: true,
+  };
+  await page.route(/\/v1\/workspaces(\?.*)?$/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([workspace]) }),
+  );
+  await page.route(/\/v1\/chat\/sessions(\?.*)?$/, (route) => {
+    if (route.request().method() !== "POST") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "sess-dock-e2e",
+        user_id: "user",
+        workspace_id: STUB_WS_ID,
+        title: "Workspace Agent",
+        messages: [],
+        updated_at: new Date().toISOString(),
+      }),
+    });
+  });
+  await page.route(/\/v1\/settings\/models.*$/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [{ id: "stub-model" }] }) }),
+  );
+}
+
 test.describe("persistent Workspace Agent shell surface (#2549 AC-3)", () => {
   test.beforeEach(async ({ page }) => {
     await loginSeeded(page);
@@ -54,7 +103,33 @@ test.describe("persistent Workspace Agent shell surface (#2549 AC-3)", () => {
     }
   });
 
+  test("with no Workspace, the dock opens an honest empty state, not a dead toggle", async ({
+    page,
+  }) => {
+    // Force the fresh-account state (deterministic on any boot): the daily
+    // role cannot create Workspaces, so a CI hive genuinely serves this —
+    // and the launcher must never be a control that toggles `aria-expanded`
+    // while rendering nothing.
+    await page.route(/\/v1\/workspaces(\?.*)?$/, (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) }),
+    );
+    await page.goto("/goals", { waitUntil: "domcontentloaded" });
+    const launcher = page.getByTestId("workspace-agent-launcher");
+    await expect(launcher).toBeVisible();
+    await launcher.click();
+    const panel = page.getByTestId("workspace-agent-dock");
+    await expect(panel).toBeVisible();
+    // The expanded state is truthful: the panel it announces is on screen.
+    await expect(launcher).toHaveAttribute("aria-expanded", "true");
+    // And the panel explains the missing Workspace instead of staying mute.
+    await expect(panel.getByRole("status")).toContainText(/No workspace selected/i);
+    await page.keyboard.press("Escape");
+    await expect(panel).not.toBeVisible();
+    await expect(launcher).toBeFocused();
+  });
+
   test("the dock opens one conversation surface with a composer", async ({ page }) => {
+    await stubWorkspaceSeam(page);
     await page.goto("/goals", { waitUntil: "domcontentloaded" });
     await page.getByTestId("workspace-agent-launcher").click();
     const panel = page.getByTestId("workspace-agent-dock");

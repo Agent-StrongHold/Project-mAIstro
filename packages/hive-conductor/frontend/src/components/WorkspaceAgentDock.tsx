@@ -23,6 +23,12 @@ import { useWorkspaces } from "../context/WorkspaceContext";
  * canonical Chat completion service for the active Workspace, so workspace
  * ops, workflows, runs, and approvals are accomplishable through this
  * conversation (AC-4), not only through dedicated page forms.
+ *
+ * With no active Workspace (a fresh daily-user account's first run — the
+ * daily role holds no `workspaces.write`, so it cannot provision one), the
+ * launcher still opens the panel and the panel says so honestly, exactly
+ * like the Chat page's "No Workspace selected" refusal — never a silent
+ * dead toggle whose `aria-expanded` claims a surface that never renders.
  */
 
 // Dedicated durable session title so the dock's transcript is identifiable in
@@ -407,12 +413,28 @@ export function WorkspaceAgentDock() {
 
   return (
     <div className="agent-dock" data-testid="workspace-agent-dock-root" onKeyDown={onKeyDown}>
-      {open && activeWorkspaceId && (
-        // Keyed remount per Workspace: switching Workspaces is an unmount, so
-        // session state never leaks across the switch and the in-flight
-        // stream aborts in cleanup.
+      {open && (
+        // Opens with or without an active Workspace — a launcher that flips
+        // `aria-expanded` while rendering nothing is the dead-button lie
+        // (#2549 AC-6 honesty). Keyed remount per Workspace: switching
+        // Workspaces is an unmount, so session state never leaks across the
+        // switch and the in-flight stream aborts in cleanup.
         <WorkspaceAgentDockPanel onClose={close}>
-          <WorkspaceAgentConversation key={activeWorkspaceId} workspaceId={activeWorkspaceId} />
+          {activeWorkspaceId ? (
+            <WorkspaceAgentConversation key={activeWorkspaceId} workspaceId={activeWorkspaceId} />
+          ) : (
+            <div
+              className="agent-dock-conversation"
+              role="complementary"
+              aria-label="Workspace Agent"
+              data-testid="workspace-agent-dock"
+            >
+              <div className="agent-dock-empty" role="status">
+                No workspace selected — the Workspace Agent works inside your active Workspace.
+                Create or select a Workspace, then ask here.
+              </div>
+            </div>
+          )}
         </WorkspaceAgentDockPanel>
       )}
       <button
