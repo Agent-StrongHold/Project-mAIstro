@@ -359,3 +359,113 @@ class TestGovernedEndpointUsesTheContract:
             assert _endpoint().api_key == effective_llm_gateway_key(config.get_settings())
         finally:
             config.get_settings.cache_clear()
+
+
+class TestOneMatrixAcrossCompositions:
+    """#2247: the engine (maistro-server) and Hive must answer "which key does
+    model egress authenticate with?" identically. The precedence decision now
+    lives in one canonical core function
+    (`maistro.config.gateway_key.effective_gateway_key`); Hive's contract and
+    the engine's `_gateway_credential` both order their legs through it, so a
+    deployment stating `MAISTRO_LLM_API_KEY` and `LITELLM_API_KEY`
+    differently can no longer get split-brain credential state.
+
+    These tests pin the Hive side of that: the wrapper delegates to the core
+    matrix (never reassembles an alias chain of its own), and its answer is
+    exactly what the shared contract resolves for the same environment.
+    """
+
+    def test_the_contract_delegates_to_the_shared_core_matrix(self) -> None:
+        """The ordering is decided in core, not reassembled here: the wrapper
+        names the shared function and no longer walks the alias chain by
+        hand."""
+        import inspect
+
+        import services.secrets as secrets_module
+
+        source = inspect.getsource(secrets_module)
+        assert "effective_gateway_key(" in source, (
+            "effective_llm_gateway_key must order its legs through the one "
+            "canonical matrix in maistro.config.gateway_key (#2247)"
+        )
+        # The private reassembly the delegation replaced must stay gone.
+        assert 'for alias in ("LITELLM_PROXY_KEY", "LITELLM_MASTER_KEY")' not in source
+
+    def test_conflicting_aliases_resolve_identically_in_both_compositions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The split-brain regression (#2247): both aliases stated, differing.
+
+        Hive's answer must be exactly what the shared core matrix resolves
+        from the same environment — which is also what the engine's
+        `_gateway_credential` resolves (pinned on the maistro-server side),
+        so the two compositions cannot select different credentials."""
+        import os
+
+        from services.secrets import effective_llm_gateway_key
+
+        from maistro.config.gateway_key import effective_gateway_key
+
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "sk-maistro-wins")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-loses")
+
+        settings = _settings()
+        resolved = effective_llm_gateway_key(settings)
+        assert resolved == "sk-maistro-wins"
+        assert resolved == effective_gateway_key(
+            maistro_key=os.environ.get("MAISTRO_LLM_API_KEY"),
+            litellm_key=os.environ.get("LITELLM_API_KEY"),
+            proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
+            master_alias=os.environ.get("LITELLM_MASTER_KEY"),
+        )
+
+    def test_a_blanked_alias_falls_through_in_both_compositions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty is *unset* through the shared matrix in Hive too: the
+        compose-emitted blank operator key never shadows a configured
+        gateway alias."""
+        import os
+
+        from services.secrets import effective_llm_gateway_key
+
+        from maistro.config.gateway_key import effective_gateway_key
+
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-answers")
+
+        settings = _settings()
+        resolved = effective_llm_gateway_key(settings)
+        assert resolved == "sk-litellm-answers"
+        assert resolved == effective_gateway_key(
+            maistro_key=os.environ.get("MAISTRO_LLM_API_KEY"),
+            litellm_key=os.environ.get("LITELLM_API_KEY"),
+            proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
+            master_alias=os.environ.get("LITELLM_MASTER_KEY"),
+        )
+
+    def test_a_winning_leg_is_resolved_without_touching_the_ones_beneath(
+        self,
+    ) -> None:
+        """Regression (#2247 round): the wrapper must hand its settings-backed
+        legs over as resolvers, not eagerly resolved values. An eager
+        `litellm_key=litellm_api_key(settings)` argument read the alias
+        beneath a winning operator key — opening `LITELLM_API_KEY`'s vault
+        name and reading `Settings.litellm_api_key` even when the operator
+        key answered — and AttributeError'd on duck-typed settings that only
+        carry the aliases the deployment actually states (the stub in
+        test_provider_pin_registration.py). Leg resolution stays as lazy as
+        the pre-#2247 chain it replaced; only the ordering moved to core."""
+
+        class _OperatorKeyOnlySettings:
+            """Exactly the #2185 provider-pin stub: one alias, no others."""
+
+            maistro_llm_api_key = "sk-operator-answers"
+
+            @property
+            def litellm_api_key(self) -> str:  # pragma: no cover - proves non-eagerness
+                raise AssertionError("a winning earlier leg must not read the alias beneath it")
+
+        from services.secrets import effective_llm_gateway_key
+
+        assert effective_llm_gateway_key(_OperatorKeyOnlySettings()) == "sk-operator-answers"
