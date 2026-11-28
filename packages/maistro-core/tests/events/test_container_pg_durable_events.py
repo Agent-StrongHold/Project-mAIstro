@@ -20,6 +20,8 @@ caller who already held a pool had no way to reach the durable stores at all.
 from __future__ import annotations
 
 import os
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -53,6 +55,19 @@ def _require_postgres() -> str:
 
 def _config(url: str = "memory://") -> AgentConfig:
     return AgentConfig(router_api_key="test-key", database_url=url)
+
+
+class _WallClock:
+    """The wall clock the consumer module reads, advanced by hand."""
+
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture
@@ -363,11 +378,26 @@ class TestTheDurableCursorNeverSkipsALateCommit:
 
         return _caller
 
+    @pytest.mark.parametrize(
+        "elapsed_between_ticks",
+        [0.0, 86_400.0],
+        ids=["ticks-at-once", "a-day-between-ticks"],
+    )
     async def test_a_hole_a_live_append_may_still_commit_holds_the_cursor(
-        self, pg_pool, wire
+        self, pg_pool, wire, monkeypatch, elapsed_between_ticks
     ) -> None:
+        """The issue's oracle is two containers ticking *after > grace*. The
+        first parameterisation is the oracle as first written — every tick
+        within milliseconds of the hole opening, which the pre-fix 60 s grace
+        also survived. The second turns the consumer module's own wall clock
+        a day forward before every tick: no grace a timer could plausibly
+        use is still running, and the cursor must hold all the same, because
+        the appending transaction — real, on a second connection — can still
+        commit. The lease clocks are untouched; only the module that owns
+        `_gap_safe_position` reads the hand-turned one."""
         import asyncpg
 
+        import maistro.container as container_module
         from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
         from maistro.events.invocations import ReplaySafety
         from maistro.events.trigger_store import TriggerDefinition
@@ -379,6 +409,21 @@ class TestTheDurableCursorNeverSkipsALateCommit:
             "TRUNCATE handler_invocations, trigger_definitions, event_log, "
             "event_replay_cursors, consumer_cursors RESTART IDENTITY"
         )
+        clock = _WallClock()
+        if elapsed_between_ticks:
+            # The module's own `time` binding, not the global module, and
+            # `raising=False`: a module with no wall clock is the state this
+            # protects; one that re-grew a grace timer reads this clock.
+            monkeypatch.setattr(
+                container_module,
+                "time",
+                SimpleNamespace(time=clock, monotonic=clock),
+                raising=False,
+            )
+
+        def time_passes() -> None:
+            clock.advance(elapsed_between_ticks)
+
         container = await wire(_config(), pg_pool=pg_pool)
         replica = await wire(_config(), pg_pool=pg_pool)
         delivered: list[int] = []
@@ -409,10 +454,13 @@ class TestTheDurableCursorNeverSkipsALateCommit:
             assert inflight_id == 2
             await container.durable_event_log.append("agent.created")  # id 3, ahead of 2
 
-            # Two ordinary production ticks while id 2 can still commit:
+            # Two ordinary production ticks while id 2 can still commit —
+            # in the second parameterisation, each a day after the last:
             # both settle 3's receipts but the durable cursor — here and on
             # the log's own replay acknowledgement — never passes id 1.
+            time_passes()
             assert await container.process_durable_events() == 1
+            time_passes()
             assert await container.process_durable_events() == 1
             assert delivered == [1, 3]
             assert (
@@ -427,6 +475,7 @@ class TestTheDurableCursorNeverSkipsALateCommit:
             # skipped by taking over, and the already-settled 3 is deduped,
             # not re-called.
             await pg_pool.execute("UPDATE consumer_cursors SET lease_expires_at = 0")
+            time_passes()
             assert await replica.process_durable_events() == 1
             assert replica_delivered == []
 
@@ -437,6 +486,7 @@ class TestTheDurableCursorNeverSkipsALateCommit:
         finally:
             await holder.close()
 
+        time_passes()
         assert await replica.process_durable_events() == 3
         assert replica_delivered == [2]
         assert delivered == [1, 3]

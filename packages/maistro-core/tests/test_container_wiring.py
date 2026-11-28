@@ -9,7 +9,9 @@ connected, and reachable on the container.
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -842,6 +844,92 @@ async def test_proof_of_one_hole_never_crosses_the_unproven_ids_behind_it() -> N
     assert await container.process_durable_events() == 4
     assert delivered == [1, 4]
     assert await _durable_position(container) == 4
+
+
+class _WallClock:
+    """The wall clock a consumer module reads, advanced by hand."""
+
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+async def test_elapsed_time_never_authorizes_crossing_an_unresolved_hole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2509 oracle 5: the regression this issue names is a position that
+    moves past an unresolved hole *because enough time has passed*. Every
+    other hole test ticks within milliseconds, so a re-introduced grace —
+    ``now - first_seen >= grace`` — clears all of them: executed against the
+    pre-fix sources, `..._no_matter_how_long_it_lingers` and the PostgreSQL
+    live-append oracle both pass. This test hands the module that owns
+    `_gap_safe_position` a wall clock of its own and turns it past any grace
+    a timer could plausibly use while the hole stays unproven. The position
+    must not move. When the append finally commits, the ordinary tick crosses
+    the id — its appearing is what moves the cursor, never the clock.
+    """
+    import maistro.container as container_module
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    clock = _WallClock()
+    # The module's own `time` binding, not the global module (asyncio's loop
+    # clock and the cursor store's lease timestamps keep reading the real
+    # one). `raising=False`: a module with no wall clock to replace is the
+    # state this test protects — the attribute is added and ignored — while
+    # a module that re-grew a grace timer reads this clock instead.
+    monkeypatch.setattr(
+        container_module, "time", SimpleNamespace(time=clock, monotonic=clock), raising=False
+    )
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+    )
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    # The tick that first sees the hole.
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # Every later tick happens after that much more time has passed: a
+    # second, a minute (the removed grace), exactly 60 s, an hour, a day, a
+    # year. Unproven stays unproven at each of them.
+    elapsed = 0.0
+    for step in (1.0, 58.0, 1.0, 3_539.0, 82_800.0, 31_449_600.0):
+        clock.advance(step)
+        elapsed += step
+        held = f"after {elapsed:g}s with the hole unproven"
+        assert await container.process_durable_events() == 1, held
+        assert await _durable_position(container) == 1, held
+        assert (
+            await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
+        ), held
+    assert delivered == [1, 3]
+
+    # The append commits: the id is simply there on the next read, and the
+    # position crosses it on that alone.
+    log.hidden.clear()
+    assert await container.process_durable_events() == 3
+    assert delivered == [1, 3, 2]
+    assert await _durable_position(container) == 3
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
