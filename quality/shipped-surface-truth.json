@@ -2696,7 +2696,7 @@
       "effect_owner": "routes/chat.py complete (LLM port)"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/evolution.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "${API}/cycle",
@@ -2706,7 +2706,7 @@
       "effect_owner": "routes/evolution.py trigger_cycle -> canonical Run response"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/evolution.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "${API}/seed",
@@ -2836,7 +2836,7 @@
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/rsi.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "${API}/runs",
@@ -2846,20 +2846,20 @@
       "effect_owner": "routes/rsi.py start_run"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/rsi.ts",
       "signal": "mutating-api-call",
       "method": "POST",
-      "route": "${API}/runs/${r.run_id}/stop",
+      "route": "${API}/runs/${runId}/stop",
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "stops an RSI run through the real backend route",
       "effect_owner": "routes/rsi.py stop_run"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/rsi.ts",
       "signal": "mutating-api-call",
       "method": "POST",
-      "route": "${API}/runs/${selectedRun}/reviews/${sha}",
+      "route": "${API}/runs/${runId}/reviews/${sha}",
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "decides a review through the real backend route",

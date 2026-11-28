@@ -104,6 +104,7 @@ async function startHarness(browser: Browser): Promise<void> {
 import { createRoot } from "react-dom/client";
 import { WorkspaceProvider, useWorkspaces } from ${JSON.stringify(`${SRC_ROOT}/frontend/src/context/WorkspaceContext.tsx`)};
 import { WorkspaceTabs } from ${JSON.stringify(`${SRC_ROOT}/frontend/src/components/WorkspaceTabs.tsx`)};
+import { ElevationProvider } from ${JSON.stringify(`${SRC_ROOT}/frontend/src/components/Elevation.tsx`)};
 
 // The refresh buttons drive the provider's refresh() directly, so the
 // stale-response ordering can be scripted from the test.
@@ -118,10 +119,15 @@ function RefreshControls() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <WorkspaceProvider>
-    <WorkspaceTabs />
-    <RefreshControls />
-  </WorkspaceProvider>,
+  // ElevationProvider first, matching the shipped App composition: #336 made
+  // WorkspaceTabs resolve protected writes through useAuthorizedAction, which
+  // throws outside the provider.
+  <ElevationProvider>
+    <WorkspaceProvider>
+      <WorkspaceTabs />
+      <RefreshControls />
+    </WorkspaceProvider>
+  </ElevationProvider>,
 );
 `,
     "utf8",

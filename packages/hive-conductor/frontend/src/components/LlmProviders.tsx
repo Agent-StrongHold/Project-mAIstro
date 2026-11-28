@@ -77,6 +77,9 @@ export function LlmProviders() {
             {" "}Vault unavailable on this host (age toolchain missing) — key storage is disabled.
           </span>
         )}
+        {!can("config.write") && (
+          <span style={{ color: "var(--pencil)" }}> Provider keys are deployment-wide; config.write permission (admin or elevation) is required.</span>
+        )}
       </div>
       {notice && (
         <div

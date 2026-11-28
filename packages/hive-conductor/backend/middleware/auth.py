@@ -63,11 +63,15 @@ _PUBLIC_EXACT = frozenset(
     }
 )
 
+# Admin break-glass separation (#336): the admin account is deliberately
+# blocked from chat so it can never become the daily driver.
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 # Compatibility export for tests and callers that inspect the policy table.
 # scripts/check_enumerations.py imports this alias; the single table lives in
-# services/authorization.py beside the UI contract it feeds.
+# services/authorization.py beside the UI contract it feeds. Issue #336's
+# services/permission_policy.py must generate this exact table —
+# scripts/check-conductor-permission-matrix.py fails when the two drift.
 _PROTECTED_OPS = authorization.PROTECTED_OPS
 
 

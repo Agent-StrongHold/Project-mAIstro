@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { apiDelete, apiPost } from "../lib/api";
+import { useAuthorizedAction } from "./Elevation";
 import { useUser } from "../App";
 import { useToast } from "./shared";
 import { useWorkspaces, type Workspace, type WorkspaceRole } from "../context/WorkspaceContext";
@@ -16,6 +17,7 @@ function myRole(workspace: Workspace, userId: string | undefined): WorkspaceRole
  * policy exactly, including refusing to remove the last owner). */
 export function WorkspaceShare() {
   const user = useUser();
+  const authorizedAction = useAuthorizedAction();
   const toast = useToast();
   const { activeWorkspace, refresh, archiveWorkspace, deleteWorkspace } = useWorkspaces();
   const [open, setOpen] = useState(false);
@@ -37,10 +39,10 @@ export function WorkspaceShare() {
     setBusy(true);
     setError(null);
     try {
-      await apiPost(`/v1/workspaces/${activeWorkspace.id}/members`, {
+      await authorizedAction("workspaces.write", () => apiPost(`/v1/workspaces/${activeWorkspace.id}/members`, {
         user_id: trimmed,
         role: inviteRole,
-      });
+      }));
       setInviteUserId("");
       await refresh();
       toast(`Added ${trimmed} as ${inviteRole}`, "ok");
@@ -56,7 +58,7 @@ export function WorkspaceShare() {
     setBusy(true);
     setError(null);
     try {
-      await apiDelete(`/v1/workspaces/${activeWorkspace.id}/members/${memberId}`);
+      await authorizedAction("workspaces.write", () => apiDelete(`/v1/workspaces/${activeWorkspace.id}/members/${memberId}`));
       await refresh();
       toast(`Removed ${memberId}`, "ok");
     } catch (err) {
@@ -72,7 +74,7 @@ export function WorkspaceShare() {
     setError(null);
     try {
       const wsName = activeWorkspace.name;
-      await archiveWorkspace(activeWorkspace.id, false);
+      await authorizedAction("workspaces.write", () => archiveWorkspace(activeWorkspace.id, false));
       setOpen(false);
       setConfirmingArchive(false);
       toast(`Archived "${wsName}". Restore it from Archived in the tab bar.`, "ok");
@@ -89,7 +91,7 @@ export function WorkspaceShare() {
     setError(null);
     try {
       const wsName = activeWorkspace.name;
-      await deleteWorkspace(activeWorkspace.id);
+      await authorizedAction("workspaces.write", () => deleteWorkspace(activeWorkspace.id));
       setOpen(false);
       setConfirmingDelete(false);
       toast(`Deleted "${wsName}"`, "ok");

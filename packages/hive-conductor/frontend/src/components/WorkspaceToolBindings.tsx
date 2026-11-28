@@ -1,21 +1,10 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
+import { type AgentBindingDraft, type PersonaAgentOption } from "../lib/workspacePersonas";
+import { useAuthorizedAction } from "./Elevation";
 import { useUser } from "../App";
 import { useToast } from "./shared";
 import { useWorkspaces, type Workspace, type WorkspaceRole } from "../context/WorkspaceContext";
-
-type PersonaAgentOption = {
-  agent_id: string;
-  role: string;
-  default_tools: string[];
-  default_skills: string[];
-};
-
-type AgentBindingDraft = {
-  checkedDefaults: Set<string>;
-  extraTools: string;
-  promptFragment: string;
-};
 
 function myRole(
   members: { user_id: string; role: WorkspaceRole }[],
@@ -75,6 +64,7 @@ function bindingsFor(agents: PersonaAgentOption[], drafts: Record<string, AgentB
  * tool the persona never declared) what one agent may call here. */
 export function WorkspaceToolBindings() {
   const user = useUser();
+  const authorizedAction = useAuthorizedAction();
   const toast = useToast();
   const { activeWorkspace, refresh } = useWorkspaces();
   const [open, setOpen] = useState(false);
@@ -184,7 +174,7 @@ export function WorkspaceToolBindings() {
     setError(null);
     try {
       const bindings = bindingsFor(agents, drafts);
-      await apiPut(`/v1/workspaces/${workspaceId}/tool-bindings`, { bindings });
+      await authorizedAction("workspaces.write", () => apiPut(`/v1/workspaces/${workspaceId}/tool-bindings`, { bindings }));
       await refresh();
       setSaved(JSON.stringify(bindings));
       setConfirmingDiscard(false);

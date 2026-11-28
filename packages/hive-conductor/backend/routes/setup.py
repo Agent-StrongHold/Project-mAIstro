@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from services.permission_policy import DAILY_USER_PERMISSIONS
 
 from maistro.config.first_run import (  # pyright: ignore[reportMissingImports]
     DEFAULT_ADMIN_USERNAME,
@@ -40,11 +41,9 @@ _SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
 
 # Least-privilege permissions assigned to the daily account created at setup.
 # Protected operations still require explicit password-backed /auth/elevate;
-# assignment only makes that elevation possible. DAG authoring/optimization is
-# a normal daily-user workflow, while broader configuration/infrastructure
-# permissions remain admin-only until a dedicated grant-management surface is
-# introduced.
-_DEFAULT_DAILY_USER_PERMISSIONS = ["dags.write"]
+# assignment only makes that elevation possible. The shared policy inventory
+# owns this list so setup cannot silently strand an advertised UI mutation.
+_DEFAULT_DAILY_USER_PERMISSIONS = list(DAILY_USER_PERMISSIONS)
 
 
 class SetupRollbackError(RuntimeError):

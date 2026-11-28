@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import type { Schedule } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { useAuthorizedAction } from "../components/Elevation";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import { Switch } from "../components/Switch";
 import { TabList, TabPanel } from "../components/TabList";
@@ -23,6 +24,7 @@ const TABS = [{ id: "schedules", label: "Schedules" }, { id: "history", label: "
 
 export default function Schedules() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tab, setTab] = useState<"schedules" | "history">("schedules");
@@ -48,7 +50,7 @@ export default function Schedules() {
       return;
     }
     try {
-      const created = await apiPost<Schedule>("/v1/schedules", { workspace_id: activeWorkspaceId, name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      const created = await authorizedAction("schedules.write", () => apiPost<Schedule>("/v1/schedules", { workspace_id: activeWorkspaceId, name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true }));
       setSchedules((prev) => [...prev, created]);
       setCreating(false);
       setForm({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
@@ -62,7 +64,7 @@ export default function Schedules() {
   async function updateSchedule() {
     if (!editing) return;
     try {
-      const updated = await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      const updated = await authorizedAction("schedules.write", () => apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm));
       setSchedules((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
       setEditing(null);
       toast("Schedule updated", "ok");
@@ -71,7 +73,7 @@ export default function Schedules() {
 
   async function toggleSchedule(s: Schedule) {
     try {
-      const updated = await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
+      const updated = await authorizedAction("schedules.write", () => apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled }));
       setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast(s.enabled ? "Disabled" : "Enabled", "ok");
     } catch { toast("Failed to toggle", "error"); }
@@ -79,7 +81,7 @@ export default function Schedules() {
 
   async function deleteSchedule(id: string) {
     try {
-      await apiDelete(`/v1/schedules/${id}`);
+      await authorizedAction("schedules.write", () => apiDelete(`/v1/schedules/${id}`));
       setSchedules((prev) => prev.filter((s) => s.id !== id));
       toast("Schedule deleted", "ok");
     } catch { toast("Failed to delete", "error"); }
@@ -88,7 +90,7 @@ export default function Schedules() {
 
   async function runNow(s: Schedule) {
     try {
-      const updated = await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
+      const updated = await authorizedAction("schedules.write", () => apiPost<Schedule>(`/v1/schedules/${s.id}/run`));
       setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast("Schedule triggered", "ok");
     } catch { toast("Failed to trigger", "error"); }

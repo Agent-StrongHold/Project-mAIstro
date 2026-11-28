@@ -79,6 +79,10 @@
         {
           "name": "enumeration coverage (derived control lists \u2014 ratchet)",
           "sha256": "ec68bc63673dd0dae83ddf763d099bb6154acf7c947aaa0201c46c221f1c24c1"
+        },
+        {
+          "name": "Conductor API/UI permission matrix",
+          "sha256": "ca0a407d9c18712e47f1a85a2392850a0da2d735a739035411df460d0b7d6132"
         }
       ]
     },

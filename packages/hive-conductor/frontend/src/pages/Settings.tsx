@@ -153,7 +153,7 @@ export default function Settings() {
                 </div>
               )}
               {editing !== key && (
-                <button className="btn" disabled={!authorization.can(configPermission)} style={{ fontSize: 12, padding: "1px 6px", opacity: authorization.can(configPermission) ? 0.6 : 0.35 }} onClick={() => startEdit(key)}>edit</button>
+                <button className="btn" disabled={!authorization.can(configPermission)} style={{ fontSize: 12, padding: "1px 6px", opacity: authorization.can(configPermission) ? 0.6 : 0.35 }} onClick={() => startEdit(key)} title={authorization.can(configPermission) ? "Edit setting" : "Config write permission required — elevation or an admin role is required to edit system settings"}>edit</button>
               )}
             </div>
           ))}

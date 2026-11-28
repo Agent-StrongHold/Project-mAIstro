@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { AuthorizationNotice } from "../components/Authorization";
 import { LlmProviders } from "../components/LlmProviders";
+import { useAuthorizedAction } from "../components/Elevation";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
@@ -50,6 +51,7 @@ export default function Credentials() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const authorizedAction = useAuthorizedAction();
   const authorization = useAuthorization();
   const credentialPermission = authorization.surfacePermission("credentials") ?? "credentials.write";
 
@@ -85,7 +87,7 @@ export default function Credentials() {
     setError(null);
     setMessage(null);
     try {
-      await apiPut(`/v1/credentials/${providerId}`, { secret });
+      await authorizedAction("credentials.write", () => apiPut(`/v1/credentials/${providerId}`, { secret }));
       setDrafts((d) => ({ ...d, [providerId]: "" }));
       setMessage(`${providerId} saved securely`);
       await load();
@@ -102,7 +104,7 @@ export default function Credentials() {
     setError(null);
     setMessage(null);
     try {
-      await apiPut(`/v1/credentials/${providerId}/config`, { config });
+      await authorizedAction("credentials.write", () => apiPut(`/v1/credentials/${providerId}/config`, { config }));
       setMessage(`${providerId} config saved`);
       await load();
     } catch (err) {
@@ -156,7 +158,7 @@ export default function Credentials() {
     setSaving(providerId);
     setError(null);
     try {
-      await apiDelete(`/v1/credentials/${providerId}`);
+      await authorizedAction("credentials.write", () => apiDelete(`/v1/credentials/${providerId}`));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");

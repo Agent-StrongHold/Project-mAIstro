@@ -1,45 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-
-const API = "/v1/evolution";
-
+import { useUser } from "../App";
 import { PageHeader } from "../components/shared";
-
-type Genome = {
-  id: string;
-  name: string;
-  fitness_score: number | null;
-  generation: number;
-  eval_scores: Record<string, number>;
-  topology: { nodes: { id: string; role: string; model: string; strategy: string; system_prompt: string }[] };
-  harness_params: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  parent_a_id: string | null;
-  parent_b_id: string | null;
-};
-
-type EvoStatus = {
-  running: boolean;
-  execution_available: boolean;
-  availability: "executable" | "degraded" | "unavailable";
-  availability_reason: string | null;
-  domain_state_only: boolean;
-  cycle_count: number;
-  population_size: number;
-  last_error: string | null;
-  last_run_id: string | null;
-  last_run_status: string | null;
-  tournament: { total_battles: number; total_genomes_rated: number; benchmarks_tracked: number };
-};
-
-type LeaderEntry = {
-  genome_id: string;
-  avg_elo: number;
-  total_battles: number;
-  win_rate: number;
-};
+import { fetchEvolutionSnapshot, seedEvolutionPopulation, triggerEvolutionCycle, type EvoStatus, type Genome, type LeaderEntry } from "../lib/evolution";
 
 export default function Evolution() {
+  const user = useUser();
+  const canRunEvolution = user?.role === "admin";
   const [status, setStatus] = useState<EvoStatus | null>(null);
   const [genomes, setGenomes] = useState<Genome[]>([]);
   const [champion, setChampion] = useState<Genome | null>(null);
@@ -51,26 +17,17 @@ export default function Evolution() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [sRes, pRes, cRes, lRes] = await Promise.all([
-        fetch(`${API}/status`),
-        fetch(`${API}/population`),
-        fetch(`${API}/champion`),
-        fetch(`${API}/tournament/leaderboard`),
-      ]);
-      if (sRes.ok) setStatus(await sRes.json());
-      if (pRes.ok) {
-        const pop = await pRes.json();
+      const snap = await fetchEvolutionSnapshot();
+      if (snap.status) setStatus(snap.status);
+      if (snap.population) {
         setGenomes(
-          (pop as Genome[]).sort(
+          [...snap.population].sort(
             (a, b) => (b.fitness_score ?? 0) - (a.fitness_score ?? 0),
           ),
         );
       }
-      if (cRes.ok) {
-        const cd = await cRes.json();
-        setChampion(cd.genome ?? null);
-      }
-      if (lRes.ok) setLeaderboard(await lRes.json());
+      if (snap.champion !== undefined) setChampion(snap.champion);
+      if (snap.leaderboard) setLeaderboard(snap.leaderboard);
     } finally {
       setLoading(false);
     }
@@ -84,16 +41,12 @@ export default function Evolution() {
 
   const triggerCycle = async () => {
     setLoading(true);
-    await fetch(`${API}/cycle`, { method: "POST" });
+    await triggerEvolutionCycle();
     await refresh();
   };
 
   const seedPop = async () => {
-    await fetch(`${API}/seed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count: seedCount, base_name: "evolved" }),
-    });
+    await seedEvolutionPopulation(seedCount);
     await refresh();
   };
 
@@ -102,7 +55,7 @@ export default function Evolution() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1200 }}>
-      <PageHeader title="Evolution Engine" subtitle="Automatically improve agents over time using genetic algorithms" helpHref="/docs#evolution" />
+      <PageHeader title="Evolution Engine" subtitle={`Automatically improve agents over time using genetic algorithms${canRunEvolution ? "" : " · admin role required for runs"}`} helpHref="/docs#evolution" />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8 }}>
           {(["overview", "population", "tournament"] as const).map((t) => (
@@ -121,7 +74,7 @@ export default function Evolution() {
           ))}
         </div>
         <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
-          <button onClick={seedPop} disabled={loading} className="btn">
+          <button onClick={seedPop} disabled={loading || !canRunEvolution} title={canRunEvolution ? "Seed population" : "Admin role required for evolution controls"} className="btn">
             Seed {seedCount}
           </button>
           <input
@@ -134,7 +87,8 @@ export default function Evolution() {
           />
           <button
             onClick={triggerCycle}
-            disabled={loading || (status !== null && !status.execution_available)}
+            disabled={loading || !canRunEvolution || (status !== null && !status.execution_available)}
+            title={canRunEvolution ? "Run evolution cycle" : "Admin role required for evolution controls"}
             className="btn"
             style={{ background: "var(--accent)", color: "var(--paper)" }}
           >

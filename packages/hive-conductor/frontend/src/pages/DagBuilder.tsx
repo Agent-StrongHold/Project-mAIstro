@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import { useAuthorizedAction } from "../components/Elevation";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   ConfirmDialog,
@@ -11,49 +12,7 @@ import {
   PageHeader,
   useToast,
 } from "../components/shared";
-
-type Role = "queen" | "worker" | "scout" | "drone" | "guard";
-type Strategy = "react" | "plan_execute" | "direct" | "delegate";
-type DagStatus = "draft" | "active" | "archived";
-
-type DAGNode = {
-  id: string;
-  role: string;
-  name: string;
-  agent_id: string | null;
-  model: string | null;
-  strategy: Strategy;
-  prompt: string | null;
-  config: Record<string, unknown>;
-};
-
-type DAGEdge = {
-  id: string;
-  from_node: string;
-  to_node: string | null;
-  condition: string | null;
-};
-
-type DAGFile = {
-  id: string;
-  name: string;
-  description: string;
-  nodes: DAGNode[];
-  edges: DAGEdge[];
-  entry_node: string | null;
-  max_cycles: number;
-  run_scout: boolean;
-  status: DagStatus;
-  created_at: string;
-  updated_at: string;
-};
-
-type Agent = {
-  id: string;
-  name: string;
-  model: string;
-  status: string;
-};
+import { type Agent, type DAGEdge, type DAGFile, type DAGNode, type DagStatus, type LiveRun, type Role, type Strategy } from "../lib/dagTypes";
 
 const ROLE_ICONS: Record<string, string> = {
   queen: "\u265B",
@@ -137,7 +96,7 @@ function fmtRelative(iso: string): string {
 // `execute_dag` runs (and the projection is recorded) regardless of this
 // socket; `settled` marks a terminal/parked/error frame; `detach` asks the
 // handlers to close the socket at the next safe point.
-type LiveRun = { ws: WebSocket; started: boolean; settled: boolean; detach: boolean };
+// (LiveRun's shape lives in lib/dagTypes.ts.)
 
 // Strips the handlers, then closes. Nulling the handlers first keeps our own
 // close() from re-entering them.
@@ -153,6 +112,7 @@ function detachLiveRun(run: LiveRun): void {
 
 export default function DagBuilder() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [dags, setDags] = useState<DAGFile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -291,7 +251,7 @@ export default function DagBuilder() {
     try {
       let payload = updated;
       for (;;) {
-        const saved = await apiPut<DAGFile>(`/v1/dags/${payload.id}`, payload);
+        const saved = await authorizedAction("dags.write", () => apiPut<DAGFile>(`/v1/dags/${payload.id}`, payload));
         const pending = saveStateRef.current.pending;
         saveStateRef.current.pending = null;
         if (!pending) {
@@ -313,12 +273,12 @@ export default function DagBuilder() {
       saveStateRef.current.inFlight = false;
       setSaving(false);
     }
-  }, [toast]);
+  }, [toast, authorizedAction]);
 
   const handleDeleteDag = useCallback(async () => {
     if (!deleteId) return;
     try {
-      await apiDelete(`/v1/dags/${deleteId}`);
+      await authorizedAction("dags.write", () => apiDelete(`/v1/dags/${deleteId}`));
       toast("DAG deleted");
       if (selectedId === deleteId) {
         setSelectedId(null);
@@ -329,12 +289,12 @@ export default function DagBuilder() {
       toast("Delete failed", "error");
     }
     setDeleteId(null);
-  }, [deleteId, selectedId, toast]);
+  }, [deleteId, selectedId, toast, authorizedAction]);
 
   const handleCreate = useCallback(async () => {
     setCBusy(true);
     try {
-      const created = await apiPost<DAGFile>("/v1/dags", { name: cName, description: cDesc });
+      const created = await authorizedAction("dags.write", () => apiPost<DAGFile>("/v1/dags", { name: cName, description: cDesc }));
       setDags((prev) => [...prev, created]);
       setSelectedId(created.id);
       setShowCreate(false);
@@ -346,18 +306,18 @@ export default function DagBuilder() {
     } finally {
       setCBusy(false);
     }
-  }, [cName, cDesc, toast]);
+  }, [cName, cDesc, toast, authorizedAction]);
 
   const handleAddNode = useCallback(async () => {
     if (!dag) return;
     const offset = dag.nodes.length * 30;
     try {
-      const node = await apiPost<DAGNode>(`/v1/dags/${dag.id}/nodes`, {
+      const node = await authorizedAction("dags.write", () => apiPost<DAGNode>(`/v1/dags/${dag.id}/nodes`, {
         name: `node_${dag.nodes.length + 1}`,
         role: "worker",
         strategy: "react",
         config: { _pos: { x: 160 + offset, y: 120 + offset } },
-      });
+      }));
       setDag((prev) => prev ? { ...prev, nodes: [...prev.nodes, node] } : prev);
       setSelectedNode(node.id);
       setPropsOpen(true);
@@ -365,12 +325,12 @@ export default function DagBuilder() {
     } catch {
       toast("Failed to add node", "error");
     }
-  }, [dag, toast]);
+  }, [dag, toast, authorizedAction]);
 
   const handleDeleteNode = useCallback(async () => {
     if (!dag || !selectedNode) return;
     try {
-      await apiDelete(`/v1/dags/${dag.id}/nodes/${selectedNode}`);
+      await authorizedAction("dags.write", () => apiDelete(`/v1/dags/${dag.id}/nodes/${selectedNode}`));
       setDag((prev) => prev
         ? {
             ...prev,
@@ -384,22 +344,22 @@ export default function DagBuilder() {
     } catch {
       toast("Delete node failed", "error");
     }
-  }, [dag, selectedNode, toast]);
+  }, [dag, selectedNode, toast, authorizedAction]);
 
   const handleAddEdge = useCallback(async (targetId: string) => {
     if (!dag || !selectedNode) return;
     try {
-      const edge = await apiPost<DAGEdge>(`/v1/dags/${dag.id}/edges`, {
+      const edge = await authorizedAction("dags.write", () => apiPost<DAGEdge>(`/v1/dags/${dag.id}/edges`, {
         from_node: selectedNode,
         to_node: targetId,
-      });
+      }));
       setDag((prev) => prev ? { ...prev, edges: [...prev.edges, edge] } : prev);
       setAddEdgeTarget(null);
       toast("Edge added");
     } catch {
       toast("Add edge failed", "error");
     }
-  }, [dag, selectedNode, toast]);
+  }, [dag, selectedNode, toast, authorizedAction]);
 
   const handleRun = useCallback(() => {
     if (!dag) return;
@@ -407,6 +367,12 @@ export default function DagBuilder() {
       toast("Select a Workspace before running a DAG", "error");
       return;
     }
+    // No elevation pre-flight: the setup-provisioned daily user holds
+    // `dags.write` legitimately (services/permission_policy.py), and forcing
+    // a password per run would strand exactly the ordinary workflow #336
+    // unblocks. A principal without the grant is refused explicitly by the
+    // run socket itself (routes/ws.py authenticates the upgrade with
+    // permission="dags.write"), which the log below surfaces verbatim.
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
     // One Run at a time: retire a socket a previous run could have left
@@ -505,14 +471,14 @@ export default function DagBuilder() {
   const handleActivate = useCallback(async () => {
     if (!dag) return;
     try {
-      await apiPost(`/v1/dags/${dag.id}/activate`);
+      await authorizedAction("dags.write", () => apiPost(`/v1/dags/${dag.id}/activate`));
       setDag((prev) => prev ? { ...prev, status: "active" } : prev);
       setDags((prev) => prev.map((d) => (d.id === dag.id ? { ...d, status: "active" } : d)));
       toast("DAG activated");
     } catch {
       toast("Activate failed", "error");
     }
-  }, [dag, toast]);
+  }, [dag, toast, authorizedAction]);
 
   const handleNodePropsSave = useCallback(() => {
     if (!dag || !selectedNode) return;

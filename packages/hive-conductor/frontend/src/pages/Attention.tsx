@@ -20,6 +20,7 @@ import {
   submitHitlAnswer,
 } from "../lib/attention";
 import { useWorkspaces } from "../context/WorkspaceContext";
+import { useAuthorizedAction } from "../components/Elevation";
 import { Card, EmptyState, Hex, LoadingSpinner, PageHeader } from "../components/shared";
 
 function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accent" | "" {
@@ -127,6 +128,10 @@ function AttentionRow({
   const [error, setError] = useState<string | null>(null);
   const [applyOutcome, setApplyOutcome] = useState<string | null>(null);
   const [applyDetail, setApplyDetail] = useState<string | null>(null);
+  // Both the HITL answer door and the optimizer proposal doors are dags.write
+  // protected ops (#336): a 403 must route through the canonical elevation
+  // affordance instead of dying as an unreachable denial.
+  const authorizedAction = useAuthorizedAction();
   const canMutate = mutationsEnabled && !busy;
 
   const pausedReason = item.evidence?.paused_reason;
@@ -147,15 +152,20 @@ function AttentionRow({
     setBusy(true);
     setError(null);
     try {
-      await submitHitlAnswer(
-        door.runId,
-        door.nodeId,
-        hitlAnswerBody(pausedReason, text, item.evidence),
+      await authorizedAction("dags.write", () =>
+        submitHitlAnswer(
+          door.runId,
+          door.nodeId,
+          hitlAnswerBody(pausedReason, text, item.evidence),
+        ),
       );
       setAnswer("");
       onAnswered();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Couldn't submit answer.");
+      // ApiError carries the backend 403 detail; Elevation rejection carries
+      // "Elevation cancelled for <permission>". Surface the cause verbatim
+      // instead of a generic dead-end message (#336), like WorkspaceTabs.
+      setError(e instanceof Error ? e.message : "Couldn't submit answer.");
     } finally {
       setBusy(false);
     }
@@ -182,7 +192,9 @@ function AttentionRow({
     setApplyOutcome(null);
     setApplyDetail(null);
     try {
-      const result = await decideOptimizerProposal(item.source_id, decision);
+      const result = await authorizedAction("dags.write", () =>
+        decideOptimizerProposal(item.source_id, decision),
+      );
       const body =
         result && typeof result === "object" ? (result as Record<string, unknown>) : {};
       const outcome =
@@ -196,7 +208,8 @@ function AttentionRow({
         onAnswered();
       }
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : `Couldn't ${decision} proposal.`);
+      // Same cause-explicit posture as the HITL answer door above.
+      setError(e instanceof Error ? e.message : `Couldn't ${decision} proposal.`);
     } finally {
       setBusy(false);
     }

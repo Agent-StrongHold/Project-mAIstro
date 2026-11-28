@@ -1144,6 +1144,12 @@ jobs:
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+      # API and frontend mutation affordances are generated from the same
+      # policy inventory; this prevents a visible button from becoming a
+      # guaranteed 403 after a route or permission changes.
+      - name: Conductor API/UI permission matrix
+        run: uv run python scripts/check-conductor-permission-matrix.py
+
   quality-retirement:
     name: Quality / Workspace retirement
     runs-on: ubuntu-latest

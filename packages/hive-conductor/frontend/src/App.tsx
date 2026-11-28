@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { DefaultLandingRedirect } from "./components/DefaultLandingRedirect";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ElevationProvider } from "./components/Elevation";
 import { PermissionBoundary } from "./components/Authorization";
 import { AuthorizationProvider } from "./context/AuthorizationContext";
 import { Onboarding } from "./components/Onboarding";
@@ -266,7 +267,9 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <AppRoutes />
+        <ElevationProvider>
+          <AppRoutes />
+        </ElevationProvider>
       </ToastProvider>
     </ErrorBoundary>
   );
