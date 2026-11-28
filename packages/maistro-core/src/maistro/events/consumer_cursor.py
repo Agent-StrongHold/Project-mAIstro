@@ -101,6 +101,19 @@ class ConsumerCursorStore(Protocol):
         """
         ...
 
+    async def current_position(self, consumer_id: str) -> int:
+        """Read the durable position this consumer's cursor holds right now.
+
+        The read path a *rejected* `advance` needs (#2511): a caller whose
+        fencing token was refused must not keep reporting its own attempted
+        position as progress — it re-derives the authoritative position from
+        the store that owns the cursor instead. It is a read-only projection
+        of the same authority `claim`/`advance` serve, never a second one:
+        whoever holds the lease writes this position, and `advance`'s
+        monotonic write is the only thing that ever moves it.
+        """
+        ...
+
 
 class InMemoryConsumerCursorStore:
     """In-memory :class:`ConsumerCursorStore` (tests, dry-run, single-process homelab)."""
@@ -140,6 +153,10 @@ class InMemoryConsumerCursorStore:
             current = self._positions.get(consumer_id, 0)
             self._positions[consumer_id] = max(current, position)
             return True
+
+    async def current_position(self, consumer_id: str) -> int:
+        async with self._lock:
+            return self._positions.get(consumer_id, 0)
 
 
 _SCHEMA = """
@@ -205,6 +222,15 @@ class SqliteConsumerCursorStore:
         row = await cursor.fetchone()
         await self._conn.commit()
         return row is not None
+
+    async def current_position(self, consumer_id: str) -> int:
+        cursor = await self._conn.execute(
+            "SELECT position FROM consumer_cursors WHERE consumer_id = ?",
+            (consumer_id,),
+        )
+        row = await cursor.fetchone()
+        await self._conn.commit()
+        return int(row[0]) if row is not None else 0
 
     @staticmethod
     def _row_to_lease(row: tuple[object, ...]) -> CursorLease:

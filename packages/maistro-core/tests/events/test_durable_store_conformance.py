@@ -1703,6 +1703,33 @@ class TestConsumerCursorStore:
         assert again is not None
         assert again.position == 50
 
+    async def test_current_position_reads_zero_for_an_unknown_consumer(self, cursor_store):
+        assert await cursor_store.current_position("never-ticked") == 0
+
+    async def test_current_position_reads_back_the_accepted_position(self, cursor_store):
+        """The read path a rejected advance reports from (#2511): what the
+        store holds is what `current_position` answers, for the holder that
+        advanced and for a fresh reader alike."""
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        assert await cursor_store.current_position("c1") == 0
+
+        assert await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=42)
+        assert await cursor_store.current_position("c1") == 42
+
+    async def test_a_rejected_advance_leaves_the_current_position_untouched(self, cursor_store):
+        """A stale-token `advance` writes nothing, so the authoritative
+        position a rejected holder re-reads is exactly what the current
+        holder owns (#2511) — not the position the authority refused."""
+        stale = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert stale is not None
+        new_holder = await cursor_store.claim("c1", holder="h2")
+        assert new_holder is not None
+        await cursor_store.advance("c1", fencing_token=new_holder.fencing_token, position=10)
+
+        assert not await cursor_store.advance("c1", fencing_token=stale.fencing_token, position=999)
+        assert await cursor_store.current_position("c1") == 10
+
     async def test_different_consumers_do_not_share_a_cursor(self, cursor_store):
         lease_a = await cursor_store.claim("a", holder="h1")
         assert lease_a is not None
