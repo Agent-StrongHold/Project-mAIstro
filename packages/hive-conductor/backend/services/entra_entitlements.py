@@ -216,6 +216,41 @@ class EntraJitPolicy:
         )
 
 
+def jit_policy_from_config(
+    *,
+    enabled: bool,
+    policy_version: str,
+    groups: Mapping[str, EntraGroupGrant],
+    allowed_permissions: Iterable[str] | None = None,
+) -> EntraJitPolicy:
+    """Build the admission policy the JIT login path evaluates (#492).
+
+    The policy engine is generic in its roles, but the product transaction
+    that calls it is not: Hive user records carry only the ``user`` and
+    ``admin`` roles, and an admin account is never created through OAuth
+    (the same contract ``IdentityLinker``'s provisioner hook states). Every
+    mapped grant therefore lands on ``user``; differentiation between groups
+    lives in the configured permissions, and the ceiling pins ``max_role``
+    so a future mapping above ``user`` fails at activation, not at login.
+    """
+    for grant in groups.values():
+        if grant.role != "user":
+            raise EntraEntitlementPolicyError(
+                "JIT may only provision role 'user'; map group differentiation "
+                "to permissions, never to a broader role"
+            )
+    return EntraJitPolicy(
+        enabled=enabled,
+        eligible_groups=dict(groups),
+        role_precedence=("user",),
+        policy_version=policy_version,
+        max_role="user",
+        allowed_permissions=(
+            frozenset(allowed_permissions) if allowed_permissions is not None else None
+        ),
+    )
+
+
 __all__ = [
     "EntraAdmissionDecision",
     "EntraEntitlementPolicyError",
@@ -224,4 +259,5 @@ __all__ = [
     "EntraJitPolicy",
     "IncompleteGroupMembershipError",
     "SSOManagedEntitlements",
+    "jit_policy_from_config",
 ]

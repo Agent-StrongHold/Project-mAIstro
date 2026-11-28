@@ -310,6 +310,11 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # found with `maistro/http.py`: the rule is written in one file and takes
     # effect from another.
     "hive-conductor/backend/config.py",
+    # Entra group entitlement policy (#492): now reachable from the promotion
+    # path through config (jit_policy_from_config validation at load time), and
+    # it decides group->role/permission grants, so it sits on the containment
+    # surface alongside the other authorization inputs.
+    "services/entra_entitlements.py",
     # --- the gates, and the ratchet baselines they read ---------------------
     # Previously the only thing standing between the loop and its own CI config
     # was a sentence in a prompt telling the model not to touch it.

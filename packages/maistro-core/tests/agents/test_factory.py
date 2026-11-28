@@ -513,6 +513,34 @@ class TestCreateAgentsFilesystem:
         )
         assert delegator.get_task_status(direct_task_id) is not None
 
+    async def test_goal_pursuit_delegation_is_bounded_by_the_loaded_roster(
+        self, tmp_path: Path
+    ) -> None:
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.goals.reconciliation import GOAL_RECONCILIATION_AGENT
+
+        _write_agent_dir(tmp_path, "researcher")
+        delegator = A2ADelegator()
+        await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+
+        def delegate(target: str) -> str:
+            return delegator.delegate_task(
+                GOAL_RECONCILIATION_AGENT, "pursue goal", target, DelegationMode.ALLOW_LIST
+            )
+
+        receipt = delegator.get_task_status(delegate("researcher"))
+        assert receipt is not None and receipt.to_agent == "researcher"
+        with pytest.raises(ValueError, match="cannot delegate to"):
+            delegate("not-in-roster")
+
+    async def test_roster_agent_cannot_take_the_goal_pursuit_sender(self, tmp_path: Path) -> None:
+        from maistro.a2a.delegate import A2ADelegator
+        from maistro.goals.reconciliation import GOAL_RECONCILIATION_AGENT
+
+        _write_agent_dir(tmp_path, GOAL_RECONCILIATION_AGENT)
+        with pytest.raises(ConfigError, match="reserved delegation principal"):
+            await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=A2ADelegator()))
+
     async def test_delegator_without_registration_surface_is_refused(self, tmp_path: Path) -> None:
         """A configured delegator that cannot accept capabilities is refused loudly.
 
