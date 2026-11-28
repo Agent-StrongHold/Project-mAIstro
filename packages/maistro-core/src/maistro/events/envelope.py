@@ -445,6 +445,11 @@ class SqliteEventStore:
         # connection_transaction_lock, #2506 review).
         self._lock = connection_transaction_lock(conn)
 
+    @property
+    def conn(self) -> aiosqlite.Connection:
+        """The connection this store writes; the projection registry shares it."""
+        return self._conn
+
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)

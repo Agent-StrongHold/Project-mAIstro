@@ -706,6 +706,39 @@ async def test_container_heals_a_failed_bridge_append_through_the_ordinary_tick(
         await container.aclose()
 
 
+async def test_an_injected_effect_context_composes_the_projection_beside_its_own_store() -> None:
+    """#2506 review regression: injected context inside a SQLite container.
+
+    `_wire_capability_effects` returns an injected context untouched — no
+    canonical store is constructed on the container's database, so that
+    database has no `canonical_event_stream_watermarks` table. Composing the
+    projection registry from the container's pools therefore failed every
+    publisher emission at registration ("no such table:
+    canonical_event_stream_watermarks"), and a store on any other database
+    would have read the wrong watermark. The projection now composes beside
+    the injected store itself: here, in-memory, like the store.
+    """
+    from maistro.capabilities.effect_context import new_effect_context
+    from maistro.container import create_container
+    from maistro.events.envelope import InMemoryEventStore
+    from maistro.events.processing import InMemoryCanonicalProjectionStore
+    from maistro.types import AgentConfig
+
+    container = await create_container(
+        AgentConfig(router_api_key="test-key", database_url="sqlite://"),
+        effect_context=new_effect_context(),
+    )
+    try:
+        assert isinstance(container.capability_effects.event_store, InMemoryEventStore)
+        assert isinstance(
+            container.canonical_projection.projection_store, InMemoryCanonicalProjectionStore
+        )
+        persisted = await container.canonical_event_publisher.emit(_event("injected-2506"))
+        assert persisted.sequence == 1
+    finally:
+        await container.aclose()
+
+
 async def test_container_projection_pass_runs_before_the_legacy_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

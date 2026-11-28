@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +19
+  packages/maistro-core/tests: +22
 ---
 # 2506-canonical-log-replay-projection
 
@@ -147,3 +147,33 @@ was exercised directly: with the container's projection pass mutated out
 restored byte-exact, both pass. `docker-build` concluded success on the same
 head, and `durable-events`/`wheel-imports`/`hive-conductor-e2e-ui` were
 already green — the stale pins were the only red evidence.
+
+**Salvage round 2 (external writer, worktree-found; preserved and validated).**
+A second batch of #2506-review changes appeared uncommitted in the worktree
+while this repair was running (not this worker's edits; preserved per the
+salvage rule): `wire_canonical_projection` now selects the projection backend
+from the canonical EventStore in hand — `PgEventStore.pool`,
+`SqliteEventStore.conn` (new accessors), anything else in memory beside the
+store — instead of separately supplied `pg_pool`/`db_pool`. Rationale
+(#2506 review): a container can be handed a composed `effect_context` whose
+event authority is not the container's own database; an injected context
+skips `wire_canonical_events`' schema work, so pool-based selection built the
+registry on a database with no `canonical_event_stream_watermarks` table
+(every emission failing at registration) or read another database's
+watermark. Three tests join (+3, `packages/maistro-core/tests`, delta above
+updated): the SQLite store composes the projection on its own connection, a
+non-durable store gets an in-memory registry beside itself, and the injected
+`effect_context` regression end-to-end through `create_container` (emission
+succeeds where pool-based selection failed every emit at registration). The
+aborted-append PG test follows the new store-only signature. Validated at
+this tree on docker `pgvector/pgvector:pg18` (schema dropped, `alembic
+upgrade head` applied first, then suites): `packages/maistro-core/tests/events`
+**554 passed / 4 skipped** (was 551 + 3 new), mypy clean on
+`packages/maistro-core/src` (860 files), ruff check + format clean repo-wide,
+and the repair-round suites re-proven over the changed `container.py`:
+legacy-principal live + both chain-tip pin files + `test_container_postgres`
+28 passed. Note: the purge fixture in `test_envelope.py` truncates tables
+from the full migrated chain, so the events directory must run after
+`alembic upgrade head` (CI's durable-events job orders it the same way); out
+of that order it errors on `quota_invocation_evidence` — environmental, not
+a regression.

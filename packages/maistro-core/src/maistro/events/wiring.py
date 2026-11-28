@@ -45,36 +45,38 @@ def wire_legacy_trigger_surface(bus: EventBus) -> None:
     install_builtin_recipes(bus, enabled=False)
 
 
-async def wire_canonical_projection(
-    *,
-    event_store: Any,
-    pg_pool: Any = None,
-    db_pool: Any = None,
-) -> CanonicalProjection:
+async def wire_canonical_projection(*, event_store: Any) -> CanonicalProjection:
     """Compose the canonical-log projection stores beside their canonical store (#2506).
 
-    The backend follows the canonical EventStore's selection (the same order
-    `wire_canonical_events` used to build it): PostgreSQL pool, else the
-    SQLite connection, else in-memory. The projection cursor reads the
-    canonical watermark table during registration, so it must live in the
-    same database the canonical EventStore writes — a caller passing a pool
-    for a SQLite-backed canonical store would position nothing.
+    The canonical EventStore in hand decides the backend: a `PgEventStore`
+    projects onto that store's pool, a `SqliteEventStore` onto that store's own
+    connection, anything else projects in memory beside the store. The
+    projection cursor reads the canonical watermark table during registration,
+    so it must live in the same database the canonical EventStore writes —
+    and the store is the only reliable statement of which database that is.
+    A container may be handed a fully composed `effect_context` whose event
+    authority was built on a different database than the container's own
+    stores (or is in-memory inside a durable container), so selecting the
+    projection from separately supplied pools read a watermark — or found no
+    watermark table at all — in the wrong place (#2506 review).
     """
-    if pg_pool is not None:
+    from maistro.events.pg_envelope import PgEventStore
+
+    if isinstance(event_store, PgEventStore):
         from maistro.events.pg_stores import PgCanonicalProjectionStore, PgProjectionFailureStore
 
         return CanonicalProjection(
-            projection_store=PgCanonicalProjectionStore(pg_pool),
-            failure_store=PgProjectionFailureStore(pg_pool),
+            projection_store=PgCanonicalProjectionStore(event_store.pool),
+            failure_store=PgProjectionFailureStore(event_store.pool),
         )
-    if db_pool is not None:
+    if isinstance(event_store, SqliteEventStore):
         from maistro.events.processing import (
             SqliteCanonicalProjectionStore,
             SqliteProjectionFailureStore,
         )
 
-        projection_store = SqliteCanonicalProjectionStore(db_pool)
-        failure_store = SqliteProjectionFailureStore(db_pool)
+        projection_store = SqliteCanonicalProjectionStore(event_store.conn)
+        failure_store = SqliteProjectionFailureStore(event_store.conn)
         await projection_store.ensure_schema()
         await failure_store.ensure_schema()
         return CanonicalProjection(

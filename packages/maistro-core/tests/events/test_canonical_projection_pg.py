@@ -375,7 +375,7 @@ async def test_an_aborted_envelope_append_leaves_no_sequence_gap_to_skip(pg_pool
                     )
                     raise RuntimeError("abort")
 
-        projection = await wire_canonical_projection(event_store=store, pg_pool=pg_pool)
+        projection = await wire_canonical_projection(event_store=store)
         # Registration precedes the appends, as the publisher does: the stream
         # is placed at the pre-existing watermark (0) and every append below
         # lands inside the scan-reachable range.

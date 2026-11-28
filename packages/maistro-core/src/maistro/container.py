@@ -3242,19 +3242,24 @@ async def create_container(
         from maistro.credentials.types import CredentialRecord
 
         # The replayable canonical-Envelope -> durable-log projection (#2506),
-        # composed beside the canonical EventStore just selected (same backend
-        # order `wire_canonical_events` used: pool, else SQLite, else memory).
-        # The publisher registers streams here before appending, and
-        # `process_durable_events` scans them, so a bridge append that fails
-        # after the canonical commit heals on the ordinary processing tick
-        # instead of leaving a persisted Event permanently invisible to its
-        # only durable trigger processor.
+        # composed beside the canonical EventStore the container actually
+        # publishes through. That store decides the projection's backend and
+        # connection — pool, SQLite connection, or in-memory — because a
+        # caller may inject a composed `effect_context` whose event authority
+        # is not the container's own database (#2506 review): an injected
+        # context skips `wire_canonical_events`' schema work, so selecting the
+        # projection from the container's pools could build the registry on a
+        # database that has no `canonical_event_stream_watermarks` table
+        # (every publisher emission then fails at registration), or read
+        # another database's watermark. The publisher registers streams here
+        # before appending, and `process_durable_events` scans them, so a
+        # bridge append that fails after the canonical commit heals on the
+        # ordinary processing tick instead of leaving a persisted Event
+        # permanently invisible to its only durable trigger processor.
         from maistro.events.wiring import wire_canonical_projection
 
         canonical_projection = await wire_canonical_projection(
             event_store=capability_effects.event_store,
-            pg_pool=pg_pool,
-            db_pool=None if pg_pool is not None else db_pool,
         )
 
         model_chat_binding = Binding(

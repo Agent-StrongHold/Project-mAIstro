@@ -82,6 +82,11 @@ class PgEventStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
+    @property
+    def pool(self) -> asyncpg.Pool:
+        """The pool this store writes; the projection registry shares it."""
+        return self._pool
+
     async def ensure_schema(self) -> None:
         await ensure_canonical_event_schema(self._pool)
 
