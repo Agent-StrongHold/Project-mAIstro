@@ -294,6 +294,18 @@ class UsernameRegistry:
             else:
                 self._rollback_memory(batch, claims)
 
+    def get_user(self, user_id: str) -> HiveAccount | None:
+        """Return one account by id, durable backend included, or None.
+
+        The public form of ``_durable_user``: callers outside this module's
+        own import of the users ModelStore (e.g. the #492 JIT provisioner's
+        lost-link-race recovery) must resolve accounts through the registry
+        rather than gaining a new direct consumer of the retiring
+        ``stores.users`` surface (quality/workspace-retirement.json only
+        shrinks).
+        """
+        return self._durable_user(user_id)
+
     def migrate_or_index_one(self, username: str) -> None:
         """Index a legacy row encountered after startup migration."""
         normalized = normalize_username(username)
@@ -345,3 +357,13 @@ def create_users(users: Iterable[HiveAccount]) -> None:
 
 def rollback_users(users: Iterable[HiveAccount]) -> None:
     _default_registry().rollback_users(users)
+
+
+def get_user(user_id: str) -> HiveAccount | None:
+    """Return one durable account by id, or None when absent.
+
+    Module-level form of :meth:`UsernameRegistry.get_user` so callers that
+    already work through this registry (the JIT provisioner) never need to
+    touch the retiring ``stores.users`` ModelStore themselves.
+    """
+    return _default_registry().get_user(user_id)
