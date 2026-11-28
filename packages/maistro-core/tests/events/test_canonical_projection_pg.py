@@ -144,7 +144,6 @@ async def test_bridge_failure_after_canonical_commit_heals_across_two_containers
     stream = f"ws-2506-{uuid.uuid4().hex[:8]}"
     event_id = f"evt-2506-{uuid.uuid4().hex[:8]}"
     trigger_id = f"t2506-{uuid.uuid4().hex[:8]}"
-    delivered: list[dict] = []
     containers = []
     pool_b = None
     try:
@@ -196,8 +195,17 @@ async def test_bridge_failure_after_canonical_commit_heals_across_two_containers
         container_b = await create_container(_config(), pg_pool=pool_b)
         containers.append(container_b)
 
-        async def recorder(_trigger, event) -> None:
-            delivered.append(dict(event.payload))
+        # Attributed per trigger: the ADR-086 contract dispatches one event
+        # once per matching trigger definition, so a foreign `agent.*`
+        # subscription left in a shared database (e.g. an earlier run of
+        # test_container_pg_durable_events.py, whose `t1` has no teardown)
+        # adds its own legitimate delivery beside this test's. The criterion
+        # under test is that THIS trigger's subscription sees no duplicate
+        # handler effect — not that no other subscription exists.
+        delivered_by_trigger: dict[str, list[dict]] = {}
+
+        async def recorder(trigger, event) -> None:
+            delivered_by_trigger.setdefault(trigger.trigger_id, []).append(dict(event.payload))
 
         container_b.handler_caller = recorder
         await container_b.trigger_store.add(
@@ -244,14 +252,14 @@ async def test_bridge_failure_after_canonical_commit_heals_across_two_containers
         assert len(receipts) == 1
         assert receipts[0]["event_id"] == rows[0]["id"]
 
-        assert len(delivered) == 1
-        assert delivered[0]["_canonical_event"]["event_id"] == event_id
+        assert len(delivered_by_trigger.get(trigger_id, [])) == 1
+        assert delivered_by_trigger[trigger_id][0]["_canonical_event"]["event_id"] == event_id
 
         # A second tick is a replay, not a second occurrence.
         await container_b.process_durable_events()
         rows = await pg_pool.fetch("SELECT id FROM event_log WHERE source_event_id = $1", event_id)
         assert len(rows) == 1
-        assert len(delivered) == 1
+        assert len(delivered_by_trigger.get(trigger_id, [])) == 1
     finally:
         await _heal_event_log(pg_pool)
         await _cleanup(pg_pool, stream=stream, trigger_id=trigger_id, event_ids=[event_id])

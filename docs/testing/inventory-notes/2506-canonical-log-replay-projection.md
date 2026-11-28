@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +22
+  packages/maistro-core/tests: +23
 ---
 # 2506-canonical-log-replay-projection
 
@@ -56,8 +56,8 @@ event identity, no new processing lifecycle:
   repair entry point, no test-only append, no direct bus emit in the healing
   path.
 
-**Tests (+19, `packages/maistro-core/tests`).**
-`tests/events/test_canonical_projection.py` (+14): the bridge-failure heal
+**Tests (+20, `packages/maistro-core/tests`).**
+`tests/events/test_canonical_projection.py` (+15): the bridge-failure heal
 (identity + Workspace sequence preserved in the healed row), retry-emission
 after failure cannot skip delivery, log-commit-before-cursor never duplicates,
 watermark registration excludes retained history, poison dead-letter releases
@@ -67,7 +67,8 @@ one stream lease and progress after expiry with fenced stale writes refused,
 concurrent ticks converge on one row, and the negative shape — a publisher
 without a projection registry cannot heal, so reverting the projector to
 `if outcome.inserted: legacy_bus.emit(...)` fails these tests — plus SQLite
-backend round-trips, the in-place `event_log` column upgrade, and two
+backend round-trips (including the poison `failed_at` stamp persisting for
+repair), the in-place `event_log` column upgrade, and two
 in-memory `create_container` tests forcing the bridge append to throw after
 the canonical commit (one canonical event, zero log rows, no receipt, no
 bus-trigger fire; then the healed ordinary tick delivers exactly one row and
@@ -164,7 +165,9 @@ watermark. Three tests join (+3, `packages/maistro-core/tests`, delta above
 updated): the SQLite store composes the projection on its own connection, a
 non-durable store gets an in-memory registry beside itself, and the injected
 `effect_context` regression end-to-end through `create_container` (emission
-succeeds where pool-based selection failed every emit at registration). The
+succeeds where pool-based selection failed every emit at registration; two
+of the three live in `test_wiring.py`, the injected-context regression in
+`test_canonical_projection.py`). The
 aborted-append PG test follows the new store-only signature. Validated at
 this tree on docker `pgvector/pgvector:pg18` (schema dropped, `alembic
 upgrade head` applied first, then suites): `packages/maistro-core/tests/events`
@@ -177,3 +180,50 @@ from the full migrated chain, so the events directory must run after
 `alembic upgrade head` (CI's durable-events job orders it the same way); out
 of that order it errors on `quota_invocation_evidence` — environmental, not
 a regression.
+
+**Delta reconciliation (suite-inventory gate repair).** The merge-queue
+`integration-scope` evaluation failed `check-suite-inventory.py` on exactly
+one suite: `packages/maistro-core/tests` collected 19412 against an expected
+19411 (net +1). Root cause is bookkeeping in this note, not a phantom or a
+silently lost suite: the `failed_at`-stamping repair commit (`d9a15dd056`,
+"stamp failed_at in the same write that dead-letters a projection") added
+`test_sqlite_poison_failure_persists_failed_at_for_repair` to
+`test_canonical_projection.py` without the note's delta being moved from +19
+to +20, so every later update inherited the one-short count. Re-proven by
+pytest collection with the branch venv: merge-base `14acce617c` 19375,
+after the initial batches (`d9a15dd056`) 19395 (+20), after the salvage
+round (`30dd2d350a`) 19398 (+3), develop tip `96849129a6` 19389, merged head
+`af6e23e4d1` 19412 — i.e. the branch adds +23 over the develop tip
+(16 + 5 + 2 across the three new/extended files; `test_container_pg_durable_events.py`
+unchanged at 15). The `inventory-delta` above is corrected +22 -> +23 and the
+batch attributions above now match collection exactly. No test was added,
+removed, or edited by this correction.
+
+**Repair round 2 (live-PG re-proof + one shared-database isolation fix).**
+Re-proven first-hand on a fresh docker `pgvector/pgvector:pg18` (dedicated
+port, `DATABASE_URL` pointed at it, `alembic upgrade head` applying the full
+chain and ending at `074` — the #2506 revision renders and applies):
+`packages/maistro-core/tests/events` **564 passed / 5 skipped, twice** (20 PG
+projection + container-durable legs all green), and the chain-tip/live-PG pin
+suites `test_migration_chain.py`, `test_legacy_principal_ownership_live.py`,
+`test_goal_installed_base_upgrade.py`,
+`test_capability_invocation_effect_index_migration.py`,
+`test_event_schema_agreement.py` **36 passed** over the same server. The
+re-proof exposed one flake this branch's own PG tests carry between
+invocations sharing a database:
+`test_bridge_failure_after_canonical_commit_heals_across_two_containers`
+asserted `len(delivered) == 1` on a delivery list that attributes nothing —
+while `process_events_batch` correctly dispatches one event once per matching
+trigger definition, so a foreign `agent.*` subscription left in the shared
+database (an earlier run of `test_container_pg_durable_events.py`, whose
+`t1` definition has no teardown) added a second legitimate delivery and
+failed the count. Reproduced deterministically (t1 present -> fail; removed
+-> 3/3 pass) — production behaviour is correct; the test's premise was not.
+The fix attributes deliveries per trigger and asserts exactly one delivery
+for this test's trigger (the criterion-3 shape: no duplicate handler effect
+per subscription), immune to foreign subscriptions. Proven both ways: with
+`t1` present the test now passes 3/3 (it failed deterministically before),
+and a production mutation injecting one unclaimed extra physical send fails
+at exactly the new per-trigger duplicate assertion (`assert 2 == 1`),
+restored byte-exact afterwards. Test-only change: node counts unchanged, so
+the `inventory-delta` above is still +23.
