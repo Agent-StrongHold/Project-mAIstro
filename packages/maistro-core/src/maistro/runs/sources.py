@@ -25,6 +25,13 @@ CHAT_SOURCE = "chat"
 #: `admission_source` for work a Schedule fired (#145).
 SCHEDULE_SOURCE = "schedule"
 
+#: `admission_source` for work the Goal reconciliation loop admitted (M3 #805):
+#: a pursuit Run the Workspace Agent's reconciler fulfilled for one of its
+#: durable Goals. Named here, not in ``goals.reconciliation``, for the same
+#: reason every other source is: the consumer allowlist, the retention policy
+#: and the admitter must agree on the string without importing each other.
+GOAL_RECONCILIATION_SOURCE = "goal_reconciliation"
+
 #: Sources whose Runs a bounded store evicts *first*.
 #:
 #: Chat turns arrive orders of magnitude more often than task submissions, and
