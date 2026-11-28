@@ -547,7 +547,7 @@
     "coverage-unit": "f599b26a91798c9db0fcb0a1cdbe88ebc852c98d1d87566da54f2aa4b38940c8",
     "coverage-archive": "c2e6d0aecd422d0456f6e8c42aa00afd6797099d1cef810f1fc725b61f688a09",
     "coverage-postgres": "600193580c77e9b5f88408dcdb344de172222f8f1863c3cd552eec99ce7f187d",
-    "coverage-scripts": "3e15c37af1bad7906c81a837de24464f217c2e868f55c221018cdb3599f84b84",
+    "coverage-scripts": "d6e970952d0c5b4662a262dbfae415564933ed3471e311e52317b2371f3f69a6",
     "coverage-hive-backend": "4a7092f7e5c98ccd0b81304fae3217c613f4e00fbe8ea84faaaf8e946f576157",
     "coverage-server-turing": "8771b33a1be751dd8f27cc767cec21e3190cf905c937442fd37e61979abc309a",
     "coverage-design-registry-ext": "b9e1d1dfb7cd1584b571bb854e1f3bed664a1abcbd203e841f4f6248e46d874c",

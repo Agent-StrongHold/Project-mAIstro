@@ -608,6 +608,13 @@ jobs:
             || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The root suite's shipped-state ratchet self-checks resolve
+          # RATCHET_BASE_REV (origin/develop) with git; a shallow checkout
+          # cannot, and the ratchet fail-closes by design ("a ratchet cannot
+          # judge monotonicity without the state it is judging against").
+          # Same full-history guarantee the old in-gate placement had.
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
