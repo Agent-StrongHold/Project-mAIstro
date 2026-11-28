@@ -157,6 +157,38 @@ No ledger under `quality/` was edited.
 | 5 | Consumer sees truthful result: response, persisted decision, candidate status and `auto_applied` agree | **PASS** — asserted in tests 1, 2 and 4 (`stores.optimizer_proposals[id]` vs response) |
 | 6 | Red-before / green-after route and store tests under canonical PostgreSQL and configured provider; exact SHA; CI evidence; order-swap test fails | **PARTIAL** — red/green at exact SHAs and the order-swap control are above; **UNVERIFIED**: PostgreSQL-backed stores (the suite's stores are the in-memory `JsonStore`s), a configured model provider (no credentials in this environment; executor/evaluator are faked at their module seams), and hosted CI (this lane cannot push). |
 
+## Independent re-validation (this lane, round 2)
+
+The implementing round's claims above were re-executed from scratch in a fresh
+evaluator session (head `e8922fabbb6f`, develop base `547eb70afd6`); no number
+was carried over:
+
+- Red-before re-verified: the suite file copied verbatim onto a scratch
+  worktree at the exact merge base `547eb70afd6` → `18 failed`. The same file
+  at the lane head → `18 passed`.
+- Order-swap negative control re-executed in a scratch worktree at the lane
+  head (operations 3/4 moved above operation 2): `4 failed, 14 passed` —
+  exactly the four tests the table above names.
+- `uv run pytest packages/hive-conductor/backend/tests -q --timeout=300` →
+  `4673 passed, 121 skipped` (the round-1 run's `58 errors` under
+  `-p no:logging` are the same tests, resolved with the plugin enabled).
+- CI's one-process cross-tree check, CI's exact command and env
+  (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60`) → `11964 passed, 263 skipped` — no cross-suite leakage from
+  the new file.
+- Gates re-run with CI's arguments: `ruff check .` / `ruff format --check .`
+  pass; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1217 → 1217; `check-promotion-surface.py`,
+  `check-radon-baseline.py`, `check-reachability.py` (+provenance),
+  `check-workspace-retirement.py`, `check-test-duplicates.py`,
+  `check-backlog-consistency.py` → all exit 0;
+  `check-suite-inventory.py` → ok with this note's `+18` (and at the base it
+  reports `DRIFT ... expected 4776, collected 4794`, confirming the delta is
+  exactly the new suite).
+
+No tree change resulted from re-validation; this section is the only edit.
+
 ## Residual risks
 
 - The promotion lock and the in-flight measurement dedup are **per process**.
