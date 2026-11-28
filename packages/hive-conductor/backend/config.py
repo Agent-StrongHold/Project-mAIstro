@@ -50,6 +50,10 @@ _ENV_FILES: tuple[str, ...] = tuple(
 _OAUTH_PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _OAUTH_SCOPE_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 
+# MAIstro permission tokens as routed through `principal_has_permission`:
+# lowercase dotted names like `dags.write`, `approvals.resolve`, `hitl.answer`.
+_JIT_PERMISSION_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+
 
 def is_valid_oauth_provider_name(value: str) -> bool:
     """Return whether ``value`` is the canonical provider URL slug."""
@@ -164,6 +168,35 @@ class OAuthProviderSettings(BaseModel):
                 "unless entra_tenant_id derives them"
             )
         return self
+
+
+class EntraJitGroupSettings(BaseModel):
+    """One administrator-configured JIT-eligible Entra group mapping (#492).
+
+    Keys are immutable Entra group object IDs, validated where the field is
+    declared; the grant itself is validated again by ``EntraJitPolicy`` at
+    activation so the ceilings and the mapping can never disagree.
+    """
+
+    # SECURITY-REVIEW: Environment JSON is an external deserialization
+    # boundary; unknown fields and input-bearing validation errors are refused.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    role: Literal["user"] = "user"
+    permissions: tuple[str, ...] = ()
+
+    @field_validator("permissions")
+    @classmethod
+    def validate_permissions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > 64 or len(set(value)) != len(value):
+            raise ValueError("permissions must be at most 64 unique entries")
+        for permission in value:
+            if not _JIT_PERMISSION_RE.fullmatch(permission):
+                raise ValueError(
+                    "permissions must be lowercase tokens like 'dags.write' "
+                    "(letters, digits, and one of . _ : -)"
+                )
+        return value
 
 
 class Settings(BaseSettings):
@@ -342,6 +375,17 @@ class Settings(BaseSettings):
     oauth_public_origin: str | None = None
     oauth_success_path: str = "/"
 
+    # Entra group-gated JIT account provisioning (#492). Fail-closed: the
+    # default is off, and an unlinked Entra identity stays refused exactly as
+    # before. Turning it on states *which* immutable group object IDs may be
+    # admitted, under a named policy version, with an optional permission
+    # ceiling; membership is resolved authoritatively per login, and only the
+    # configured permissions are ever granted to the created account.
+    entra_jit_enabled: bool = False
+    entra_jit_policy_version: str = ""
+    entra_jit_groups: dict[str, EntraJitGroupSettings] = Field(default_factory=dict)
+    entra_jit_allowed_permissions: tuple[str, ...] | None = None
+
     # The single, explicit, greppable local-development escape. Startup refuses
     # a Secure-disabled session cookie unless this is set — see
     # `maistro.security.transport.assert_session_transport_is_safe`.
@@ -513,6 +557,54 @@ class Settings(BaseSettings):
                 )
             if self.oauth_public_origin is None:
                 raise ValueError("human_auth_mode=entra requires oauth_public_origin")
+        return self
+
+    @field_validator("entra_jit_groups", mode="before")
+    @classmethod
+    def canonicalize_entra_jit_group_ids(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        canonical: dict[str, object] = {}
+        for raw_group_id, grant in value.items():
+            try:
+                group_id = str(uuid.UUID(str(raw_group_id).strip()))
+            except ValueError as exc:
+                raise ValueError(
+                    "entra_jit_groups keys must be immutable Entra group object UUIDs, "
+                    "never display names"
+                ) from exc
+            if group_id in canonical:
+                raise ValueError("duplicate Entra group object ID in entra_jit_groups")
+            canonical[group_id] = grant
+        return canonical
+
+    @model_validator(mode="after")
+    def validate_entra_jit_wiring(self) -> Settings:
+        if not self.entra_jit_enabled:
+            return self
+        entra = self.oauth_providers.get("entra")
+        if entra is None or entra.entra_tenant_id is None:
+            raise ValueError(
+                "entra_jit_enabled requires the provider named entra with an entra_tenant_id"
+            )
+        if not self.entra_jit_groups or not self.entra_jit_policy_version.strip():
+            raise ValueError(
+                "entra_jit_enabled requires entra_jit_groups and entra_jit_policy_version"
+            )
+        # Validate the whole mapping through the real policy engine at load
+        # time, so a mapping above the ceiling or outside the admitted roles
+        # fails configuration -- not the first login that tries to use it.
+        from services.entra_entitlements import EntraGroupGrant, jit_policy_from_config
+
+        jit_policy_from_config(
+            enabled=True,
+            policy_version=self.entra_jit_policy_version,
+            groups={
+                group_id: EntraGroupGrant(role=grant.role, permissions=frozenset(grant.permissions))
+                for group_id, grant in self.entra_jit_groups.items()
+            },
+            allowed_permissions=self.entra_jit_allowed_permissions,
+        )
         return self
 
     @property
