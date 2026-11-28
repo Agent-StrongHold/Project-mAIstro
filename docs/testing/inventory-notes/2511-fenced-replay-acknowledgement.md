@@ -77,3 +77,45 @@ same consistent cursor and acknowledgement back. Two: a takeover injected
 between A's accepted advance and its acknowledgement publishes only the
 authoritative position (9) on `consumer_cursors` and `event_replay_cursors`
 alike, and B continues from it with nothing contradictory to reconcile.
+
+**Local validation evidence (2026-11-28 re-verification round, head
+`96849129a66e9f7d98d01218f218bbc0f8c27217`).** Independent re-run, not taken
+from the implementing round's claims:
+
+- `pytest packages/maistro-core/tests/test_container_wiring.py -q` → 74 passed
+  (all three fenced-acknowledgement wiring tests green with the fix).
+- `pytest packages/maistro-core/tests/events -q` with
+  `MAISTRO_TEST_DATABASE_URL` pointed at a real PostgreSQL 17 server
+  (`auto2511-pg17`, port 5561, `maistro_test` database) → 541 passed,
+  5 skipped (pre-existing purge/`MAISTRO_TEST_PG_DSN` skips, none related to
+  #2511), including both `TestTheReplayAcknowledgementIsFencedThroughTheCursor`
+  PG legs over two independent asyncpg pools and the 9-backend
+  `current_position` conformance triples.
+- `pytest packages/maistro-core/tests/events/test_durable_store_conformance.py
+  -q` with the same URL → 208 passed (memory, sqlite and postgres legs).
+- **Red-check re-proven**: scratch worktree at the parent commit
+  `14acce617ce6eee69249fc5148ec13a18a4e8f9c` with only the two test files from
+  this commit applied (`git diff 14acce617c 96849129a --
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/events/test_container_pg_durable_events.py |
+  git apply`, scratch left at `~/Git/worktrees/redcheck-2511`): both takeover
+  wiring tests fail against the pre-fix tick exactly on the fencing assertions
+  — `assert cursor == container.durable_event_cursor == 0` → `assert 3 == 0`
+  (the rejected position was published) and
+  `assert cursor == container.durable_event_cursor == 9` → `assert 2 == 9`
+  (the stale pre-takeover view was published). Green with the fix in this
+  worktree, so the regressions stay red against code that ignores `advance`'s
+  result or performs an unfenced secondary acknowledgement.
+- `ruff check .`, `ruff format --check .`, `mypy packages/maistro-core/src`,
+  `python scripts/check-suite-inventory.py` → all clean.
+
+One first PG-file run against the shared server showed 4 transient failures
+(including the fenced-takeover test) that passed unchanged when re-run and
+passed consistently afterwards with no code change — consistent with
+interference from other tenants of that shared server, not with the fix; the
+recorded green runs above are the re-runs.
+
+Residual for issue closure (hosted gates, out of local scope): strict
+quality/release CI on the merged develop SHA, and the #459 cross-product
+parity proof — both remain hosted-CI evidence; nothing in the local battery
+blocks them.
