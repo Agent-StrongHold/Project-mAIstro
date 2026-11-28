@@ -24,7 +24,7 @@ promotion contract that consumes it must be able to cite the Runs that
 justify a promotion (SPEC-100126-a9c4 R4/R8).
 
 Measurements are deduplicated **while in flight**: two callers that ask for
-the same idempotent content under the same scope share one Run and one judge
+the same idempotent content under the same scope and acting user share one Run and one judge
 call, so concurrent optimizer passes over one source version never pay for
 the same evaluation twice. Nothing is cached after completion — a later pass
 measures again (#854: one lucky sample must not become permanent evidence).
@@ -167,10 +167,13 @@ async def _measure(dag_data: dict[str, Any], *, scope: DagExecutionScope) -> Sco
 async def score_variant(dag_data: dict[str, Any], *, scope: DagExecutionScope) -> ScoredRun:
     """Execute one DAG snapshot and evaluate its output.
 
-    Keyed by content: the same snapshot under the same scope is measured once
-    while that measurement is in flight, whoever asks.
+    Keyed by content and principal: the same snapshot under the same scope
+    and acting user is measured once while that measurement is in flight.
+    The acting user is part of the key because execution authority is
+    per-principal (host roles, Sentinel permission checks) — one user must
+    never inherit another user's execution evidence.
     """
-    key = (scope.workspace_id, scope.project_id, snapshot_hash(dag_data))
+    key = (scope.workspace_id, scope.project_id, scope.user_id, snapshot_hash(dag_data))
     return await _shared(key, lambda: _measure(dag_data, scope=scope))
 
 
