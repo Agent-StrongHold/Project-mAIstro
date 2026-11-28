@@ -712,6 +712,20 @@ or placeholder-only section.
 
 ### Security
 
+- **Develop Gitleaks findings classified as type-annotation false positives and
+  re-keyed after a squash merge (#2538).** The two `generic-api-key` findings
+  the full-history develop scan reported in
+  `packages/maistro-core/src/maistro/security/sentinel/integrity.py` are
+  Python parameter type annotations: a parameter named for a private key,
+  annotated with the `cryptography` package's Ed25519 type. They are not
+  credentials, so there is nothing to revoke and no exposure. PR #2533's
+  disposition was keyed to its pre-squash branch head, so the squash merge
+  re-opened the findings on develop; two exact commit/path/rule/line
+  fingerprints replace the drifted coverage, the branch-head entries stay
+  (the `--all` arm still scans that branch's history), and no rule, path
+  allowlist, or scan scope changed. Classification and failing-to-green
+  evidence in `REPAIR-NOTES-2538-gitleaks-squash-drift.md`.
+
 - **Image lock reconciliation and canvas npm audit follow-up after #2305
   (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
   and `security.yml` expected-member pin move from `setuptools==84.0.0` to
