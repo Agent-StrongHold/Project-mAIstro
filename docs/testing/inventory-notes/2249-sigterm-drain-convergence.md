@@ -58,3 +58,33 @@ that the lifespan teardown ran to `maistro_engine_stopped` — the callback that
 never ran before the fix. Red-check against the pre-fix tree: the same
 wedge-and-SIGTERM scenario on the unbounded argv left the process alive past
 15s (killed by the harness), reproducing the hang the soak lane reported.
+
+## Repair round: the argv value must be an integer spelling (Gate C)
+
+The first cut of `_uvicorn_args` carried `str(_connection_grace_s())` —
+`"10.0"`. Uvicorn's CLI declares `--timeout-graceful-shutdown` as `type=int`
+(`uvicorn/main.py`, reproduced on uvicorn 0.46.0: `Invalid value for
+'--timeout-graceful-shutdown': '10.0' is not a valid integer.`), so the
+container's `os.execvp` aborted before the server ever started: the engine
+container never came ready, which is exactly why CI's `docker-build` (whose
+`smoke-engine-canvas.sh` boots the shipped image) and `Gate C — canonical
+clean install` (readiness poll on :8000) failed on this head while every
+test suite stayed green — the unit test only checked `float(args[...])`,
+and the end-to-end subprocess test drives `uvicorn.Config` directly, where
+a float is accepted. Only the CLI enforces the integer.
+
+Fix: `str(int(_connection_grace_s()))` — the shipped default becomes `"10"`,
+matching `Dockerfile.research`'s CMD, and an override like
+`MAISTRO_SHUTDOWN_CONNECTION_GRACE=2` still lands as `"2"`. The argv test
+gains an assertion pinning the integer spelling
+(`str(int(args[flag_index + 1])) == args[flag_index + 1]`), so a future
+float-shaped regression fails a test instead of a stack boot. Local
+re-validation (2026-11-28, worktree at the repair head): the pre-fix CLI
+abort reproduced verbatim; the fixed argv
+(`python -m uvicorn maistro_server.main:app --host 0.0.0.0 --port <p>
+--timeout-graceful-shutdown 10`) booted a live server and SIGTERM exited
+cleanly; `packages/maistro-server/tests` 756 passed / 18 skipped;
+`check-suite-inventory.py --suite packages/maistro-server/tests` matches
+(774 identities); ruff check/format green; CI's `mypy --strict
+packages/maistro-core/src` green after `uv sync --locked --all-extras` +
+maistro-evolve install (the gate's env).

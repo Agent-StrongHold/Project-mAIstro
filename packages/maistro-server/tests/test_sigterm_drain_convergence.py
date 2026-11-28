@@ -168,6 +168,9 @@ class TestLaunchArgvCarriesTheBound:
         # The default sits strictly below the shipped compose grace
         # (stop_grace_period: 30s), leaving the teardown room to run.
         assert float(args[flag_index + 1]) == entrypoint.DEFAULT_CONNECTION_GRACE_S
+        # Uvicorn's CLI requires an integer here: "10.0" would abort the exec
+        # with "is not a valid integer".
+        assert str(int(args[flag_index + 1])) == args[flag_index + 1]
         assert entrypoint.DEFAULT_CONNECTION_GRACE_S < 30.0
         # The rest of the argv is the exec this entrypoint always ran.
         assert args[args.index("-m") + 1] == "uvicorn"

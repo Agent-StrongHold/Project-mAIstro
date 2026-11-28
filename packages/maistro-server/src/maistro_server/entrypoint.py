@@ -64,7 +64,9 @@ def _uvicorn_args() -> list[str]:
         "--port",
         "8000",
         "--timeout-graceful-shutdown",
-        str(_connection_grace_s()),
+        # Uvicorn's CLI declares this flag INTEGER; a float literal such as
+        # "10.0" aborts the exec with "is not a valid integer".
+        str(int(_connection_grace_s())),
     ]
 
 
