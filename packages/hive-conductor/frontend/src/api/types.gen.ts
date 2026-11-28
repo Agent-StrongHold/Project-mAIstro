@@ -4838,6 +4838,13 @@ export interface paths {
         /**
          * List Persona Templates
          * @description Every persona a workspace-creation picker can offer.
+         *
+         *     #2549: templates gated by a disabled optional module (pm_fleet under
+         *     `pm_tooling`) are absent from this listing, so the standard first-run
+         *     workspace dialog never advertises the PM-demo preset. The per-template
+         *     routes below (agents/checklist/feedback) and workspace creation itself
+         *     stay template-agnostic: an existing pm_fleet Workspace keeps resolving,
+         *     and the setup wizard re-enables the persona by selecting `pm_tooling`.
          */
         get: operations["list_persona_templates_v1_workspaces_persona_templates_get"];
         put?: never;

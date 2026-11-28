@@ -188,8 +188,11 @@ def brief_commit_facade(monkeypatch, chat_run_spine):
     chat_runs.reset_for_tests()
 
 
-def _stream(client, text: str, workspace_id: str | None = None) -> list[dict[str, Any]]:
+def _stream(
+    client, text: str, workspace_id: str | None = None, **extra: Any
+) -> list[dict[str, Any]]:
     body: dict[str, Any] = {"messages": [{"role": "user", "content": text}], "model": "m"}
+    body.update(extra)
     if workspace_id:
         body["workspace_id"] = workspace_id
     with client.stream("POST", "/v1/chat/stream", json=body) as r:
@@ -535,6 +538,144 @@ def test_a_replayed_confirmation_after_a_lost_response_returns_the_same_commit(
     assert "Nothing was duplicated" in done["content"]
     assert len(_goal_route(authed_client, ws)) == 1
     assert brief_commit_facade.briefs.brief_rows() == [(brief["commit"]["brief_id"], 1)]
+
+
+def test_interview_turns_reach_the_dock_session_transcript(
+    admin_client, authed_client, llm
+) -> None:
+    """A dock close/reopen must not lose the interview.
+
+    The Workspace Agent dock's transcript is its durable `/v1/chat/sessions`
+    row: the panel unmounts on close and rehydrates from the SessionStore, so
+    an exchange answered before admission (`_interview_turn` returns before
+    `execute_turn` ever ran) existed only in the client's in-memory `turns`
+    state. The interview now appends through the same
+    `conversation_sessions.append_turn` seam the admitted path uses — the
+    commit confirmation included.
+    """
+    ws = _workspace(admin_client)
+    r = authed_client.post(
+        "/v1/chat/sessions", json={"title": "Workspace Agent", "workspace_id": ws}
+    )
+    assert r.status_code == 200
+    sid = r.json()["id"]
+
+    events = _stream(
+        authed_client,
+        "Let's make a new video, let's start drafting a storyboard",
+        ws,
+        session_id=sid,
+        turn_id="turn-open-1",
+    )
+    assert [e["type"] for e in events] == ["brief", "done"]
+    first_reply = events[1]["content"]
+
+    brief, done = _stream(
+        authed_client, "the grouting haze fix", ws, session_id=sid, turn_id="turn-2"
+    )
+    assert brief["event"] == "answered"
+    assert done["content"]
+    assert llm.calls == 0, "the model is not asked while the interview owns the turn"
+
+    # Rehydration is a plain session GET — exactly what the dock's mount
+    # effect issues when the panel reopens. The exchange is durable now.
+    r = authed_client.get(f"/v1/chat/sessions/{sid}")
+    assert r.status_code == 200
+    assert [(m["role"], m["content"]) for m in r.json()["messages"]] == [
+        ("user", "Let's make a new video, let's start drafting a storyboard"),
+        ("assistant", first_reply),
+        ("user", "the grouting haze fix"),
+        ("assistant", done["content"]),
+    ]
+
+    # The admitted path's idempotence-key discipline holds at this seam too:
+    # a retried turn (same turn_id) appends once, not twice.
+    _stream(
+        authed_client,
+        "the grouting haze fix",
+        ws,
+        session_id=sid,
+        turn_id="turn-2",
+    )
+    r = authed_client.get(f"/v1/chat/sessions/{sid}")
+    assert len(r.json()["messages"]) == 4
+
+    # A session the caller does not own is never written; the answer itself
+    # still returns (the interview decided it), the transcript just stays
+    # with its owner. (The admin is blocked from chat routes, so the foreign
+    # session is minted through the store directly.)
+    import asyncio
+
+    from services import conversation_sessions
+
+    admin_sid = asyncio.run(conversation_sessions.create("admin", ws, "Admin's")).session_id
+    events = _stream(authed_client, "teach it", ws, session_id=admin_sid, turn_id="turn-3")
+    assert [e["type"] for e in events] == ["brief", "done"]
+    _record, admin_history = asyncio.run(conversation_sessions.get("admin", admin_sid))
+    assert admin_history == []
+
+
+def test_an_interview_answer_never_lands_in_another_workspaces_session(
+    admin_client, authed_client, llm
+) -> None:
+    """Same user, two Workspaces: transcript scoping is per-Workspace.
+
+    Ownership alone is not authorization. The admitted path refuses a session
+    named from another Workspace (`chat_runs._owned_session` passes the named
+    ``workspace_id`` to ``require_owned`` — same 404 as list/get), so a same-
+    user cross-Workspace append is a write no admitted turn can perform. The
+    interview's persist seam must enforce the identical scoping: otherwise a
+    turn authorized in wsA (member, interview opens there) that names a wsB
+    session writes wsA's exchange into wsB's transcript.
+    """
+    import asyncio
+
+    from services import conversation_sessions
+
+    ws_a = _workspace(admin_client)  # shared with `user`; the interview opens here
+    ws_b = _workspace(admin_client)  # also shared with `user`
+    r = authed_client.post(
+        "/v1/chat/sessions", json={"title": "Other Workspace", "workspace_id": ws_b}
+    )
+    assert r.status_code == 200
+    sid_b = r.json()["id"]
+
+    # The turn is decided in the named Workspace (the interview answers), but
+    # the session it names belongs to wsB — the append must be refused.
+    events = _stream(
+        authed_client,
+        "Let's make a new video, let's start drafting a storyboard",
+        ws_a,
+        session_id=sid_b,
+        turn_id="turn-cross-1",
+    )
+    assert [e["type"] for e in events] == ["brief", "done"]
+
+    _record, history_b = asyncio.run(conversation_sessions.get("user", sid_b))
+    assert history_b == [], "a wsA interview exchange must not land in a wsB transcript"
+
+    # Control: the same exchange with a session in the NAMED Workspace lands,
+    # so the refusal above is the Workspace scoping, not a broken seam. (The
+    # full durability/idempotence shape is pinned by
+    # test_interview_turns_reach_the_dock_session_transcript.)
+    r = authed_client.post(
+        "/v1/chat/sessions", json={"title": "Named Workspace", "workspace_id": ws_a}
+    )
+    assert r.status_code == 200
+    sid_a = r.json()["id"]
+    events = _stream(
+        authed_client,
+        "Let's make a new video, let's start drafting a storyboard",
+        ws_a,
+        session_id=sid_a,
+        turn_id="turn-cross-2",
+    )
+    assert [e["type"] for e in events] == ["brief", "done"]
+    _record, history_a = asyncio.run(conversation_sessions.get("user", sid_a))
+    assert [(m["role"], m["content"]) for m in history_a] == [
+        ("user", "Let's make a new video, let's start drafting a storyboard"),
+        ("assistant", events[1]["content"]),
+    ]
 
 
 @pytest.mark.ac("SPEC-091726-7c2a/AC-13")

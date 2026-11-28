@@ -185,9 +185,11 @@ export default function DagRuns() {
     <div style={{ padding: 16 }}>
       <h2 style={{ marginTop: 0 }}>Runs</h2>
       <p style={{ color: "#6b7280", marginTop: -6 }}>
-        Inspect the canonical execution evidence for a run. The activity sketch below preserves legacy PM event
-        playback; the execution evidence panel lists the actual NodeRuns, Attempts, and recorded artifacts for
-        every canonical run the inspection seam can read.
+        {/* #2549: default copy carries no PM-demo heritage; the activity
+            sketch is described neutrally. */}
+        Inspect the canonical execution evidence for a run. The activity sketch below replays per-node events;
+        the execution evidence panel lists the actual NodeRuns, Attempts, and recorded artifacts for every
+        canonical run the inspection seam can read.
       </p>
 
       {(detailError || error) && (
