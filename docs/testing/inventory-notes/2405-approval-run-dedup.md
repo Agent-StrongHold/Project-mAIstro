@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +3
-  packages/maistro-core/tests: +32
+  packages/hive-conductor/backend/tests: +7
+  packages/maistro-core/tests: +39
 ---
 
 # Self-repair approval wait: restart/replica convergence and reconstructible resume (#2405)
@@ -204,3 +204,48 @@ same server, alembic-upgraded, all previously-failing tests green). Repair
 the shared DB with `ALTER TABLE audit_log ALTER COLUMN org_id DROP NOT NULL;`
 and run audit/container_postgres suites before any suite that bootstraps the
 store schema, or use the fresh `maistro_test2`.
+
+## Coverage-gate closure round: the diff half's uncovered arms, executed (2026-11-28)
+
+The validation round above recorded the Coverage gate's diff half RED at
+`262a0653c4` with three files whose fail-closed arms no suite executed. This
+round adds tests whose *execution* covers exactly those lines — no production
+change; every arm keeps its shipped shape, and two of the new tests double as
+mutation oracles (mutating the guarded behavior fails them, checked by hand):
+
+- `capabilities_wiring.py` 64.9% → ≥90%: a real-admission loader test (waits
+  parked through the shipped `_register_self_repair` admittor against the
+  canonical durable store, then mapped resource → run_id by
+  `_build_self_repair_pending_hydration`), a scripted-page loader test
+  (foreign-source filter, unreadable-checkpoint skip, non-exhausted page
+  continuation), the `_execute_auto_repair_effect` non-action `TypeError`
+  arm, and the `_MAX_EFFECT_GENERATIONS` refusal (16 real governed dispatches,
+  then `ValueError` and no 17th effect).
+- `self_repair.py` 86.8% → ≥90%: the hydration `continue` arm reached through
+  its real interleaving (a wait admitted while the scan is suspended at the
+  loader await must not be stomped), and the status-lookup failure arms
+  (`except` → warning → wait stays pending; no authority → `None`).
+- `infra_approval_action.py` 75.0% → ≥80% arcs: the five reconstruction
+  refusal arms (`no effect_context`, `no durable Binding reference`,
+  scope-mismatched Binding, `no capability_registry`, non-InfraAction
+  provider) in a new
+  `packages/maistro-core/tests/graph/nodes/test_infra_approval_action_guards.py`.
+
+Executed at head fa49fbe71c0 + this round: the three failing files re-measured
+green by `scripts/check-diff-coverage.py coverage.xml --base 547eb70a` (exit 0)
+over combined branch-coverage data from both full batteries plus these suites.
+`test_in_flight_scan_does_not_stomp_a_wait_admitted_under_it` was also proven
+to fail with the skip arm deleted, and the cap/loader/registry/binding tests
+fail with their guards mutated (restored afterward; production tree untouched).
+
+Environment record: this round's PostgreSQL battery ran on a fresh
+chain-shaped database (`maistro_2405v`, alembic to head 074). The
+`test_pg_audit.py::test_real_postgres_two_org_scope_and_schema` failure inside
+the combined battery reproduces from a pre-existing ordering interaction, not
+this branch: `tests/events/test_container_pg_durable_events.py` drops
+`audit_log` (that DROP predates this branch — present at 77f24c7ac0) and the
+store bootstrap recreates it with `org_id NOT NULL` (pg_audit.py `_SCHEMA`),
+while the audit test asserts the alembic-036 nullable shape. CI never co-runs
+the two suites against one database (ci.yml `postgres` and `durable-events`
+each get a fresh service DB), the test passes alone on a pristine chain, and
+the branch diff touches neither `audit_log`, `pg_audit.py`, nor `events/`.

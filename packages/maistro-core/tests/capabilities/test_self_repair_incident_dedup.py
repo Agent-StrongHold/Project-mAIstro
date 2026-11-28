@@ -1144,3 +1144,81 @@ def test_terminal_statuses_cover_settlement_paths() -> None:
     assert {"completed", "failed", "cancelled", "timed_out"} <= {
         status.value for status in TERMINAL_RUN_STATUSES
     }
+
+
+async def test_in_flight_scan_does_not_stomp_a_wait_admitted_under_it() -> None:
+    """A wait admitted while a hydration scan is suspended at its loader await
+    survives the scan: the resuming loop skips the resource that already has a
+    live wait and hydrates only the rest. The `continue` arm is reachable
+    exactly under this interleaving — a concurrent `_admit_approval` lands in
+    the process-local dict between the empty-pending guard and the loop body
+    (asyncio tasks interleave at the loader's await, within one replica or
+    across a second replica's first cycle)."""
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_loader() -> dict[str, str]:
+        started.set()
+        await release.wait()
+        return {"docker:litellm": "run-from-scan", "docker:api": "run-api"}
+
+    async def must_not_admit(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("hydration must never admit")
+
+    repair = RuleBasedRepair(
+        infra_monitor=None,
+        effect_invoker=None,
+        approval_admittor=must_not_admit,
+        pending_approvals_loader=slow_loader,
+        autonomy="approve_all",
+    )
+    scan = asyncio.ensure_future(repair._hydrate_pending_approvals())
+    await started.wait()
+    # The concurrent admission of the same incident lands mid-scan.
+    repair._pending_approval_runs["docker:litellm"] = "run-live"
+    release.set()
+    assert await scan is True
+    # The live wait wins; the scan's stale row for it is skipped...
+    assert repair._pending_approval_runs["docker:litellm"] == "run-live"
+    # ...and the scan's other resource still hydrates with its guard raised.
+    # (The live wait's own guard belongs to its admission path, not to the
+    # scan — the scan only marks resources it actually hydrates.)
+    assert repair._pending_approval_runs["docker:api"] == "run-api"
+    assert repair.governor_state()["docker:api"]["in_flight"] is True
+    assert "docker:litellm" not in repair.governor_state()
+
+
+async def test_status_lookup_failure_keeps_the_wait_pending() -> None:
+    """A failing durable status lookup never settles the wait (fail closed):
+    the resource stays in-flight and no auto-run may dispatch over blindness.
+    With no status authority at all, a lookup is `None` by contract."""
+
+    async def broken_status(_run_id: str) -> str | None:
+        raise RuntimeError("durable store unavailable")
+
+    async def must_not_invoke(*_args: Any, **_kwargs: Any) -> ActionResult:
+        raise AssertionError("no dispatch while a wait's status is unknowable")
+
+    repair = RuleBasedRepair(
+        infra_monitor=None,
+        effect_invoker=must_not_invoke,
+        approval_admittor=None,
+        approval_run_status=broken_status,
+        autonomy="approve_all",
+    )
+    repair._pending_approval_runs["docker:litellm"] = "run-1"
+    repair._governor.mark_in_flight("docker:litellm")
+    await repair._release_settled_approvals()
+    assert repair._pending_approval_runs["docker:litellm"] == "run-1"
+    assert repair.governor_state()["docker:litellm"]["in_flight"] is True
+
+    # No status authority wired: the lookup contract answers None (never
+    # settles) rather than guessing a terminal status.
+    bare = RuleBasedRepair(
+        infra_monitor=None,
+        effect_invoker=None,
+        approval_admittor=None,
+        approval_run_status=None,
+        autonomy="approve_all",
+    )
+    assert await bare._pending_run_status("docker:litellm", "run-1") is None
