@@ -14,8 +14,10 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.goals.reconciliation import (
+    FactDrivenReconciliationPolicy,
     Goal,
     GoalFacts,
+    GoalRunAdmitter,
     PlannedAdmission,
     PolicyDecision,
     WakeReason,
@@ -41,12 +43,14 @@ class StubPolicy:
 # --- backend selection -------------------------------------------------------
 
 
-async def test_container_wires_the_goal_reconciliation_control_plane() -> None:
+async def test_container_composes_the_production_decide_half() -> None:
     container = await _container()
+    # #805's decision semantics arrive as composition, not invention: the
+    # production fact-driven policy and the physical admitter that fulfils a
+    # run admission as one canonical QUEUED Run.
+    assert type(container.goal_reconciliation_policy) is FactDrivenReconciliationPolicy
+    assert type(container.goal_reconciliation_admitter) is GoalRunAdmitter
     assert type(container.goal_reconciliation_store).__name__ == "InMemoryGoalStore"
-    assert container.goal_reconciliation_policy is None, (
-        "the Container never invents #805's decision semantics"
-    )
 
 
 async def test_sqlite_backend_wires_the_durable_goal_store() -> None:
@@ -104,6 +108,10 @@ async def test_sweep_goal_leases_reclaims_only_lapsed_claims() -> None:
 async def test_reconcile_goals_without_a_policy_decides_nothing() -> None:
     container = await _container()
     store = container.goal_reconciliation_store
+    # The hand-built-Container contract: create_container composes the
+    # production decide-half, but a Container without a policy still never
+    # invents one — the mechanics decide nothing and stay fence-safe.
+    container.goal_reconciliation_policy = None  # type: ignore[assignment]
     await store.create_goal(Goal(goal_id="g-inert", workspace_id="ws", project_id="p"))
     assert await container.reconcile_goals() == 0
     view = await store.reconciliation_view("g-inert")
@@ -123,6 +131,9 @@ async def test_reconcile_goals_repairs_a_missed_wake_under_a_policy() -> None:
         unblocks=True,
     )
     container.goal_reconciliation_policy = StubPolicy()  # type: ignore[assignment]
+    # Mechanics-only: no admitter, so the decision records an admission and
+    # nothing more. The production-admission path has its own suite.
+    container.goal_reconciliation_admitter = None
 
     assert await container.reconcile_goals() == 1
 
@@ -139,6 +150,9 @@ async def test_composed_policy_admission_is_fenced_and_idempotent() -> None:
     store = container.goal_reconciliation_store
     await store.create_goal(Goal(goal_id="g-fence", workspace_id="ws", project_id="p"))
     container.goal_reconciliation_policy = StubPolicy()  # type: ignore[assignment]
+    # Mechanics-only (see the repair test above): the fencing/idempotence
+    # contract under test is the store's, not the physical admitter's.
+    container.goal_reconciliation_admitter = None
     # Crash boundary "after Goal commit, before notification": the Goal row
     # is committed but no wake fact was ever recorded — the bounded tick
     # alone must discover it (no re-delivery exists).
