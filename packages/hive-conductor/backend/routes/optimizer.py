@@ -1,8 +1,14 @@
 """Phase 6 — Optimizer endpoints.
 
   POST /v1/optimizer/{dag_id}/run
-      Run one optimizer pass. Query: ?apply_auto=false (default).
+      Run one optimizer pass. Query: ?apply_auto=false (default), ?validate=true.
       Returns the ranked proposal list + auto_applied count.
+
+      One pass is four ordered operations (#2501): propose → evaluate →
+      approve → promote. With apply_auto=true a candidate is promoted only
+      after its independent evaluation completed and improved on the measured
+      incumbent; validate=false therefore promotes nothing. A baseline that
+      cannot be measured is reported as unavailable evidence, never as 0.0.
 
   GET /v1/optimizer/{dag_id}/proposals
       List proposals for one DAG. Query: ?decision=pending|accepted|rejected.
@@ -33,6 +39,8 @@ from services.dag_execution_scope import DagWorkspaceSelectionError
 from services.optimizer import (
     DECISION_ACCEPTED,
     DECISION_REJECTED,
+    evaluate_staged_proposals,
+    promote_evaluated,
     record_decision,
     run_optimizer,
 )
@@ -62,9 +70,9 @@ async def trigger_optimizer(
     workspace_id: str | None = Query(default=None),
     project_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    """Run optimizer. When validate=True (default), proposals are tested
-    against the actual DAG before being surfaced. Only strictly-improving
-    mutations are proposed."""
+    """Run optimizer. When validate=True (default), the incumbent and every
+    staged candidate are measured against the actual DAG before anything is
+    promoted; only strictly-improving mutations are proposed."""
     actor = _user_id(request)
     org_id = str(getattr(request.state, "org_id", "") or "")
     # An explicit Project selection only ever narrows within the authorized
@@ -89,58 +97,52 @@ async def trigger_optimizer(
         ) from exc
     except OptimizerTargetNotAuthorized as exc:
         raise _not_found() from exc
+    # The Workspace this request was authorized against: proposals carry it
+    # so candidate registration lands in the authorizing tenant, not the
+    # configured default (#861 review).
+    authorized_workspace = str(getattr(scope, "workspace_id", "") or "")
     try:
+        # Operation 1 — propose. `run_optimizer` applies nothing: a concrete
+        # AUTO_APPLY candidate is staged (#2501). It used to promote here,
+        # before the validation below had run, which is the defect this
+        # ordering replaces.
         result = await run_optimizer(
             dag_id,
             actor=actor,
             apply_auto=apply_auto,
             org_id=org_id,
             project_id=str(getattr(request.state, "project_id", "") or ""),
-            # The Workspace this request was authorized against: proposals
-            # carry it so candidate registration lands in the authorizing
-            # tenant, not the configured default (#861 review).
-            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
+            workspace_id=authorized_workspace,
         )
+        # Operation 2 — evaluate: the exact incumbent, then each staged
+        # candidate against it, as typed evidence. An unmeasurable incumbent
+        # is reported as unavailable and nothing is compared — never as 0.0.
+        evaluation_ran = False
+        if validate and result.get("proposals"):
+            import stores
+
+            dag_data = stores.dags.get(dag_id)
+            if dag_data:
+                evaluation_ran = True
+                evaluation = await evaluate_staged_proposals(
+                    dag_id, dict(dag_data), result["proposals"], scope=scope
+                )
+                result["proposals"].extend(evaluation.pop("hill_climb", []))
+                result.update(evaluation)
+        # Operations 3 and 4 — approve on that evidence, then promote. Only a
+        # candidate that completed evaluation and strictly improved on the
+        # incumbent can reach the promotion contract; a pass that skipped
+        # validation promotes nothing and says so on every staged row.
+        if apply_auto:
+            result["auto_applied"] = await promote_evaluated(
+                dag_id,
+                result["proposals"],
+                actor=actor,
+                workspace_id=authorized_workspace,
+                evaluation_ran=evaluation_ran,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-
-    # Validation gate: test each proposal by running variant B
-    if validate and result.get("proposals"):
-        import stores
-
-        dag_data = stores.dags.get(dag_id)
-        if dag_data:
-            from services.benchmark_eval import evaluate_dag_run
-            from services.graph_runner import execute_dag
-            from services.validation_gate import validate_and_filter_proposals
-
-            # Run current DAG to get REAL baseline score (not historical)
-            try:
-                baseline_result = await execute_dag(dict(dag_data), scope=scope)
-                task = dag_data.get("description", dag_data.get("name", ""))
-                baseline_eval = await evaluate_dag_run(baseline_result, task)
-                baseline = float(baseline_eval.get("total", 0))
-            except Exception:
-                baseline = 0.0
-
-            validated = await validate_and_filter_proposals(
-                dict(dag_data),
-                result["proposals"],
-                baseline,
-                scope=scope,
-            )
-            # Also test model variants
-            from services.validation_gate import hill_climb_models, hill_climb_params
-
-            model_improvements = await hill_climb_models(dict(dag_data), baseline, scope=scope)
-            param_improvements = await hill_climb_params(dict(dag_data), baseline, scope=scope)
-            validated.extend(model_improvements)
-            validated.extend(param_improvements)
-
-            result["proposals"] = validated
-            result["validated"] = True
-            result["baseline_score"] = baseline
-            result["proposals_tested"] = len(validated)
 
     return result
 

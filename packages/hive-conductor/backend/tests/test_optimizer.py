@@ -636,15 +636,32 @@ def test_run_endpoint_validates_proposals_against_a_real_baseline(
     workspace-scoped baseline run, per-proposal validation, and the
     model/param hill-climb sweeps — not just the propose step. Exercises the
     baseline execution in optimizer.py and the validation-gate execution seam
-    in validation_gate.py end to end, through a DAG that actually exists."""
+    in validation_gate.py end to end, through a DAG that actually exists.
+
+    The baseline is typed evidence (#2501): the evaluator fakes carry the
+    Run / Invocation lineage a real one does, and the response keeps every
+    staged proposal with its verdict instead of silently dropping the ones
+    that did not improve."""
     import services.benchmark_eval as benchmark_eval
     import services.graph_runner as graph_runner
 
     async def fake_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"status": "completed", "run_id": "r-validate", "node_results": {}}
+        return {
+            "status": "completed",
+            "run_id": "r-validate",
+            "workspace_id": "ws",
+            "project_id": "proj",
+            "node_results": {},
+        }
 
     async def fake_score(_result: Any, _task: Any) -> dict[str, Any]:
-        return {"total": 10}
+        return {
+            "total": 10,
+            "evaluation_run_id": "eval-r-validate",
+            "invocation_id": "inv-r-validate",
+            "evaluator_version": benchmark_eval.BENCHMARK_EVAL_VERSION,
+            "usage": None,
+        }
 
     monkeypatch.setattr(graph_runner, "execute_dag", fake_execute)
     monkeypatch.setattr(benchmark_eval, "evaluate_dag_run", fake_score)
@@ -663,9 +680,20 @@ def test_run_endpoint_validates_proposals_against_a_real_baseline(
     body = r.json()
     assert body["proposals"]
     assert body["validated"] is True
+    assert body["baseline_status"] == "available"
     assert body["baseline_score"] == 10
-    # Every surfaced proposal carries the validation gate's verdict fields.
-    assert all("variant_b_score" in p for p in body["proposals"])
+    assert body["baseline_evidence"]["evaluation_run_id"] == "eval-r-validate"
+    # Every persisted proposal stays visible with a typed verdict; every
+    # measured one carries the gate's score fields.
+    persisted = [p for p in body["proposals"] if p.get("id")]
+    assert persisted
+    assert all(p.get("apply_outcome") != "applied" for p in persisted)  # apply_auto is off
+    for proposal in body["proposals"]:
+        if "variant_b_score" in proposal:
+            assert proposal["baseline_score"] == 10
+        else:
+            assert proposal["validation"]["status"] in {"unevaluated", "unsupported", "stale"}
+    assert any("variant_b_score" in p for p in body["proposals"])
 
 
 def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:

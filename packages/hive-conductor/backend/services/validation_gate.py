@@ -1,24 +1,186 @@
-"""Validation gate — test mutations before proposing them.
+"""Validation gate — measure a mutation before anything is built on it.
 
 SkillOpt pattern: never accept a mutation without proving it improves score.
 
 Flow:
-  1. Take current DAG (variant A) — we already have its score
-  2. Apply proposed mutation → create variant B
+  1. Measure the current DAG (variant A) — the incumbent
+  2. Apply the proposed mutation → create variant B
   3. Run variant B on the same task
-  4. Score variant B with eval-judge
-  5. Only surface the proposal if B.score > A.score (strict improvement)
+  4. Score variant B with the evaluator
+  5. The proposal is validated only if B.score > A.score (strict improvement)
+
+A measurement is **typed evidence** (#2501), never a bare number:
+
+- a run that raises or times out, an evaluator that is missing, refuses (no
+  Binding, billing), or returns a score without Run lineage is *unavailable*
+  (ADR-083026-a91e: an unmeasured metric is absent, not zero);
+- an unavailable incumbent means **nothing can be compared**, so nothing is
+  validated. The historical gate scored a failed baseline as ``0.0``, which
+  let every positive variant look like an improvement.
+
+Every measurement carries its canonical lineage — the executed Run, the judge
+Run, the judge Invocation, the evaluator version and the usage — because the
+promotion contract that consumes it must be able to cite the Runs that
+justify a promotion (SPEC-100126-a9c4 R4/R8).
+
+Measurements are deduplicated **while in flight**: two callers that ask for
+the same idempotent content under the same scope share one Run and one judge
+call, so concurrent optimizer passes over one source version never pay for
+the same evaluation twice. Nothing is cached after completion — a later pass
+measures again (#854: one lucky sample must not become permanent evidence).
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
+import math
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from services.dag_execution_scope import DagExecutionScope
+from services.optimizer_candidates import snapshot_hash
+from services.safe_projection import public_failure, public_failure_text
 
 logger = logging.getLogger("hive.validation_gate")
+
+#: A measurement that produced a score with complete lineage.
+AVAILABLE = "available"
+#: A measurement that produced no usable evidence. Its ``reason`` says which.
+UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class ScoredRun:
+    """One executed + evaluated DAG snapshot: typed evidence or a typed absence."""
+
+    status: str
+    score: float | None = None
+    reason: str = ""
+    #: The canonical Run that executed the snapshot.
+    run_id: str = ""
+    #: The canonical child Run the judge was recorded under.
+    evaluation_run_id: str = ""
+    #: The governed Invocation of the judge call.
+    invocation_id: str = ""
+    evaluator_version: str = ""
+    usage: dict[str, Any] | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.status == AVAILABLE
+
+    def lineage(self) -> dict[str, Any]:
+        """The Run / Invocation / cost lineage, as a plain record for rows and audit."""
+        return {
+            "run_id": self.run_id,
+            "evaluation_run_id": self.evaluation_run_id,
+            "invocation_id": self.invocation_id,
+            "evaluator_version": self.evaluator_version,
+            "usage": dict(self.usage) if self.usage else None,
+        }
+
+
+def _unavailable(reason: str, *, run_id: str = "") -> ScoredRun:
+    return ScoredRun(status=UNAVAILABLE, reason=reason, run_id=run_id)
+
+
+# In-flight measurements keyed by (workspace, project, content hash). Entries
+# live only as long as the measurement runs; see the module docstring.
+_inflight: dict[tuple[str, str, str], asyncio.Task[ScoredRun]] = {}
+
+
+async def _shared(
+    key: tuple[str, str, str], measure: Callable[[], Awaitable[ScoredRun]]
+) -> ScoredRun:
+    """Await `measure()` once per key across every concurrent caller."""
+
+    def _forget(done: asyncio.Task[ScoredRun]) -> None:
+        if _inflight.get(key) is done:
+            del _inflight[key]
+
+    running = asyncio.get_running_loop()
+    task = _inflight.get(key)
+    if task is None or task.done() or task.get_loop() is not running:
+        task = asyncio.ensure_future(measure())
+        _inflight[key] = task
+        task.add_done_callback(_forget)
+    # One caller cancelling its own request must not cancel a measurement
+    # another caller is still waiting on.
+    return await asyncio.shield(task)
+
+
+async def _measure(dag_data: dict[str, Any], *, scope: DagExecutionScope) -> ScoredRun:
+    """Execute one snapshot and evaluate it; every failure is typed, never 0.0."""
+    from services.benchmark_eval import evaluate_dag_run
+    from services.graph_runner import execute_dag
+
+    try:
+        result = await execute_dag(copy.deepcopy(dag_data), scope=scope)
+    except Exception as exc:
+        logger.warning("validation_run_failed: %s", public_failure(exc))
+        return _unavailable(f"execution failed: {public_failure(exc)}")
+    run_id = str(result.get("run_id") or "")
+    if result.get("status") != "completed":
+        return _unavailable("execution did not complete", run_id=run_id)
+    task = dag_data.get("description", dag_data.get("name", ""))
+    try:
+        score = await evaluate_dag_run(result, task)
+    except Exception as exc:
+        logger.warning("validation_score_failed: %s", public_failure(exc))
+        return _unavailable(f"evaluator raised {public_failure(exc)}", run_id=run_id)
+    if not isinstance(score, dict):
+        return _unavailable("evaluator returned no score", run_id=run_id)
+    if score.get("error"):
+        kind = str(score.get("error_kind") or "evaluation")
+        # The refusal's own text is bounded by the shared disclosure policy;
+        # the full reason stays in the evaluator's log and Invocation record.
+        return _unavailable(
+            f"evaluator refused ({kind}): {public_failure_text(str(score['error']))}",
+            run_id=run_id,
+        )
+    total = score.get("total")
+    if isinstance(total, bool) or not isinstance(total, (int, float)) or not math.isfinite(total):
+        return _unavailable("evaluator returned no numeric score", run_id=run_id)
+    evaluation_run_id = str(score.get("evaluation_run_id") or "").strip()
+    evaluator_version = str(score.get("evaluator_version") or "").strip()
+    if not evaluation_run_id or not evaluator_version:
+        return _unavailable(
+            "evaluator returned a score without Run lineage "
+            "(no evaluation_run_id / evaluator_version)",
+            run_id=run_id,
+        )
+    usage = score.get("usage")
+    return ScoredRun(
+        status=AVAILABLE,
+        score=float(total),
+        run_id=run_id,
+        evaluation_run_id=evaluation_run_id,
+        invocation_id=str(score.get("invocation_id") or ""),
+        evaluator_version=evaluator_version,
+        usage=usage if isinstance(usage, dict) else None,
+    )
+
+
+async def score_variant(dag_data: dict[str, Any], *, scope: DagExecutionScope) -> ScoredRun:
+    """Execute one DAG snapshot and evaluate its output.
+
+    Keyed by content: the same snapshot under the same scope is measured once
+    while that measurement is in flight, whoever asks.
+    """
+    key = (scope.workspace_id, scope.project_id, snapshot_hash(dag_data))
+    return await _shared(key, lambda: _measure(dag_data, scope=scope))
+
+
+async def measure_baseline(dag_data: dict[str, Any], *, scope: DagExecutionScope) -> ScoredRun:
+    """The incumbent's own measurement — variant A.
+
+    Unavailable evidence here means the incumbent could not be judged; it is
+    never read as "the incumbent scores zero".
+    """
+    return await score_variant(dag_data, scope=scope)
 
 
 async def validate_proposal(
@@ -28,31 +190,31 @@ async def validate_proposal(
     *,
     scope: DagExecutionScope,
 ) -> dict[str, Any]:
-    """Test a proposed mutation. Returns the proposal with validation results."""
-    from services.benchmark_eval import evaluate_dag_run
-    from services.graph_runner import execute_dag
+    """Test a proposed mutation against a measured baseline.
 
+    Returns the proposal annotated with the verdict. An unavailable variant is
+    `validated: False` with a typed reason, never a zero score that would read
+    as "measured and bad".
+    """
     # Create variant B by applying the mutation to a copy
     variant_b = copy.deepcopy(dag_data)
     _apply_mutation_to_dag(variant_b, proposal)
 
-    # Run variant B
-    try:
-        result_b = await execute_dag(variant_b, scope=scope)
-    except Exception as e:
-        logger.warning("validation_run_failed proposal=%s error=%s", proposal.get("kind"), e)
-        return {**proposal, "validated": False, "reason": f"Variant B failed to run: {e}"}
-
-    # Score variant B
-    task = dag_data.get("description", dag_data.get("name", ""))
-    try:
-        score_b = await evaluate_dag_run(result_b, task)
-        total_b = score_b.get("total", 0)
-    except Exception as e:
-        logger.warning("validation_score_failed: %s", e)
-        return {**proposal, "validated": False, "reason": f"Scoring failed: {e}"}
+    measured = await score_variant(variant_b, scope=scope)
+    if not measured.available:
+        logger.warning(
+            "validation_variant_unavailable proposal=%s reason=%s",
+            proposal.get("kind"),
+            measured.reason,
+        )
+        return {
+            **proposal,
+            "validated": False,
+            "reason": f"Variant B unmeasured: {measured.reason}",
+        }
 
     # Strict improvement gate
+    total_b = float(measured.score or 0.0)
     improved = total_b > baseline_score
     logger.info(
         "validation_gate proposal=%s baseline=%.1f variant_b=%.1f improved=%s",
@@ -69,6 +231,7 @@ async def validate_proposal(
         "variant_b_score": total_b,
         "improvement": total_b - baseline_score,
         "reason": f"Score {'improved' if improved else 'did not improve'}: {baseline_score} → {total_b}",
+        "evaluation": measured.lineage(),
     }
 
 
@@ -120,22 +283,21 @@ def _apply_mutation_to_dag(dag: dict[str, Any], proposal: dict[str, Any]) -> Non
     dag["edges"] = edges
 
 
-async def validate_and_filter_proposals(
+async def validate_proposals(
     dag_data: dict[str, Any],
     proposals: list[dict[str, Any]],
     baseline_score: float,
     *,
     scope: DagExecutionScope,
 ) -> list[dict[str, Any]]:
-    """Validate all proposals, return only those that strictly improve."""
-    validated = []
-    for p in proposals:
-        result = await validate_proposal(dag_data, p, baseline_score, scope=scope)
-        if result.get("validated"):
-            validated.append(result)
-        else:
-            logger.info("proposal_rejected kind=%s reason=%s", p.get("kind"), result.get("reason"))
-    return validated
+    """Validate every proposal and return them all, annotated, in order.
+
+    Nothing is dropped (#2501): a proposal that did not improve stays visible
+    with its verdict, so the caller's response, the persisted rows and the
+    audit trail agree. Filtering the list here is what let an already-applied
+    proposal vanish from the response that reported it applied.
+    """
+    return [await validate_proposal(dag_data, p, baseline_score, scope=scope) for p in proposals]
 
 
 # Models to test when hill-climbing
@@ -180,36 +342,35 @@ async def hill_climb_params(
         variant = copy.deepcopy(dag_data)
         for n in variant.get("nodes", []):
             n.setdefault("config", {})[param] = value
-        try:
-            from services.benchmark_eval import evaluate_dag_run
-            from services.graph_runner import execute_dag
-
-            result = await execute_dag(variant, scope=scope)
-            task = dag_data.get("description", dag_data.get("name", ""))
-            score = await evaluate_dag_run(result, task)
-            total = float(score.get("total", 0))
-            improved = total > baseline_score
-            logger.info("param_test %s=%s: score=%s improved=%s", param, value, total, improved)
+        measured = await score_variant(variant, scope=scope)
+        if not measured.available:
             return {
-                "kind": "topology_mutation",
-                "validated": improved,
+                "validated": False,
                 "param_tested": f"{param}={value}",
-                "baseline_score": baseline_score,
-                "variant_b_score": total,
-                "improvement": total - baseline_score,
-                "rationale": f"Parameter {param}={value} {'improves' if improved else 'does not improve'} score",
-                "topology_proposal": {
-                    "kind": f"change_{param}",
-                    "target_node_id": dag_data.get("nodes", [{}])[0].get("id", ""),
-                    "from_value": str(
-                        dag_data.get("nodes", [{}])[0].get("config", {}).get(param, "default")
-                    ),
-                    "to_value": str(value),
-                    "expected_improvement": f"{param}={value} scored {total} vs baseline {baseline_score}",
-                },
+                "reason": f"Variant unmeasured: {measured.reason}",
             }
-        except Exception as e:
-            return {"validated": False, "param_tested": f"{param}={value}", "reason": str(e)}
+        total = float(measured.score or 0.0)
+        improved = total > baseline_score
+        logger.info("param_test %s=%s: score=%s improved=%s", param, value, total, improved)
+        return {
+            "kind": "topology_mutation",
+            "validated": improved,
+            "param_tested": f"{param}={value}",
+            "baseline_score": baseline_score,
+            "variant_b_score": total,
+            "improvement": total - baseline_score,
+            "rationale": f"Parameter {param}={value} {'improves' if improved else 'does not improve'} score",
+            "evaluation": measured.lineage(),
+            "topology_proposal": {
+                "kind": f"change_{param}",
+                "target_node_id": dag_data.get("nodes", [{}])[0].get("id", ""),
+                "from_value": str(
+                    dag_data.get("nodes", [{}])[0].get("config", {}).get(param, "default")
+                ),
+                "to_value": str(value),
+                "expected_improvement": f"{param}={value} scored {total} vs baseline {baseline_score}",
+            },
+        }
 
     # Test a subset — don't test every combination, just each param independently
     tasks = []
@@ -291,12 +452,11 @@ async def hill_climb_models(
 ) -> list[dict[str, Any]]:
     """Test all candidate models in parallel, return any that beat baseline."""
     import asyncio
+    import time as _time
 
     current_model = dag_data.get("nodes", [{}])[0].get("model", "gemini-3.5-flash")
 
     async def test_model(model: str) -> dict[str, Any]:
-        import time as _time
-
         proposal = {
             "kind": "topology_mutation",
             "rationale": f"Testing model swap: {current_model} → {model}",
@@ -327,6 +487,7 @@ async def hill_climb_models(
     # Current: asyncio.gather (I/O-bound, GIL doesn't matter for HTTP calls)
     models_to_test = [m for m in CANDIDATE_MODELS if m != current_model]
     results = await asyncio.gather(*[test_model(m) for m in models_to_test])
+    results = [r for r in results if "variant_b_score" in r]
 
     # Pareto-optimal selection: best quality/cost/latency composite
     MODEL_COST = {
@@ -367,6 +528,8 @@ async def hill_climb_models(
         r["_quality"] = score
         r["_latency_ms"] = r.get("latency_ms", 0)
 
+    if not results:
+        return []
     results.sort(key=lambda r: r.get("_composite", 0), reverse=True)
 
     # Winner: beats baseline on quality OR same quality at lower cost OR same quality+cost but faster

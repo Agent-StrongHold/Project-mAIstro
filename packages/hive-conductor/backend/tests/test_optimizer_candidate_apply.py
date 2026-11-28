@@ -329,11 +329,17 @@ async def test_no_op_apply_is_distinct_and_not_reported_as_applied(_isolated: An
     assert apply_entry["detail"]["outcome"] == "no_op"
 
 
-async def test_retry_count_auto_apply_commits_and_reports_applied(_isolated: Any) -> None:
+async def test_retry_count_auto_apply_commits_and_reports_applied(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The one auto-apply kind with a concrete value commits through the same
-    candidate/promotion path and only then reports `applied`."""
+    candidate/promotion path and only then reports `applied` — but only after
+    its independent evaluation completed and improved on the incumbent
+    (#2501). `run_optimizer` alone stages it and promotes nothing."""
+    import services.benchmark_eval as benchmark_eval
+    import services.graph_runner as graph_runner
     from services.node_metrics_store import NodeObservation, get_store
-    from services.optimizer import run_optimizer
+    from services.optimizer import evaluate_staged_proposals, promote_evaluated, run_optimizer
     from services.optimizer_candidates import template_store
 
     _seed_dag("d-auto")
@@ -353,13 +359,56 @@ async def test_retry_count_auto_apply_commits_and_reports_applied(_isolated: Any
     out = await run_optimizer("d-auto", apply_auto=True, actor="optimizer-bot")
     retry = [p for p in out["proposals"] if p["kind"] == "retry_count_tune"]
     assert len(retry) == 1
+    # Operation 1 only: staged, not applied, no version minted (#2501).
+    assert out["auto_applied"] == 0
+    assert retry[0]["applied"] is False
+    assert retry[0]["apply_outcome"] == "staged"
+    assert await template_store().versions("d-auto") == []
+
+    # Operations 2-4: an independent evaluation that improves on the incumbent
+    # lets the same candidate promote once, with the lineage on record.
+    async def fake_execute(dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+        candidate = any((n.get("config") or {}).get("max_retries") == 3 for n in dag_data["nodes"])
+        return {
+            "status": "completed",
+            "run_id": "run-candidate" if candidate else "run-incumbent",
+            "workspace_id": "ws",
+            "project_id": "proj",
+            "node_results": {},
+        }
+
+    async def fake_score(result: Any, _task: Any) -> dict[str, Any]:
+        candidate = result["run_id"] == "run-candidate"
+        return {
+            "total": 40 if candidate else 30,
+            "evaluation_run_id": f"eval-{result['run_id']}",
+            "invocation_id": f"inv-{result['run_id']}",
+            "evaluator_version": benchmark_eval.BENCHMARK_EVAL_VERSION,
+            "usage": None,
+        }
+
+    monkeypatch.setattr(graph_runner, "execute_dag", fake_execute)
+    monkeypatch.setattr(benchmark_eval, "evaluate_dag_run", fake_score)
+    from services.dag_execution_scope import DagExecutionScope
+
+    scope = DagExecutionScope(workspace_id="ws", project_id="proj", user_id="u")
+    evaluation = await evaluate_staged_proposals(
+        "d-auto", dict(stores_dag("d-auto")), out["proposals"], scope=scope
+    )
+    assert evaluation["baseline_score"] == 30
+    applied = await promote_evaluated(
+        "d-auto", out["proposals"], actor="optimizer-bot", workspace_id="ws", evaluation_ran=True
+    )
     payload = retry[0]
+    assert applied == 1
     assert payload["applied"] is True
     assert payload["apply_outcome"] == "applied"
-    assert out["auto_applied"] == 1
+    assert payload["decision"] == "accepted"
     assert payload["resulting_version"] == 1
     assert stores_dag("d-auto")["nodes"][0]["config"]["max_retries"] == 3
     assert await template_store().lifecycle_of("d-auto", 1) == "active"
+    assert payload["validation"]["candidate"]["evaluation_run_id"] == "eval-run-candidate"
+    assert payload["validation"]["baseline"]["evaluation_run_id"] == "eval-run-incumbent"
 
 
 async def test_human_accepted_retry_proposal_applies_via_promotion(_isolated: Any) -> None:

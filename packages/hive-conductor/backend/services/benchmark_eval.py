@@ -41,6 +41,14 @@ from services.governed_model import (
 
 logger = logging.getLogger("hive.benchmark")
 
+#: The version of this evaluator, stamped on every score it returns (#2501).
+#: A promotion that stands on a score must name the version of the thing that
+#: produced it (SPEC-100126-a9c4 R4); the optimizer's evidence fence reads it
+#: from the score rather than inventing a constant of its own. Bump when the
+#: rubric, the aggregation in ``evaluate_dag_run``, or the judge call changes
+#: in a way that moves scores.
+BENCHMARK_EVAL_VERSION = "benchmark-eval/1"
+
 EVAL_RUBRIC = """You are a senior engineering reviewer evaluating code output from an AI coding pipeline.
 
 Score the output on these criteria (0-10 each). For EACH criterion, you MUST provide:
@@ -155,6 +163,7 @@ async def evaluate_code_output(
         score["invocation_id"] = result.invocation_id
         score["usage"] = result.usage.model_dump(mode="json") if result.usage else None
         score["evaluation_run_id"] = identity.run_id
+        score["evaluator_version"] = BENCHMARK_EVAL_VERSION
         await settle_operation_identity(
             runtime,
             identity,
