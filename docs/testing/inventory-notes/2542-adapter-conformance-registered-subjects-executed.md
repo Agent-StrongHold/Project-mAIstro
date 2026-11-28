@@ -42,8 +42,14 @@ design, and these tests exercise the binding with installed-style entry
 points rather than registering production surface (which would add
 production modules and ledger debt outside this issue's scope).
 
-## Unverified here (environmental)
+## Re-validation evidence (executed)
 
-`scripts/check-suite-inventory.py` cannot complete in this worktree
-(`maistro_ext_harness` not installed; pre-existing, unrelated to this
-change). Collection of the touched file is clean: 20 passed locally (+3).
+The `maistro_ext_harness` collection failure an earlier run recorded here no
+longer reproduces: `uv run python scripts/check-suite-inventory.py` completes
+in this worktree and passes — `ok: 21 suite(s) match the recorded inventory`,
+with this note's `+3` delta folded into the expected
+`packages/maistro-core/tests` count. All 20 tests in the touched file pass
+(`uv run pytest packages/maistro-core/tests/testing/ -q`: 107 passed for the
+testing suite; the claim-contract file itself: 20 passed), and the wider
+conformance pins around them (registration refusal, per-family suites,
+claim contract) are green alongside.
