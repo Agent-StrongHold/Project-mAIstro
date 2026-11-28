@@ -1,0 +1,312 @@
+---
+inventory-delta:
+  packages/hive-conductor/backend/tests: +20
+---
+
+# Issue #2501 — optimizer auto-promotion is gated on completed independent validation
+
+Implementation record for [#2501][1] (`[M4-A][P2] Gate optimizer auto-promotion
+on completed independent validation, not post-apply filtering`), lane
+`auto-2501-2501-gate-optimizer-auto-promotion-on-completed`, base
+`ab19f5dd5909533fc85a4c65eeb14ac764c4342f`. Every number below was produced in
+the lane worktree with `uv run`; nothing is taken from an earlier claim.
+
+[1]: https://github.com/Agent-StrongHold/Project-mAIstro/issues/2501
+
+## The defect, reproduced at the base before any edit
+
+New suite `packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py`
+(18 node IDs) copied onto the untouched base `ab19f5dd`:
+
+```
+uv run pytest packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py -q --tb=line
+18 failed
+```
+
+The headline failures are the issue's own symptom, observed through the real
+ASGI route (`admin_client` → `POST /v1/optimizer/{dag_id}/run?…`):
+
+| test (route level) | failure at base | meaning |
+|---|---|---|
+| `test_worse_candidate_is_not_promoted_through_the_route` | `assert 1 == 0` on `body["auto_applied"]` | a candidate scored 5 against an incumbent scored 10 was **promoted** |
+| `test_unavailable_baseline_is_typed_never_zero_and_blocks_promotion` ×4 (exception, timeout, missing Binding, billing refusal) | `assert 1 == 0` | an unmeasurable incumbent (silently `0.0`) still let the candidate promote |
+| `test_validate_false_cannot_skip_policy_required_evaluation` | `assert 1 == 0` | `apply_auto=true&validate=false` promoted without any evaluation |
+| `test_concurrent_runs_share_one_paid_evaluation_and_yield_one_winner` | 0 `retry_count_tune` rows in the response | the already-applied proposal was filtered out of the response that reported it applied |
+
+## The change
+
+One optimizer pass is four ordered operations; nothing is activated before
+the operation before it completed.
+
+| Operation | Owner | What changed |
+|---|---|---|
+| 1 propose | `services/optimizer.py::run_optimizer` | applies **nothing**. A concrete AUTO_APPLY candidate is `staged` with its content hash (`staged_candidate_hash`). Kinds that never depend on evaluation keep their classification (`unsupported`, `escalated`). |
+| 2 evaluate | `services/optimizer.py::evaluate_staged_proposals`, `services/validation_gate.py::measure_baseline/score_variant` | the exact incumbent is measured first as typed evidence (`ScoredRun`, `available`/`unavailable` + reason + Run/judge-Run/Invocation/evaluator-version/usage lineage). Unavailable ⇒ **nothing is compared**: no variant runs, no hill-climb, every candidate `unevaluated`. The candidate is measured as the exact snapshot a promotion would commit. Identical content in flight is measured once. |
+| 3 approve | `services/optimizer_candidates.py::promote_evaluated_candidate` → `PromotionContract.evaluate` (ADR-100126-a9c4, the #116 authority) | evidence must cite Runs + evaluator version; authority ≠ authoring path (`optimizer`); base still current by content; content is a change. |
+| 4 promote | `commit_candidate` under a per-DAG `asyncio.Lock` | only an approved candidate reaches it; the minted version is bound to the approval; refusals name `competing_version` (CAS evidence). The contract record is appended to its ledger only after the transition committed. |
+| route | `routes/optimizer.py::trigger_optimizer` | `propose → evaluate → approve+promote`, in source order. The `except Exception: baseline = 0.0` fallback is gone. |
+
+Public surface changes (additive unless noted):
+
+- `baseline_score` is `null` when the incumbent is unmeasurable (was a
+  synthetic `0.0`); new `baseline_status`, `baseline_detail`,
+  `baseline_evidence`.
+- `result.proposals` now keeps **every** staged proposal with its verdict
+  (`validation.status`, and `variant_b_score`/`baseline_score`/`improvement`
+  when measured) instead of silently dropping the ones that did not improve.
+- `apply_outcome` gains `staged`, `unevaluated`, `not_improving`; new
+  `staged_candidate_hash`, `competing_version`, `promotion_record_id`.
+- `run_optimizer(apply_auto=True)` on its own stages and promotes nothing
+  (`auto_applied` is always `0`; the gated pass sets the real count).
+- `services/benchmark_eval.py` stamps `evaluator_version`
+  (`BENCHMARK_EVAL_VERSION = "benchmark-eval/1"`) on every score, so the
+  evidence fence reads the evaluator's own version.
+- `validation_gate.validate_and_filter_proposals` is replaced by
+  `validate_proposals` (annotates, drops nothing).
+
+Reconciliation with accepted authority: the **human** accept path
+(`record_decision`) is unchanged — the accepting user remains the approver of
+record under #861 and no machine evidence is required of them. Only the
+optimizer's own `apply_auto` path is routed through the contract
+(SPEC-100126-a9c4: "any new promotion path built for [a family] must route
+through the contract").
+
+## Tests
+
+New file (18 node IDs): route level through the real app — worse candidate,
+four unavailable-baseline shapes, missing evaluator, `validate=false`,
+improving candidate promoted once with full lineage and v1 still addressable
+after v2, two concurrent runs (one winner, one explicit `stale` loser with
+`competing_version`, candidate judged once, one committed audit entry),
+source-order pin; store level — staging applies nothing, three
+incomplete-evaluation shapes, self-approval refused, promotion failure leaves
+the incumbent untouched and the ledger empty; evaluator version.
+
+Two existing tests were updated because they pinned the replaced behavior:
+`test_retry_count_auto_apply_commits_and_reports_applied` (asserted that
+`run_optimizer(apply_auto=True)` promotes by itself — the defect) now drives
+propose → evaluate → promote and asserts the staged state first;
+`test_run_endpoint_validates_proposals_against_a_real_baseline` (its fake
+evaluator returned a bare `{"total": 10}`, i.e. exactly the lineage-less score
+the gate now refuses, and it asserted the filtered list) now returns lineage
+and asserts every row carries a typed verdict.
+
+### Red before / green after
+
+```
+# red (base ab19f5dd, new file only)
+18 failed
+
+# green (lane head, targeted)
+uv run pytest packages/hive-conductor/backend/tests/test_optimizer.py \
+  packages/hive-conductor/backend/tests/test_optimizer_candidate_apply.py \
+  packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py \
+  packages/hive-conductor/backend/tests/test_property_substrate.py \
+  packages/hive-conductor/backend/tests/test_governed_model_consumers.py -q
+136 passed
+```
+
+### Negative control — swapping the order fails
+
+With the route's operation-2 block moved after the operations-3/4 block
+(promote before evaluate) in place, then byte-restored (sha256 verified):
+
+```
+4 failed, 14 passed
+  test_worse_candidate_is_not_promoted_through_the_route
+  test_improving_candidate_is_promoted_once_with_full_lineage
+  test_concurrent_runs_share_one_paid_evaluation_and_yield_one_winner
+  test_route_orders_evaluation_before_promotion_in_source   (assert 15 < 14)
+```
+
+### Whole backend suite
+
+```
+uv run pytest packages/hive-conductor/backend/tests -q --timeout=120 -p no:logging
+4615 passed, 121 skipped, 58 errors
+```
+
+All 58 errors are `fixture 'caplog' not found` caused by this run's
+`-p no:logging` (it disables the plugin that provides `caplog`); they are in
+unrelated files and are not failures of the change. There are 0 failed tests.
+
+## Gates run locally (CI's arguments; `RATCHET_BASE_REV=origin/develop`)
+
+| Gate | Result |
+|---|---|
+| `ruff check .` / `ruff format --check .` | All checks passed / 3733 files already formatted |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1217 → 1217 findings (no candidate change) |
+| `check-radon-baseline.py` | 124 → 124 |
+| `check-workspace-retirement.py` | OK: 89 entries match the tree (no importer gained or lost; `routes/optimizer.py` still reads `stores.dags`) |
+| `check-reachability.py`, `check-reachability-provenance.py` | ok |
+| `check-shipped-surface-truth.py`, `check-api-route-contracts.py`, `check-route-permissions.py`, `check-public-routes.py` | exit 0 |
+| `check-owned-store-access.py`, `check-agent-store-writes.py`, `check-model-egress.py` | exit 0 |
+| `check-promotion-surface.py` (+ provenance), `check-ratchet-provenance.py`, `check-citation-status-provenance.py` | exit 0 |
+| `check-suite-inventory.py` | ok with this note's `+18` |
+
+No ledger under `quality/` was edited.
+
+## Acceptance (issue checklist) → evidence
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | `validate=true&apply_auto=true` with a worse/failed result: active version unchanged, nothing accepted/applied, no promotion audit, no false `auto_applied` | **PASS** — `test_worse_candidate_is_not_promoted_through_the_route`, `test_unavailable_baseline_…` ×4 (route, real app) |
+| 2 | Positive: independent score improves, comparison and policy pass; exact version promoted once; Run/evaluator Invocation/cost lineage recorded; prior version addressable | **PASS (plumbing)** — `test_improving_candidate_is_promoted_once_with_full_lineage`: audit order attempt → committed → apply, `evidence.evaluation_run_ids`, contract `trace(…, 1)` with policy id and prior hash, v1 byte-identical after v2. Lineage comes from faked executor/evaluator seams shaped like the canonical ones. |
+| 3 | Baseline exception, missing evaluator, timeout, billing refusal, missing Binding, `validate=false` create no unvalidated active version; no fake 0.0 | **PASS** — route tests above + `test_missing_evaluator_…`, `test_validate_false_…` (`baseline_score is None`, 0 candidate evaluations) |
+| 4 | Two concurrent calls, same source: one winner or explicit loser, immutable CAS evidence, no duplicate paid eval | **PASS (in-process)** — `test_concurrent_runs_share_one_paid_evaluation_and_yield_one_winner` |
+| 5 | Consumer sees truthful result: response, persisted decision, candidate status and `auto_applied` agree | **PASS** — asserted in tests 1, 2 and 4 (`stores.optimizer_proposals[id]` vs response) |
+| 6 | Red-before / green-after route and store tests under canonical PostgreSQL and configured provider; exact SHA; CI evidence; order-swap test fails | **PARTIAL** — red/green at exact SHAs and the order-swap control are above; **UNVERIFIED**: PostgreSQL-backed stores (the suite's stores are the in-memory `JsonStore`s), a configured model provider (no credentials in this environment; executor/evaluator are faked at their module seams), and hosted CI (this lane cannot push). |
+
+## Independent re-validation (this lane, round 2)
+
+The implementing round's claims above were re-executed from scratch in a fresh
+evaluator session (head `e8922fabbb6f`, develop base `547eb70afd6`); no number
+was carried over:
+
+- Red-before re-verified: the suite file copied verbatim onto a scratch
+  worktree at the exact merge base `547eb70afd6` → `18 failed`. The same file
+  at the lane head → `18 passed`.
+- Order-swap negative control re-executed in a scratch worktree at the lane
+  head (operations 3/4 moved above operation 2): `4 failed, 14 passed` —
+  exactly the four tests the table above names.
+- `uv run pytest packages/hive-conductor/backend/tests -q --timeout=300` →
+  `4673 passed, 121 skipped` (the round-1 run's `58 errors` under
+  `-p no:logging` are the same tests, resolved with the plugin enabled).
+- CI's one-process cross-tree check, CI's exact command and env
+  (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60`) → `11964 passed, 263 skipped` — no cross-suite leakage from
+  the new file.
+- Gates re-run with CI's arguments: `ruff check .` / `ruff format --check .`
+  pass; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1217 → 1217; `check-promotion-surface.py`,
+  `check-radon-baseline.py`, `check-reachability.py` (+provenance),
+  `check-workspace-retirement.py`, `check-test-duplicates.py`,
+  `check-backlog-consistency.py` → all exit 0;
+  `check-suite-inventory.py` → ok with this note's `+18` (and at the base it
+  reports `DRIFT ... expected 4776, collected 4794`, confirming the delta is
+  exactly the new suite).
+
+No tree change resulted from re-validation; this section is the only edit.
+
+## Residual risks
+
+- The promotion lock and the in-flight measurement dedup are **per process**.
+  Across replicas the CAS checks still refuse a moved base, but two replicas
+  could each pay for the same evaluation and each write a promotion *attempt*
+  audit entry before one loses at CAS-1; a durable single-flight/lock owner
+  would be a follow-up.
+- The contract ledger is process-local until a store adopts it
+  (SPEC-100126-a9c4 records template ledger adoption as follow-up); the
+  audit log carries the same evidence durably.
+- Hill-climb "winners" are still returned unpersisted (pre-existing); they
+  are judged only against a measured incumbent now.
+- A human accept of a `not_improving` proposal still promotes under #861
+  authority (the human is the approver); that is the existing product
+  contract, not changed here.
+
+## Repair round 3 (this lane, head `8d71591d9729` + this round's commits)
+
+Three P1 findings from the automated review of this PR, each re-derived from
+reachable code and closed with a test that fails against exactly the
+regression it names:
+
+1. **Measurement dedup shared another principal's execution** — the in-flight
+   dedup key omitted the acting user, so a second user could reuse the first
+   user's run and evidence even though execution authority resolves per
+   principal. Fixed on the committed head (`8d71591d9`, key now includes
+   `scope.user_id`); re-verified present in this round's tree.
+2. **A human rejection could be undone by the in-flight pass** —
+   `promote_evaluated` consulted only the pass's payload (`apply_outcome ==
+   staged`), so a rejection recorded while evaluation ran was overwritten:
+   the candidate promoted and `_record_auto_apply` stamped `accepted` over the
+   stored `rejected`. Fix (this round): `promote_evaluated` re-reads the
+   stored decision before promoting; `record_decision` serializes a rejection
+   under the same per-DAG lock as `commit_candidate` (new
+   `decision_serialization`) and merges onto the current stored row;
+   `_commit_candidate` refuses a rejected proposal inside the lock;
+   `_record_auto_apply` never overwrites a recorded decision with `pending`
+   and stamps `accepted` only for a promotion that really committed.
+3. **Annotation never reached the durable backend** — `JsonStore` persists
+   exclusively on `__setitem__`, but `_annotate` mutated the cached row in
+   place: evaluation evidence and final apply outcomes survived only in
+   memory, and a restart read the proposal back as pending/unapplied without
+   its lineage. Fix (this round): `_annotate` rebinds the stored row through
+   the store setter.
+
+### Red before / green after (both new tests, this round)
+
+```
+# with only the committed head 8d71591d9's tree + the two new tests
+uv run pytest packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py::test_rejection_during_evaluation_blocks_auto_promotion \
+  packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py::test_evaluation_and_apply_records_survive_a_restart_over_sqlite -q
+2 failed
+  (rejection test: retry promoted, apply_detail says applied — the pass ignored the recorded rejection)
+  (durability test: row['decision'] reads back 'pending' after the simulated restart)
+
+# with this round's services changes applied
+20 passed (the full promotion-gate file)
+```
+
+The durability test binds a real `PersistedStore` (SQLite `State`), runs the
+full gated pass (propose → evaluate → promote), then drops the store's
+process-local dict and re-`initialize()`s — the restart a fresh boot would
+perform — and asserts decision, applied, apply_outcome, resulting_version,
+validation status/candidate_hash, and baseline_score all read back.
+
+### CI `test` job failure this lane was reopened for
+
+CI's `test` job failed on the merge queue, and the exact drift its **#1048
+OpenAPI gate** (`git diff --exit-code` after regenerating both artifacts)
+rejects was present on the tested head `8d71591d9`: the backend changed
+`trigger_optimizer`'s description (and the gated pass changed the response
+contract) but `packages/hive-conductor/frontend/src/api/types.gen.ts` was
+never regenerated. CI's own fix instructions were followed locally:
+
+```
+uv run python scripts/dump-hive-openapi.py                      # ok, 255 paths / 155 schemas
+cd packages/hive-conductor/frontend && npm ci && npm run gen:api # regenerated
+git diff -- src/api/types.gen.ts                                 # 1 hunk: the endpoint description
+npm run lint                                                     # passes
+```
+
+The regenerated `types.gen.ts` is committed in this round; the only delta is
+the endpoint's docstring (comment-only for the frontend).
+
+### Retiring-surface ledger caught and fixed mid-round
+
+The first version of the `commit_candidate` decision fence read
+`stores.optimizer_proposals` directly from `services/optimizer_candidates.py`:
+`check-workspace-retirement.py` refused it (`NEW importer ... a retiring
+surface may not gain consumers`), and the one-process cross-tree run failed
+`tests/test_check_workspace_retirement.py::test_the_ledger_matches_the_current_repository`
+on exactly that edge. The fence now reads the row through
+`services.optimizer.stored_proposal` — the same late-bound #2469 storage seam
+`optimizer_scope` uses; it returns the live row, so the fence still decides on
+the decision as of this instant under the promotion lock. Re-run:
+`78 tolerated importers -> 78`, `89 retirement ledger entries match the tree`,
+exit 0.
+
+### Gates re-run this round (CI's arguments where CI has them)
+
+All executed in this worktree this round, all exit 0 unless stated:
+
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (3 import-order
+  findings auto-fixed first).
+- `uv run pytest packages/hive-conductor/backend/tests/test_optimizer.py
+  packages/hive-conductor/backend/tests/test_optimizer_candidate_apply.py
+  packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py
+  packages/hive-conductor/backend/tests/test_property_substrate.py
+  packages/hive-conductor/backend/tests/test_governed_model_consumers.py -q`
+  → `138 passed` (was 136; the two new tests account for the delta).
+- Full backend: `uv run pytest packages/hive-conductor/backend/tests -q
+  --timeout=300` → `4675 passed, 121 skipped`.
+- `check-workspace-retirement.py` → OK (above).
+- `check-suite-inventory.py --suite packages/hive-conductor/backend/tests`
+  → ok: 4796 collected, matches this note's `+20`.
+- `check-test-duplicates.py` → ok, 0 byte-identical files.
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60` (CI's one-process command) → `11965 passed, 264 skipped`
+  after the ledger fix (the pre-fix run was `1 failed (retirement ledger),
+  11964 passed, 264 skipped`).

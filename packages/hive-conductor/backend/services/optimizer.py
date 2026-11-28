@@ -27,6 +27,27 @@ has a class:
                 as applied. Every application outcome is audited with what
                 actually committed.
 
+                With `apply_auto` the promotion is **gated** (#2501). One
+                optimizer pass is four ordered operations, and nothing is
+                activated before the operation before it has completed:
+
+                  1. propose   — `run_optimizer` stages a concrete candidate
+                                 (`staged`) and applies nothing;
+                  2. evaluate  — `evaluate_staged_proposals` measures the exact
+                                 incumbent and the exact staged candidate.
+                                 Either measurement may be *unavailable*
+                                 (typed evidence, never a synthetic 0.0), and
+                                 then nothing is compared;
+                  3. approve   — the canonical promotion contract (#116)
+                                 gates the candidate on that evidence;
+                  4. promote   — `promote_evaluated` commits only an
+                                 approved candidate, once, under the per-DAG
+                                 promotion lock.
+
+                `validate=false` therefore cannot skip the evaluation a
+                promotion requires: a staged candidate that was never
+                evaluated is reported `unevaluated`, not applied.
+
   PROPOSE    — topology mutations / prompt rewrites. The user reviews +
                approves via POST /v1/optimizer/proposals/{id}/accept.
                Acceptance is a PromotionApproval: the mutation becomes a
@@ -56,15 +77,25 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from services.dag_execution_scope import DagExecutionScope
 from services.optimizer_candidates import (
+    APPLIED,
+    AUTO_PROMOTION_POLICY_ID,
     ESCALATION_KINDS,
+    FAILED,
     MANUAL,
+    NO_OP,
+    NOT_IMPROVING,
+    STAGED,
     STALE,
+    UNEVALUATED,
     UNSUPPORTED,
     commit_candidate,
+    promote_evaluated_candidate,
     record_escalation,
     snapshot_hash,
 )
+from services.validation_gate import ScoredRun
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +460,15 @@ async def run_optimizer(
     `stale` / `failed`. `auto_applied` counts real applications only.
     When False (default), every proposal is recorded as PENDING and the
     user reviews via the UI.
+
+    This is operation 1 of a gated pass (#2501): it **applies nothing**.
+    A concrete candidate is `staged` with its content hash; the evaluation
+    (`evaluate_staged_proposals`) and promotion (`promote_evaluated`) are
+    separate operations that complete in that order. Kinds that can never be
+    applied to any DAG state are still classified here (`unsupported`) and
+    authorization kinds are still recorded as requests (`escalated`), since
+    neither depends on evaluation. A later `promote_evaluated` over this
+    pass's proposals turns every `staged` outcome into a final one.
     """
     if not dag_id:
         raise ValueError("dag_id is required")
@@ -437,7 +477,7 @@ async def run_optimizer(
     from routes.audit import log_audit
 
     from services.edit_lock import is_locked
-    from services.optimizer_candidates import APPLIED, active_template_version
+    from services.optimizer_candidates import active_template_version
 
     snapshots = await _build_snapshot_for_dag(
         dag_id,
@@ -455,7 +495,6 @@ async def run_optimizer(
     source_version = await active_template_version(dag_id)
 
     out_proposals: list[dict[str, Any]] = []
-    auto_applied = 0
     blocked = 0
     created_at = (now or datetime.now(UTC)).isoformat()
 
@@ -465,35 +504,28 @@ async def run_optimizer(
         for raw in _propose_for_snapshot(snap):
             proposal_id = str(uuid.uuid4())
             decision = DECISION_PENDING
-            applied = False
             apply_outcome: str | None = None
             apply_detail = ""
-            resulting_version: int | None = None
-            candidate_hash_value: str | None = None
+            staged_candidate_hash: str | None = None
             field_path = raw["field_path"]
             blocked_by_lock = is_locked(dag_id, field_path, now=edit_lock_now)
             if raw["class"] == CLASS_AUTO_APPLY and apply_auto and not blocked_by_lock:
-                # Application goes through the same candidate/promotion
-                # contract a human acceptance does — `applied` means a
-                # candidate version actually promoted, nothing less (#861).
-                outcome = await _apply_auto_proposal(
+                # Operation 1 only: classify and stage. Nothing is applied
+                # before the candidate's independent evaluation completes
+                # (#2501) — the promotion contract (#861) is reached by
+                # `promote_evaluated`, never here.
+                outcome = _stage_auto_proposal(
                     raw,
                     dag_id=dag_id,
                     source_hash=source_hash,
                     proposal_id=proposal_id,
                     actor=actor,
                     target_node_id=snap.target_node_id,
-                    workspace_id=workspace_id,
                 )
                 apply_outcome = outcome["outcome"]
                 apply_detail = outcome["detail"]
-                resulting_version = outcome.get("resulting_version")
-                candidate_hash_value = outcome.get("candidate_hash")
-                if apply_outcome == APPLIED:
-                    applied = True
-                    auto_applied += 1
-                    decision = DECISION_ACCEPTED
-                elif apply_outcome == "escalated":
+                staged_candidate_hash = outcome.get("staged_candidate_hash")
+                if apply_outcome == "escalated":
                     decision = DECISION_PENDING  # a request is not a decision
             elif raw["class"] == CLASS_AUTO_APPLY and blocked_by_lock:
                 blocked += 1
@@ -519,11 +551,18 @@ async def run_optimizer(
                 "evaluator_version": raw.get("evaluator_version", ""),
                 "workspace_id": workspace_id,
                 "blocked_by_edit_lock": blocked_by_lock,
-                "applied": applied,
+                # Nothing is applied by a proposal (operation 1); phases 3-4
+                # write the apply record (`promote_evaluated`).
+                "applied": False,
                 "apply_outcome": apply_outcome,
                 "apply_detail": apply_detail,
-                "resulting_version": resulting_version,
-                "candidate_hash": candidate_hash_value,
+                "resulting_version": None,
+                "candidate_hash": None,
+                # The content hash of a staged candidate (#2501): what the
+                # evaluation measures and what a promotion must commit,
+                # byte for byte.
+                "staged_candidate_hash": staged_candidate_hash,
+                "competing_version": None,
                 "decision": decision,
                 "created_at": created_at,
                 "topology_proposal": raw.get("topology_proposal"),
@@ -537,7 +576,7 @@ async def run_optimizer(
         target=dag_id,
         detail={
             "proposal_count": len(out_proposals),
-            "auto_applied": auto_applied,
+            "auto_applied": 0,
             "blocked_by_edit_lock": blocked,
             "apply_auto_flag": apply_auto,
             "source_dag_hash": source_hash,
@@ -548,9 +587,525 @@ async def run_optimizer(
     return {
         "dag_id": dag_id,
         "proposals": out_proposals,
-        "auto_applied": auto_applied,
+        # Operation 1 applies nothing (#2501); the gated pass sets the real
+        # count after `promote_evaluated`.
+        "auto_applied": 0,
         "blocked_by_edit_lock": blocked,
     }
+
+
+def _stage_auto_proposal(
+    raw: dict[str, Any],
+    *,
+    dag_id: str,
+    source_hash: str,
+    proposal_id: str,
+    actor: str,
+    target_node_id: str = "",
+) -> dict[str, Any]:
+    """Classify one AUTO_APPLY proposal for a gated pass — and apply nothing.
+
+    The outcomes that do not depend on evaluation are decided here: an
+    authorization kind is recorded as a REQUEST (`escalated`), a kind with no
+    applicable mutation or no bound source is `unsupported` / `stale`. A
+    concrete candidate is `staged` with its content hash and nothing else:
+    no version is minted, the descriptor is untouched, and only the policy
+    gate in `promote_evaluated_candidate` can change that (#2501).
+    """
+    from routes.audit import log_audit
+
+    if raw.get("kind", "") in ESCALATION_KINDS:
+        return record_escalation(
+            {
+                "id": proposal_id,
+                "dag_id": dag_id,
+                "topology_proposal": raw.get("topology_proposal")
+                or {
+                    "kind": raw.get("kind", ""),
+                    "target_node_id": target_node_id,
+                    "to_value": raw.get("to_value"),
+                },
+            },
+            actor=actor,
+        )
+
+    candidate, outcome, detail = _mutated_snapshot(
+        {
+            "id": proposal_id,
+            "dag_id": dag_id,
+            "source_dag_hash": source_hash,
+            "kind": raw["kind"],
+            "topology_proposal": raw.get("topology_proposal")
+            or {
+                "kind": raw["kind"],
+                "target_node_id": target_node_id,
+                "to_value": raw.get("to_value"),
+            },
+        }
+    )
+    if outcome != BUILT:
+        log_audit(
+            action="optimizer_auto_apply",
+            actor=actor,
+            target=dag_id,
+            detail={
+                "proposal_id": proposal_id,
+                "kind": raw["kind"],
+                "outcome": outcome,
+                "detail": detail,
+            },
+        )
+        return {"outcome": outcome, "detail": detail}
+    assert candidate is not None  # for the type checker: non-built outcomes returned above
+    return {
+        "outcome": STAGED,
+        "detail": (
+            "candidate staged; auto-promotion waits for completed independent "
+            "validation against the incumbent"
+        ),
+        "staged_candidate_hash": snapshot_hash(candidate),
+    }
+
+
+async def evaluate_staged_proposals(
+    dag_id: str,
+    dag_data: dict[str, Any],
+    proposals: list[dict[str, Any]],
+    *,
+    scope: DagExecutionScope,
+) -> dict[str, Any]:
+    """Operation 2 (#2501): independent evaluation against the exact incumbent.
+
+    The incumbent is `dag_data`, the descriptor the proposals were computed
+    against. It is measured first, as typed evidence: if that measurement is
+    unavailable the pass reports it and compares nothing — no variant runs,
+    no hill-climb, and every staged candidate stays `unevaluated`. A failed
+    baseline is never read as a score of 0.0.
+
+    A staged AUTO_APPLY candidate is measured **as the exact snapshot a
+    promotion would commit** (rebuilt from the bound source and checked
+    against its staged content hash), so what was validated is what gets
+    promoted. Each evaluated proposal gains a `validation` record (status,
+    scores, and the Run / Invocation / cost lineage of both measurements)
+    and the flat verdict fields the UI reads; nothing is dropped from the
+    list. Returns the pass summary for the response.
+    """
+    from services.validation_gate import (
+        hill_climb_models,
+        hill_climb_params,
+        measure_baseline,
+        validate_proposals,
+    )
+
+    baseline = await measure_baseline(dag_data, scope=scope)
+    baseline_score = baseline.score
+    summary: dict[str, Any] = {
+        "validated": baseline.available,
+        "baseline_score": baseline_score,
+        "baseline_status": baseline.status,
+        "baseline_detail": baseline.reason,
+        "baseline_evidence": baseline.lineage(),
+        "proposals_tested": 0,
+        "hill_climb": [],
+    }
+    if baseline_score is None:  # the typed-absent case: available ⇒ scored
+        # Typed unavailable incumbent: nothing can be compared, so nothing is.
+        for payload in proposals:
+            _annotate(payload, validation=_verdict_without_baseline(payload, baseline.reason))
+        logger.warning(
+            "optimizer_validation_baseline_unavailable dag=%s reason=%s",
+            dag_id,
+            baseline.reason,
+        )
+        return summary
+
+    tested = 0
+    for payload in proposals:
+        if payload.get("class") == CLASS_AUTO_APPLY:
+            if payload.get("apply_outcome") in (None, STAGED):
+                # Staged for promotion, or proposed without apply_auto: either
+                # way the exact candidate snapshot is what gets measured.
+                await _evaluate_staged_candidate(
+                    payload,
+                    baseline=baseline,
+                    baseline_score=baseline_score,
+                    scope=scope,
+                    dag_id=dag_id,
+                )
+                tested += 1
+            else:
+                # Already classified without evaluation (unsupported, a
+                # request, edit-locked): the verdict says so and costs nothing.
+                _annotate(payload, validation=_verdict_without_baseline(payload, ""))
+        elif payload.get("class") == CLASS_PROPOSE:
+            # Propose-only kinds are never auto-applied; their measurement is
+            # advisory and says so on the row rather than disappearing.
+            (annotated,) = await validate_proposals(
+                dag_data, [payload], baseline_score, scope=scope
+            )
+            verdict = {
+                key: annotated[key]
+                for key in (
+                    "validated",
+                    "variant_b_score",
+                    "baseline_score",
+                    "improvement",
+                    "reason",
+                    "evaluation",
+                )
+                if key in annotated
+            }
+            _annotate(
+                payload,
+                validation={
+                    "status": _advisory_status(annotated),
+                    "reason": annotated.get("reason", ""),
+                },
+                **verdict,
+            )
+            tested += 1
+    summary["proposals_tested"] = tested
+
+    # Hill-climb is a search for further candidates, judged against the same
+    # measured incumbent. It only runs when that incumbent was measured: with
+    # a failed baseline it used to judge every positive variant a winner over
+    # a synthetic 0.0.
+    summary["hill_climb"] = [
+        *await hill_climb_models(dict(dag_data), baseline_score, scope=scope),
+        *await hill_climb_params(dict(dag_data), baseline_score, scope=scope),
+    ]
+    return summary
+
+
+def _bound_proposal(payload: dict[str, Any]) -> dict[str, Any]:
+    """The proposal dict `_mutated_snapshot` reads, rebuilt from a stored row.
+
+    The same shape staging built from the raw proposal plus its snapshot
+    target, so the candidate rebuilt for evaluation and for promotion is the
+    candidate that was staged — verified against `staged_candidate_hash`.
+    """
+    return {
+        "id": payload.get("id", ""),
+        "dag_id": payload.get("dag_id", ""),
+        "source_dag_hash": payload.get("source_dag_hash", ""),
+        "kind": payload.get("kind", ""),
+        "topology_proposal": payload.get("topology_proposal")
+        or {
+            "kind": payload.get("kind", ""),
+            "target_node_id": payload.get("target_node_id", ""),
+            "to_value": payload.get("to_value"),
+        },
+    }
+
+
+async def _evaluate_staged_candidate(
+    payload: dict[str, Any],
+    *,
+    baseline: ScoredRun,
+    baseline_score: float,
+    scope: DagExecutionScope,
+    dag_id: str,
+) -> None:
+    """Measure one staged candidate against the measured incumbent."""
+    from services.validation_gate import score_variant
+
+    candidate, outcome, detail = _mutated_snapshot(_bound_proposal(payload))
+    if outcome != BUILT:
+        # The bound source moved, or the mutation no longer applies.
+        _annotate(payload, validation={"status": outcome, "reason": detail})
+        return
+    assert candidate is not None  # for the type checker: non-built outcomes returned above
+    candidate_hash = snapshot_hash(candidate)
+    staged_hash = str(payload.get("staged_candidate_hash") or "")
+    if staged_hash and candidate_hash != staged_hash:
+        _annotate(
+            payload,
+            validation={
+                "status": FAILED,
+                "reason": "rebuilt candidate differs from the staged snapshot; refusing to evaluate it",
+            },
+        )
+        return
+    if candidate_hash == payload.get("source_dag_hash"):
+        _annotate(
+            payload,
+            validation={
+                "status": NO_OP,
+                "reason": "candidate content is identical to the incumbent; nothing to evaluate",
+            },
+        )
+        return
+    measured = await score_variant(candidate, scope=scope)
+    if not measured.available:
+        _annotate(
+            payload,
+            validation={
+                "status": UNEVALUATED,
+                "reason": f"candidate unmeasured: {measured.reason}",
+            },
+        )
+        return
+    baseline_version = str(baseline.evaluator_version or "")
+    candidate_version = str(measured.evaluator_version or "")
+    if baseline_version != candidate_version:
+        _annotate(
+            payload,
+            validation={
+                "status": UNEVALUATED,
+                "reason": (
+                    "baseline and candidate were judged by different evaluator versions "
+                    f"({baseline_version or 'none'} vs {candidate_version or 'none'})"
+                ),
+            },
+        )
+        return
+    candidate_score = measured.score
+    if candidate_score is None:  # available ⇒ scored; the narrow is for the type checker
+        _annotate(
+            payload,
+            validation={"status": UNEVALUATED, "reason": "candidate measurement carried no score"},
+        )
+        return
+    improved = candidate_score > baseline_score
+    logger.info(
+        "optimizer_validation dag=%s proposal=%s baseline=%.1f candidate=%.1f improved=%s",
+        dag_id,
+        payload.get("id"),
+        baseline_score,
+        candidate_score,
+        improved,
+    )
+    _annotate(
+        payload,
+        validation={
+            "status": "improved" if improved else NOT_IMPROVING,
+            "reason": (
+                f"independent validation: candidate {candidate_score} vs incumbent "
+                f"{baseline_score} ({candidate_version})"
+            ),
+            "baseline_score": baseline_score,
+            "variant_b_score": candidate_score,
+            "improvement": candidate_score - baseline_score,
+            "evaluator_version": candidate_version,
+            "baseline": baseline.lineage(),
+            "candidate": measured.lineage(),
+            "candidate_hash": candidate_hash,
+        },
+        validated=improved,
+        baseline_score=baseline_score,
+        variant_b_score=candidate_score,
+        improvement=candidate_score - baseline_score,
+    )
+
+
+def _verdict_without_baseline(payload: dict[str, Any], baseline_reason: str) -> dict[str, str]:
+    """The verdict for a proposal no variant measurement was taken for.
+
+    An AUTO_APPLY row already classified without evaluation (unsupported, a
+    request, edit-locked) keeps that classification; everything else could
+    only have been judged against the incumbent, so with the incumbent
+    unmeasured it is `unevaluated` and says why.
+    """
+    classified = payload.get("class") == CLASS_AUTO_APPLY and payload.get("apply_outcome") not in (
+        None,
+        STAGED,
+    )
+    if classified:
+        return {
+            "status": str(payload.get("apply_outcome") or UNSUPPORTED),
+            "reason": str(payload.get("apply_detail") or ""),
+        }
+    return {"status": UNEVALUATED, "reason": f"incumbent unmeasured: {baseline_reason}"}
+
+
+def _advisory_status(annotated: dict[str, Any]) -> str:
+    if "variant_b_score" not in annotated:
+        return UNEVALUATED
+    return "improved" if annotated.get("validated") else NOT_IMPROVING
+
+
+def _annotate(payload: dict[str, Any], **fields: Any) -> None:
+    """Write evaluation fields onto a proposal row and its stored copy.
+
+    The stored copy is rebound through the store setter (#2501 review):
+    ``JsonStore`` persists exclusively on ``__setitem__``, so mutating the
+    cached row in place leaves the durable backend blind to evaluation
+    evidence and apply outcomes — a restart would resurrect the proposal as
+    pending and unapplied. Re-binding costs one ``json.dumps`` of a small row
+    and is the only write path the store honors.
+    """
+    import stores
+
+    payload.update(fields)
+    proposal_id = str(payload.get("id", ""))
+    stored = stores.optimizer_proposals.get(proposal_id)
+    if stored is None:
+        return
+    if stored is not payload:
+        stored.update(fields)
+    stores.optimizer_proposals[proposal_id] = stored
+
+
+async def promote_evaluated(
+    dag_id: str,
+    proposals: list[dict[str, Any]],
+    *,
+    actor: str,
+    workspace_id: str = "",
+    evaluation_ran: bool,
+) -> int:
+    """Operations 3 and 4 (#2501): approve on evidence, then promote.
+
+    Every `staged` candidate of the pass gets its final outcome here. Only a
+    candidate whose evaluation **completed** and **strictly improved** on the
+    incumbent reaches the canonical promotion contract and, through it,
+    ``commit_candidate``. Everything else — never evaluated, unmeasured, not
+    improving, a no-op — is reported as exactly that, and the incumbent is
+    untouched. Returns the number of candidates that really promoted.
+    """
+    import stores
+
+    for payload in proposals:
+        if payload.get("apply_outcome") != STAGED:
+            continue
+        # A rejection recorded while this pass's evaluation ran lives on the
+        # stored row (#2501 review): the in-pass payload cannot see a decision
+        # made after the pass captured the row, so re-read it before
+        # promoting. `commit_candidate`'s decision fence re-checks under the
+        # promotion lock for anything that slips past this read.
+        stored = stores.optimizer_proposals.get(str(payload.get("id", "")))
+        if stored is not None and stored.get("decision") == DECISION_REJECTED:
+            await _record_auto_apply(
+                actor,
+                payload,
+                UNEVALUATED,
+                f"rejected by {stored.get('decided_by') or 'a human'} while its "
+                "evaluation was pending; honoring the recorded decision",
+            )
+            continue
+        validation = payload.get("validation") or {}
+        if validation.get("status") != "improved":
+            outcome, detail = _unpromoted(validation, evaluation_ran)
+            await _record_auto_apply(actor, payload, outcome, detail)
+            continue
+        candidate, outcome, detail = _mutated_snapshot(_bound_proposal(payload))
+        if outcome != BUILT:
+            await _record_auto_apply(actor, payload, outcome, detail)
+            continue
+        assert candidate is not None  # for the type checker: non-built outcomes returned above
+        if snapshot_hash(candidate) != validation.get("candidate_hash"):
+            await _record_auto_apply(
+                actor,
+                payload,
+                FAILED,
+                "candidate content drifted from the snapshot that was validated; refusing to promote",
+            )
+            continue
+        record = await promote_evaluated_candidate(
+            dag_id,
+            candidate,
+            proposal=payload,
+            actor=actor,
+            workspace_id=workspace_id or str(payload.get("workspace_id") or ""),
+            validation=validation,
+        )
+        _annotate(
+            payload,
+            resulting_version=record.get("resulting_version"),
+            candidate_hash=record.get("candidate_hash"),
+            competing_version=record.get("competing_version"),
+            promotion_record_id=record.get("promotion_record_id"),
+        )
+        await _record_auto_apply(
+            actor,
+            payload,
+            str(record.get("outcome") or FAILED),
+            str(record.get("detail") or ""),
+        )
+    return sum(1 for p in proposals if p.get("applied"))
+
+
+def _unpromoted(validation: dict[str, Any], evaluation_ran: bool) -> tuple[str, str]:
+    """The final non-applied outcome of a staged candidate that was not approved."""
+    status = str(validation.get("status") or "")
+    if not evaluation_ran:
+        return (
+            UNEVALUATED,
+            "validation was not requested; auto-promotion requires completed independent "
+            "validation and none was performed",
+        )
+    reason = str(validation.get("reason") or "")
+    if status in (NOT_IMPROVING, NO_OP, STALE, UNSUPPORTED, FAILED):
+        return status, reason
+    return UNEVALUATED, f"candidate did not complete independent validation: {reason}"
+
+
+async def _record_auto_apply(
+    actor: str, payload: dict[str, Any], outcome: str, detail: str
+) -> None:
+    """Finalize one proposal's apply record on the row, its stored copy, and the audit log.
+
+    `applied` and `accepted` are written together and only for an outcome
+    that really promoted; every other outcome leaves the proposal pending for
+    human review and saying exactly why it was not promoted. A stale refusal
+    names the version that moved the base (the CAS evidence a losing
+    concurrent pass reads).
+    """
+    import stores
+    from routes.audit import log_audit
+
+    from services.optimizer_candidates import active_template_version
+
+    applied = outcome == APPLIED
+    stored = stores.optimizer_proposals.get(str(payload.get("id", "")))
+    fields: dict[str, Any] = {
+        "apply_outcome": outcome,
+        "apply_detail": detail,
+        "applied": applied,
+        # A human decision on the stored row is never overwritten by this
+        # bookkeeping (#2501 review): a recorded rejection survives every
+        # non-applied outcome, and only a promotion that really committed
+        # stamps `accepted` (the commit fence refuses rejected proposals).
+        "decision": (
+            DECISION_ACCEPTED
+            if applied
+            else str((stored or {}).get("decision") or DECISION_PENDING)
+        ),
+    }
+    if outcome == STALE and payload.get("competing_version") is None:
+        fields["competing_version"] = await active_template_version(str(payload.get("dag_id", "")))
+    _annotate(payload, **fields)
+    if outcome not in (UNEVALUATED, NOT_IMPROVING):
+        # Every other outcome was audited where it was decided: commit_candidate
+        # and the contract gate audit applied/failed/stale, and staging audited
+        # the kinds that can never apply.
+        return
+    validation = dict(payload.get("validation") or {})
+    log_audit(
+        action="optimizer_auto_apply",
+        actor=actor,
+        target=str(payload.get("dag_id", "")),
+        detail={
+            "proposal_id": payload.get("id"),
+            "kind": payload.get("kind"),
+            "outcome": outcome,
+            "detail": detail,
+            "policy_id": AUTO_PROMOTION_POLICY_ID,
+            "baseline_score": validation.get("baseline_score"),
+            "variant_b_score": validation.get("variant_b_score"),
+            "evaluation_run_ids": sorted(
+                {
+                    str(run_id)
+                    for side in ("baseline", "candidate")
+                    for run_id in (
+                        (validation.get(side) or {}).get("evaluation_run_id"),
+                        (validation.get(side) or {}).get("run_id"),
+                    )
+                    if run_id
+                }
+            ),
+        },
+    )
 
 
 async def _apply_auto_proposal(
@@ -563,13 +1118,20 @@ async def _apply_auto_proposal(
     target_node_id: str = "",
     workspace_id: str = "",
 ) -> dict[str, Any]:
-    """Attempt one auto-apply through the candidate/promotion contract.
+    """Attempt one auto-apply kind through the candidate/promotion contract.
+
+    This is the **human acceptance** path (``record_decision``): a person
+    accepted an AUTO_APPLY proposal, so the human is the approver of record
+    and the candidate commits under the #861 contract. The optimizer's own
+    `apply_auto` path does not come here — it stages (`_stage_auto_proposal`)
+    and may only promote through `promote_evaluated_candidate` after the
+    candidate's independent evaluation completed (#2501).
 
     Returns the apply record. Kinds that name no concrete value to commit are
     `unsupported` — recorded as evidence, never reported as applied (#861).
-    Execution-tier kinds are `escalated` on this path exactly as on the
-    accept path: a REQUEST recorded for the delegated authority, never a
-    mutation and never an approval stamp.
+    Execution-tier kinds are `escalated` on this path exactly as on the accept
+    path: a REQUEST recorded for the delegated authority, never a mutation
+    and never an approval stamp.
     """
     from routes.audit import log_audit
 
@@ -719,11 +1281,31 @@ async def record_decision(
             payload["apply_outcome"] = MANUAL
             payload["apply_detail"] = "decision recorded; author the change in the DAG editor"
 
-    stores.optimizer_proposals[proposal_id] = payload
-
-    # Track rejected edits so optimizer doesn't re-propose them (SkillOpt rejected-edit buffer)
     if decision == DECISION_REJECTED:
-        _record_rejected_edit(payload)
+        # A rejection is serialized against in-flight promotions (#2501
+        # review): under the same per-DAG lock as `commit_candidate`, and
+        # merged onto the current stored row, so it can neither interleave
+        # with a promotion's decision fence nor clobber apply fields a
+        # promotion that already committed just wrote. The rejection always
+        # stands as the human's decision.
+        from services.optimizer_candidates import decision_serialization
+
+        async with decision_serialization(str(payload.get("dag_id") or "")):
+            stored = stores.optimizer_proposals.get(proposal_id)
+            if stored is not None:
+                workspace_id = payload.get("workspace_id")
+                payload = dict(stored)
+                payload["workspace_id"] = workspace_id or payload.get("workspace_id")
+            payload["decision"] = decision
+            payload["decided_by"] = actor
+            payload["decided_at"] = datetime.now(UTC).isoformat()
+            stores.optimizer_proposals[proposal_id] = payload
+
+            # Track rejected edits so optimizer doesn't re-propose them
+            # (SkillOpt rejected-edit buffer)
+            _record_rejected_edit(payload)
+    else:
+        stores.optimizer_proposals[proposal_id] = payload
 
     log_audit(
         action="optimizer_decision",
