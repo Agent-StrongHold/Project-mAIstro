@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import os
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
@@ -125,6 +126,40 @@ except importlib.metadata.PackageNotFoundError:
 
 # Graceful shutdown drain timeout (seconds)
 SHUTDOWN_DRAIN_TIMEOUT = 30.0
+
+#: Upper bound on one lifespan-teardown phase that owns no internal deadline
+#: (#2249). Sandbox destroys (one bounded docker call each, but the loop over
+#: many containers is not), the shared-client close, the container release and
+#: the engine disposal each awaited as long as their dependency pleased — and
+#: on a host whose docker daemon or database is wedged, which is exactly the
+#: drain-window condition the soak harness runs under, that is forever. One
+#: stuck phase held the whole shutdown open until the container's grace
+#: deadline ended in SIGKILL. A phase the deadline cancels is logged and
+#: shutdown proceeds: the process is exiting anyway, so abandoning its
+#: cleanup is strictly better than never exiting.
+TEARDOWN_PHASE_TIMEOUT = 10.0
+
+
+async def _teardown_phase(phase: str, step: Callable[[], Awaitable[object]]) -> None:
+    """Run one shutdown step under a hard deadline; never let it stop shutdown.
+
+    `wait_for` cancels the step at the deadline — the honest disposition for
+    a cleanup that will not finish — and every other failure is logged and
+    swallowed: shutdown must proceed even when a phase fails or hangs, the
+    same best-effort contract `_drain_queue_singleton` already follows.
+    """
+    try:
+        await asyncio.wait_for(step(), TEARDOWN_PHASE_TIMEOUT)
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        await logger.awarning(
+            "lifespan_teardown_phase_timeout",
+            phase=phase,
+            timeout_s=TEARDOWN_PHASE_TIMEOUT,
+        )
+    except Exception:
+        await logger.aerror("lifespan_teardown_phase_failed", phase=phase, exc_info=True)
 
 
 def _validate_startup(settings: Settings) -> None:
@@ -773,11 +808,11 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _stop_canvas_job_runner(canvas_runner)
         container = getattr(app.state, "container", None)
         if container is not None:
-            try:
-                await container.flush_usage_log()
-            except Exception:
-                await logger.aerror("usage_log_flush_failed", exc_info=True)
-            await container.aclose()
+            # Best-effort and bounded (#2249): a wedged usage-log flush or a
+            # container release stuck on a draining store connection must not
+            # hold the shutdown open past the process's grace period.
+            await _teardown_phase("usage_log_flush", container.flush_usage_log)
+            await _teardown_phase("container_aclose", container.aclose)
 
         # Drop the queue singleton after draining, so a later lifespan in the same
         # interpreter can install a fresh one. Startup refuses to replace a queue
@@ -803,16 +838,20 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         except ImportError:
             pass
         else:
-            await cleanup_all_containers()
+            # Bounded as a whole (#2249): each destroy is a bounded docker
+            # call, but the loop over many containers is not, and a docker
+            # daemon that stopped answering during the drain window must not
+            # stop the process from exiting.
+            await _teardown_phase("sandbox_cleanup", cleanup_all_containers)
 
         # Release pooled outbound connections. After the runner has drained, so
         # in-flight tasks still have their client.
-        await aclose_shared_clients()
+        await _teardown_phase("shared_clients_close", aclose_shared_clients)
 
         # Dispose database engine
         engine = memory_store.get_engine()
         if engine:
-            await engine.dispose()
+            await _teardown_phase("engine_dispose", engine.dispose)
         memory_store.reset_engine_cache()
 
         await logger.ainfo("maistro_engine_stopped")

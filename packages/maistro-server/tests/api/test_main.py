@@ -424,9 +424,12 @@ class TestLifespan:
         logged = [
             call
             for call in server_logger.aerror.await_args_list
-            if call.args and call.args[0] == "usage_log_flush_failed"
+            if call.args and call.args[0] == "lifespan_teardown_phase_failed"
         ]
         assert len(logged) == 1
+        # The failure is attributed to the phase that raised it (#2249's
+        # bounded teardown phases share one best-effort contract).
+        assert logged[0].kwargs.get("phase") == "usage_log_flush"
         mock_container.aclose.assert_awaited_once()
 
     async def test_shutdown_treats_a_cleared_container_as_nothing_to_close(self) -> None:
