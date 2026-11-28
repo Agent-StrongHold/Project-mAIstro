@@ -1,5 +1,8 @@
 # Workspace Cutover Plan
 
+> **Owner correction (2026-11-27):** [Project-first Workspace composition](PROJECT-FIRST-WORKSPACE-COMPOSITION.md) (#2551–#2557, #2549) supersedes page-per-capability navigation and closure assumptions in this plan. Primary tabs/pages are canonical Projects; Home is Workspace-wide. Existing subsystem pages become registered contextual modules/widgets/tools; the persistent Workspace Agent composes them. Treat historical shipped/closed rows as slice evidence only where the new contract requires additional integration. New shell/module work must consume #2551–#2554; #1048 is reopened, #2274 retires proven equivalents, #2557 gates integrated release. Preserve canonical authority, staged security boundaries, and shrink-only ledger. No independent subsystem page or Agent overlay on legacy navigation counts as completion.
+
+
 **Status:** active cutover plan — v1.0 amendments ratified 2026-10-01 (see §9); release contract in [ROADMAP.md](../../ROADMAP.md)
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
 **Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md) · [BACKLOG.md](../../BACKLOG.md) `[conductor-402]`–`[conductor-413]`

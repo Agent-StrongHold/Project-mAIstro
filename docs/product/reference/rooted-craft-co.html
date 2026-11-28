@@ -1,0 +1,879 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Rooted Craft Co</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* ── Workspace design system · greenhouse persona (ADR-091626-ba4f) ── */
+:root{
+  --bg:#eff4ec; --surface:#f7faf5; --well:rgba(255,255,255,.70); --bar:rgba(255,255,255,.55);
+  --fg:#161b26; --fg-2:#333b4c; --muted:#5a6376; --meta:#626c80;
+  --glass:rgba(255,255,255,.58); --glass-2:rgba(255,255,255,.82); --edge:rgba(255,255,255,.85); --hair:rgba(20,30,50,.08);
+  --accent:#2f7d4f; --accent-on:#fff; --accent-soft:color-mix(in srgb,var(--accent) 14%,transparent);
+  --human:#1d49b0; --agent:#5c4396; --gate:#14604c; --system:#4d5867;
+  --warn:#784d0e; --success:#14604c; --danger:#a41f15;
+  --human-soft:color-mix(in srgb,var(--human) 14%,transparent); --agent-soft:color-mix(in srgb,var(--agent) 16%,transparent);
+  --gate-soft:color-mix(in srgb,var(--gate) 16%,transparent); --system-soft:color-mix(in srgb,var(--system) 16%,transparent);
+  --warn-soft:color-mix(in srgb,var(--warn) 16%,transparent); --success-soft:color-mix(in srgb,var(--success) 14%,transparent); --danger-soft:color-mix(in srgb,var(--danger) 14%,transparent);
+  --glow:none; --shadow:inset 0 1px 0 rgba(255,255,255,.25),0 18px 50px rgba(40,50,80,.12);
+  --skel:linear-gradient(90deg,rgba(20,30,50,.06),rgba(20,30,50,.12),rgba(20,30,50,.06));
+  --bloom:radial-gradient(1000px 700px at 8% 0%,rgba(140,200,150,.48),transparent 62%),radial-gradient(900px 700px at 96% 12%,rgba(215,225,150,.40),transparent 60%),radial-gradient(1100px 800px at 50% 65%,rgba(190,220,195,.35),transparent 65%),radial-gradient(700px 500px at 90% 100%,rgba(240,190,205,.30),transparent 60%),linear-gradient(180deg,#f3f7ee,#eff4ec 50%,#e9f0e6);
+  --sans:"Bricolage Grotesque",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --r:12px; --r-lg:20px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121a16; --surface:#18221c; --well:rgba(6,10,20,.35); --bar:rgba(12,16,28,.45);
+  --fg:#eef0f6; --fg-2:#c9cdd8; --muted:#a3a9ba; --meta:#98a0b3;
+  --glass:rgba(255,255,255,.07); --glass-2:rgba(255,255,255,.12); --edge:rgba(255,255,255,.16); --hair:rgba(255,255,255,.10);
+  --accent:#8fd5a3; --accent-on:#0f1a13;
+  --human:#a3c0ff; --agent:#c9b8ee; --gate:#6fd3b8; --system:#b8bfcb; --warn:#f2c46f; --success:#6fd3b8; --danger:#ff9d94;
+  --glow:0 0 10px currentColor; --shadow:inset 0 1px 0 rgba(255,255,255,.12),0 24px 60px rgba(4,8,20,.45);
+  --skel:linear-gradient(90deg,rgba(255,255,255,.08),rgba(255,255,255,.16),rgba(255,255,255,.08));
+  --bloom:radial-gradient(1000px 700px at 8% 0%,rgba(70,160,105,.42),transparent 62%),radial-gradient(900px 700px at 96% 12%,rgba(150,180,80,.20),transparent 60%),radial-gradient(1100px 800px at 50% 65%,rgba(60,120,95,.25),transparent 65%),radial-gradient(700px 500px at 90% 100%,rgba(225,150,175,.12),transparent 60%),linear-gradient(180deg,#172219,#121a16 50%,#0f1612);
+}}
+:root[data-theme="dark"]{
+  --bg:#121a16; --surface:#18221c; --well:rgba(6,10,20,.35); --bar:rgba(12,16,28,.45);
+  --fg:#eef0f6; --fg-2:#c9cdd8; --muted:#a3a9ba; --meta:#98a0b3;
+  --glass:rgba(255,255,255,.07); --glass-2:rgba(255,255,255,.12); --edge:rgba(255,255,255,.16); --hair:rgba(255,255,255,.10);
+  --accent:#8fd5a3; --accent-on:#0f1a13;
+  --human:#a3c0ff; --agent:#c9b8ee; --gate:#6fd3b8; --system:#b8bfcb; --warn:#f2c46f; --success:#6fd3b8; --danger:#ff9d94;
+  --glow:0 0 10px currentColor; --shadow:inset 0 1px 0 rgba(255,255,255,.12),0 24px 60px rgba(4,8,20,.45);
+  --skel:linear-gradient(90deg,rgba(255,255,255,.08),rgba(255,255,255,.16),rgba(255,255,255,.08));
+  --bloom:radial-gradient(1000px 700px at 8% 0%,rgba(70,160,105,.42),transparent 62%),radial-gradient(900px 700px at 96% 12%,rgba(150,180,80,.20),transparent 60%),radial-gradient(1100px 800px at 50% 65%,rgba(60,120,95,.25),transparent 65%),radial-gradient(700px 500px at 90% 100%,rgba(225,150,175,.12),transparent 60%),linear-gradient(180deg,#172219,#121a16 50%,#0f1612);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg)}
+body{background:var(--bloom);background-attachment:scroll;color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.5;font-variation-settings:"opsz" 14;-webkit-font-smoothing:antialiased;min-height:100vh;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none;font-weight:600}a:hover{text-decoration:underline}
+button{font:inherit;color:inherit;cursor:pointer}
+.btn{font-weight:600;font-size:14px;border:1px solid var(--edge);border-radius:var(--r);padding:8px 14px;background:var(--glass-2);color:var(--fg);display:inline-flex;align-items:center;gap:6px;min-height:36px;backdrop-filter:blur(12px)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-on)}
+.btn.text{background:transparent;border-color:transparent;color:var(--accent);padding:6px 4px}
+.btn.quiet{background:transparent;border-color:transparent;color:var(--muted);padding:6px 4px}
+.btn.danger{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 35%,transparent);color:var(--danger)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn:focus-visible,.f:focus-visible,.switch a:focus-visible,.tg:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+.glass{background:var(--glass);border:1px solid var(--edge);border-radius:var(--r-lg);backdrop-filter:blur(18px);box-shadow:var(--shadow)}
+@supports not (backdrop-filter:blur(1px)){.glass{background:var(--surface)}}
+.mono{font-family:var(--mono);font-size:12px;color:var(--meta);font-weight:500}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;line-height:1.5;vertical-align:middle}
+.badge::before{content:"";width:6px;height:6px;border-radius:3px;background:currentColor;box-shadow:var(--glow)}
+.b-human{background:var(--human-soft);color:var(--human)}.b-agent{background:var(--agent-soft);color:var(--agent)}.b-gate{background:var(--gate-soft);color:var(--gate)}.b-system{background:var(--system-soft);color:var(--system)}
+/* header */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;align-items:center;gap:16px;padding:0 40px;min-height:64px;background:var(--bar);backdrop-filter:blur(18px);border-bottom:1px solid var(--hair)}
+.me{display:flex;align-items:center;gap:10px;font-weight:600}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);color:var(--accent-on);font-weight:700;font-size:13px;display:grid;place-items:center}
+.switch{display:flex;background:var(--glass);border:1px solid var(--edge);border-radius:14px;padding:3px;gap:2px}
+.switch a{display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:11px;color:var(--muted);font-weight:600;font-size:14px;white-space:nowrap}
+.switch a:hover{text-decoration:none;color:var(--fg)}
+.switch a.on{background:var(--glass-2);color:var(--fg)}
+.sw{width:8px;height:8px;border-radius:4px;flex-shrink:0}
+.sp{flex:1}
+.ledger{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--success);font-weight:600;padding:7px 12px;border-radius:999px;background:var(--success-soft);border:1px solid color-mix(in srgb,var(--success) 35%,transparent);white-space:nowrap}
+.ledger::before{content:"";width:8px;height:8px;border-radius:4px;background:var(--success);box-shadow:var(--glow)}
+.wrap{max-width:1280px;margin:0 auto;padding:0 40px}
+.cover{padding:40px 0 8px}
+h1{font-size:38px;line-height:1.05;font-weight:600;letter-spacing:-.02em;font-variation-settings:"opsz" 96;text-wrap:balance}
+.voice{margin-top:8px;color:var(--muted);font-size:16px;max-width:70ch}
+.offline{display:none;margin-top:16px;padding:10px 14px;border-radius:var(--r);background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);color:var(--warn);font-size:14px;font-weight:600}
+body.is-offline .offline{display:block}
+.resume{margin-top:22px;display:flex;align-items:center;gap:14px;padding:16px 20px;flex-wrap:wrap}
+.resume .t{font-weight:600}.resume .d{color:var(--muted);font-size:14px}
+.resume .acts{margin-left:auto;display:flex;gap:8px}
+.main{display:grid;grid-template-columns:5fr 7fr;gap:36px;padding:26px 0 96px}
+h2{font-size:14px;font-weight:600;color:var(--muted);margin:0 0 12px 4px}
+.sec{margin-top:26px}
+/* attention */
+.need{display:flex;gap:16px;padding:18px 22px;align-items:flex-start;border-bottom:1px solid var(--hair)}
+.need:last-child{border-bottom:0}
+.need .bar{width:3px;border-radius:2px;align-self:stretch;flex-shrink:0;margin-top:3px}
+.need .s{font-size:18px;line-height:1.35;font-weight:500}
+.need .s b{font-weight:700}
+.need .age{color:var(--warn);font-weight:600}.need .age.calm{color:var(--muted);font-weight:500}
+.need .sub{color:var(--muted);font-size:14px;margin-top:4px}
+.need .acts{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.need.gone{display:none}
+.empty{padding:22px;color:var(--muted);font-size:15px;display:none}
+.goal{display:flex;justify-content:space-between;gap:10px;padding:12px 22px;border-bottom:1px solid var(--hair)}
+.goal:last-child{border-bottom:0}
+.st{font-size:14px;font-weight:600;white-space:nowrap}.st.block{color:var(--warn)}.st.run{color:var(--agent)}.st.wait{color:var(--accent)}.st.done{color:var(--meta);font-weight:500}
+.person{display:flex;align-items:center;gap:10px;padding:10px 22px}
+.person .av{width:26px;height:26px;border-radius:50%;background:var(--glass-2);display:grid;place-items:center;font-size:12px;font-weight:700;color:var(--fg-2)}
+.person .role{margin-left:auto;font-size:13px;color:var(--muted)}
+.cap{padding:2px 22px 14px;color:var(--muted);font-size:13px}
+.tray{padding:8px 22px 14px}
+.tray .row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--hair);font-size:14px}
+.tray .row:last-child{border-bottom:0}
+.tray .n{font-family:var(--mono);font-size:12px;color:var(--meta);font-variant-numeric:tabular-nums}
+.tray .ready{color:var(--success);font-weight:600}
+.skel{height:10px;border-radius:5px;background:var(--skel);margin:10px 0}
+.check{display:flex;align-items:center;gap:10px;padding:9px 22px;font-size:14px;cursor:pointer}
+.check input{accent-color:var(--accent);width:16px;height:16px}
+.check .n{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--meta)}
+.check.done span:first-of-type{color:var(--muted);text-decoration:line-through}
+.cal .row{display:flex;gap:12px;padding:9px 22px;font-size:14px;border-bottom:1px solid var(--hair)}
+.cal .row:last-child{border-bottom:0}
+.cal .d{width:34px;color:var(--meta);font-family:var(--mono);font-size:12px;padding-top:2px}
+.cal .today{color:var(--accent);font-weight:700}
+.hive{display:flex;align-items:center;gap:8px;padding:16px 4px 0;color:var(--muted);font-size:13px}
+.hive::before{content:"";width:8px;height:8px;border-radius:4px;background:var(--success);box-shadow:var(--glow)}
+body.is-offline .hive::before{background:var(--warn)}
+/* timeline */
+.filters{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.f{font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--glass);border:1px solid var(--edge);color:var(--muted)}
+.f.on{background:var(--fg);color:var(--bg);border-color:transparent}
+.f i{font-style:normal;opacity:.6;margin-left:4px;font-weight:500}
+.day{font-size:13px;font-weight:600;color:var(--muted);margin:22px 0 10px 36px}
+.day.hidden{display:none}
+.tl{position:relative;padding-left:36px}
+.tl::before{content:"";position:absolute;left:11px;top:0;bottom:0;width:2px;background:var(--hair)}
+.ev{position:relative;padding:18px 22px;margin-bottom:12px}
+.ev::before{content:"";position:absolute;left:-31px;top:24px;width:12px;height:12px;border-radius:6px;background:var(--dot);box-shadow:0 0 0 3px var(--bg),var(--glow)}
+.ev.human{--dot:var(--human)}.ev.agent{--dot:var(--agent)}.ev.gate{--dot:var(--gate)}.ev.system{--dot:var(--system)}
+.ev.hidden{display:none}
+.ev.new{animation:arrive .35s ease-out}
+@keyframes arrive{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.ev.new{animation:none}}
+.ev .hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.ev .who{font-weight:700}
+.ev .as{color:var(--muted);font-size:14px}.ev .as b{color:var(--fg-2);font-weight:600}
+.ev .at{margin-left:auto;color:var(--meta);font-size:13px;white-space:nowrap}
+.ev .s{font-size:16px;line-height:1.45;margin-top:8px;max-width:62ch}
+.ev .m{margin-top:8px}
+.ev .acts{display:flex;gap:14px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.ev.quiet{padding:14px 22px}.ev.quiet .s{font-size:15px;color:var(--fg-2);margin-top:4px}
+.why{margin-top:12px;border-left:3px solid var(--dot);background:var(--well);border-radius:0 var(--r) var(--r) 0;padding:12px 16px}
+.why[hidden]{display:none}
+.why .t{font-weight:600;font-size:14px;margin-bottom:6px}
+.why .k{display:grid;grid-template-columns:90px 1fr;gap:4px 12px;font-size:14px}
+.why .k span:nth-child(odd){color:var(--muted)}
+.why .path{font-family:var(--mono);font-size:12.5px;color:var(--fg-2)}
+.result{margin-top:12px;display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:var(--r);font-size:14px;line-height:1.45;border:1px solid transparent}
+.result[hidden]{display:none}
+.result.ok{background:var(--success-soft);color:var(--success);border-color:color-mix(in srgb,var(--success) 30%,transparent)}
+.result.partial{background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.result.logged{background:transparent;color:var(--success);padding:6px 0 0}
+.result .ic{font-weight:700}
+/* demo controls + toast */
+.pick{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:9;display:flex;gap:6px;padding:6px;border-radius:14px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 32px)}
+.pick .lbl{font-size:12px;color:var(--muted);padding:0 6px 0 8px;font-weight:600}
+.tg{font-size:12px;font-weight:600;border:1px solid var(--edge);background:var(--glass-2);color:var(--muted);border-radius:9px;padding:6px 10px}
+.tg.on{color:var(--fg);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(20px);opacity:0;z-index:9;padding:12px 16px;border-radius:14px;font-size:14px;display:flex;gap:10px;align-items:center;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100vw - 32px)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast .ic{width:24px;height:24px;border-radius:12px;display:grid;place-items:center;font-weight:700;font-size:13px;background:var(--success-soft);color:var(--success)}
+.toast.warn .ic{background:var(--warn-soft);color:var(--warn)}
+
+/* persistent workspace agent */
+.agentchip{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:6px 12px 6px 8px;border-radius:999px;background:var(--glass-2);border:1px solid var(--edge);color:var(--fg);white-space:nowrap}
+.agentchip .st{color:var(--muted);font-weight:500}
+.h2row{display:flex;align-items:baseline;gap:10px;margin:0 0 12px 4px;flex-wrap:wrap}.h2row h2{margin:0}.h2row .note{font-size:12px;color:var(--meta)}
+.h2row .pin{margin-left:auto;font-size:12px;font-weight:600;border:1px solid var(--edge);background:var(--glass-2);color:var(--muted);border-radius:999px;padding:4px 10px}
+.h2row .pin.on{color:var(--fg);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.goal{cursor:pointer;flex-wrap:wrap}
+.goal .plan{flex-basis:100%;display:none;margin-top:10px;padding:12px 14px;border-left:3px solid var(--agent);background:var(--well);border-radius:0 var(--r) var(--r) 0;font-size:14px}
+.goal.open .plan{display:block}
+.plan .k{display:grid;grid-template-columns:104px 1fr;gap:4px 12px}.plan .k span:nth-child(odd){color:var(--muted)}
+.plan .k b{font-weight:600}
+.sug{padding:16px 22px;border-bottom:1px solid var(--hair)}.sug:last-child{border-bottom:0}
+.sug .t{font-weight:600;font-size:15px}.sug .d{color:var(--muted);font-size:14px;margin-top:3px}
+.sug .whyh{margin-top:8px;font-size:13px;color:var(--fg-2);padding:8px 12px;border-left:3px solid var(--agent);background:var(--well);border-radius:0 var(--r) var(--r) 0}
+.sug .whyh b{color:var(--muted);font-weight:600}
+.sug .acts{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
+.sug.gone{display:none}
+.agentcard{padding:16px 22px 18px}
+.agentcard .top2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.agentcard .av{width:34px;height:34px;border-radius:50%;background:var(--agent-soft);color:var(--agent);display:grid;place-items:center;font-weight:700}
+.agentcard .nm{font-weight:700}.agentcard .as{color:var(--muted);font-size:14px}
+.agentcard .kv{display:grid;grid-template-columns:96px 1fr;gap:6px 12px;font-size:14px;margin-top:12px}
+.agentcard .kv span:nth-child(odd){color:var(--muted)}
+.agentcard .deleg{display:flex;flex-wrap:wrap;gap:6px}
+.agentcard .deleg span{font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--agent-soft);color:var(--agent)}
+.night{margin-top:12px;padding:10px 12px;border-radius:var(--r);background:var(--well);font-size:14px}
+.night .t{font-weight:600;margin-bottom:4px}
+.night ul{padding-left:18px;color:var(--fg-2)}
+.night li{margin:2px 0}
+.night .n{font-family:var(--mono);font-size:12px;color:var(--meta)}
+.bud{height:6px;border-radius:3px;background:var(--hair);margin:6px 0 4px;overflow:hidden}.bud i{display:block;height:100%;width:51%;background:var(--agent);border-radius:3px}
+/* artifacts: what an entry produced */
+.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.art{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:6px 11px;border-radius:var(--r);border:1px solid var(--edge);background:var(--glass-2);color:var(--fg)}
+.art .k{font-size:12px;font-weight:600;padding:1px 6px;border-radius:999px;background:var(--system-soft);color:var(--system)}
+.art .k.live{background:var(--success-soft);color:var(--success)}.art .k.held{background:var(--warn-soft);color:var(--warn)}.art .k.draft{background:var(--human-soft);color:var(--human)}
+.viewer{position:fixed;right:16px;top:calc(76px + env(safe-area-inset-top,0px));bottom:calc(76px + env(safe-area-inset-bottom,0px));width:min(460px,calc(100vw - 32px));z-index:8;display:flex;flex-direction:column;overflow:hidden}
+.viewer[hidden]{display:none}
+.viewer .hd{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-bottom:1px solid var(--hair)}
+.viewer .hd .nm{font-weight:700}.viewer .hd .sub{font-size:12px;color:var(--meta);font-family:var(--mono);word-break:break-all}
+.viewer .hd .x{margin-left:auto;border:0;background:transparent;color:var(--muted);font-size:18px;line-height:1;padding:4px 8px;border-radius:8px}
+.viewer .body{flex:1;overflow-y:auto;padding:16px}
+.viewer .prov{display:grid;grid-template-columns:96px 1fr;gap:4px 12px;font-size:13px;margin-top:14px;padding-top:12px;border-top:1px solid var(--hair)}
+.viewer .prov span:nth-child(odd){color:var(--muted)}
+.viewer .acts{display:flex;gap:8px;padding:12px 16px 14px;border-top:1px solid var(--hair);flex-wrap:wrap}
+.prev{border:1px solid var(--edge);border-radius:var(--r);background:var(--surface);padding:14px;font-size:14px;color:var(--fg)}
+.prev h4{font-size:16px;font-weight:600;margin-bottom:4px}
+.prev .price{font-weight:700;color:var(--accent);margin-bottom:8px}
+.prev p{color:var(--fg-2);margin:6px 0}
+.photos{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0}
+.ph{aspect-ratio:1;border-radius:8px;display:flex;align-items:flex-end;padding:6px;font-size:12px;font-weight:600;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);background:linear-gradient(160deg,#5d8a5e,#2f5d3c)}
+.ph.stone{background:linear-gradient(160deg,#9a8f80,#5a5148)}.ph.quilt{background:linear-gradient(160deg,#b5646b,#5e2f43)}.ph.frog{background:linear-gradient(160deg,#4b3a6b,#1f1a33)}.ph.pot{background:linear-gradient(160deg,#c07a52,#7a4326)}.ph.albo{background:linear-gradient(160deg,#dfe6c8,#5f8a52)}.ph.rug{background:linear-gradient(160deg,#c9a56a,#7a5a2e)}
+.ph.held{outline:2px solid var(--warn);outline-offset:-2px;opacity:.85}
+.ph.held::after{content:"no watermark";display:block;position:relative;font-size:12px;color:#ffe9b3}
+.prev .cap{font-size:12px;color:var(--meta);margin-top:6px}
+.prev table{width:100%;border-collapse:collapse;font-size:13px}.prev td{padding:6px 4px;border-bottom:1px solid var(--hair)}.prev tr:last-child td{border-bottom:0}.prev td.n{font-family:var(--mono);font-size:12px;color:var(--meta);text-align:right}
+.prev .mail{font-family:var(--mono);font-size:12px;color:var(--meta);margin-bottom:8px}
+.prev .status{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;margin-left:6px;vertical-align:middle}
+@media (max-width:640px){.viewer{right:8px;left:8px;width:auto;top:calc(8px + env(safe-area-inset-top,0px))}.photos{grid-template-columns:repeat(3,1fr)}}
+/* runs you can watch */
+.runstate{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--system-soft);color:var(--system);vertical-align:middle}
+.runstate.running{background:var(--agent-soft);color:var(--agent)}.runstate.completed{background:var(--success-soft);color:var(--success)}
+.runstate.running::before{content:"";width:6px;height:6px;border-radius:3px;background:currentColor;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.runstate.running::before{animation:none}}
+.mode{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--human-soft);color:var(--human);vertical-align:middle}
+.steps{margin-top:8px;font-size:13px;color:var(--muted)}
+.steps div{padding:2px 0}.steps .on{color:var(--fg)}.steps .done{color:var(--success)}
+.brief .k{display:grid;grid-template-columns:110px 1fr;gap:5px 12px;font-size:13px}.brief .k span:nth-child(odd){color:var(--muted)}
+.frames{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0}
+.frame{border:1px solid var(--edge);border-radius:10px;overflow:hidden;background:var(--surface)}
+.frame .shot{aspect-ratio:16/9;display:flex;align-items:flex-end;padding:8px;color:#fff;font-size:12px;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.frame .vo{padding:8px 10px;font-size:13px}.frame .vo b{display:block;font-size:12px;color:var(--meta);font-family:var(--mono);font-weight:500;margin-bottom:2px}
+.frame .vo.note{background:var(--human-soft);color:var(--fg)}
+.frame.locked{outline:2px solid var(--human);outline-offset:-2px}
+.frame .fa{display:flex;gap:10px;padding:0 10px 8px}.frame .fa button{font-size:12px;font-weight:600;background:transparent;border:0;color:var(--accent);padding:2px 0}
+.chip.go{background:var(--accent);color:var(--accent-on);border-color:transparent}
+/* quick chat dock */
+.dock{position:fixed;right:16px;top:calc(76px + env(safe-area-inset-top,0px));bottom:calc(76px + env(safe-area-inset-bottom,0px));width:min(420px,calc(100vw - 32px));z-index:8;display:flex;flex-direction:column;overflow:hidden}
+.dock[hidden]{display:none}
+.dock .hd{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--hair)}
+.dock .hd .nm{font-weight:700}.dock .hd .sub{font-size:12px;color:var(--meta)}
+.dock .hd .x{margin-left:auto;border:0;background:transparent;color:var(--muted);font-size:18px;line-height:1;padding:4px 8px;border-radius:8px}
+.dock .msgs{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:92%;padding:10px 12px;border-radius:14px;font-size:14px;line-height:1.45}
+.msg.me{align-self:flex-end;background:var(--human-soft);color:var(--fg);border-bottom-right-radius:4px}
+.msg.ag{align-self:flex-start;background:var(--well);border-bottom-left-radius:4px}
+.msg .cite{display:block;margin-top:6px;font-family:var(--mono);font-size:12px;color:var(--meta)}
+.msg .who{display:block;font-size:12px;font-weight:600;color:var(--agent);margin-bottom:2px}
+.dock .chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 16px 10px}
+.chip{font-size:12px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid var(--edge);background:var(--glass-2);color:var(--fg-2)}
+.dock form{display:flex;gap:8px;padding:10px 16px 14px;border-top:1px solid var(--hair)}
+.dock input{flex:1;font:inherit;font-size:14px;padding:9px 12px;border-radius:var(--r);border:1px solid var(--edge);background:var(--well);color:var(--fg);min-width:0}
+.dock input:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+.dock .foot{font-size:12px;color:var(--meta);padding:0 16px 12px}
+.msg.typing{color:var(--muted);font-style:italic}
+.dock .brief{border-top:1px solid var(--hair);padding:10px 16px 8px;font-size:12px;max-height:40%;overflow-y:auto;background:var(--well)}
+.dock .brief[hidden]{display:none}
+.dock .brief .t{display:flex;justify-content:space-between;gap:8px;font-weight:700;margin-bottom:6px}.dock .brief .t .mono{font-weight:500;color:var(--meta)}
+.dock .brief .row{display:grid;grid-template-columns:64px 1fr auto;gap:8px;padding:3px 0;align-items:baseline;border-top:1px solid var(--hair)}
+.dock .brief .row .l{color:var(--meta)}.dock .brief .row .v{color:var(--fg);line-height:1.35}.dock .brief .row.open .v{color:var(--muted);font-style:italic}.dock .brief .row.assumed .v{color:var(--fg-2)}
+.dock .brief .tag{font-family:var(--mono);font-size:12px;padding:1px 6px;border-radius:999px;border:1px solid var(--edge);white-space:nowrap}
+.dock .brief .tag.known{color:var(--success)}.dock .brief .tag.record{color:var(--agent)}.dock .brief .tag.assumed{color:var(--warn)}.dock .brief .tag.verbatim{color:var(--human)}.dock .brief .tag.open{color:var(--muted)}
+@media (max-width:980px){.main{grid-template-columns:1fr;gap:28px}.top,.wrap{padding-left:20px;padding-right:20px}h1{font-size:30px}}
+@media (max-width:640px){.top{flex-wrap:wrap;padding:10px 16px;gap:10px}.switch{order:3;width:100%;overflow-x:auto}.sp{display:none}.ledger{margin-left:auto}.wrap{padding-left:16px;padding-right:16px}.resume .acts{margin-left:0;width:100%}.need{padding:16px}.need .s{font-size:16px}.ev{padding:16px}.ev .at{margin-left:0;width:100%;order:-1}.tl{padding-left:26px}.ev::before{left:-21px}.day{margin-left:26px}.goal,.person,.cap,.tray,.check,.cal .row{padding-left:16px;padding-right:16px}.main{padding-bottom:140px}.dock{right:8px;left:8px;width:auto;top:calc(8px + env(safe-area-inset-top,0px))}}
+</style>
+
+<header class="top">
+  <div class="me"><div class="avatar">J</div>Jules</div>
+  <nav class="switch" aria-label="Workspaces">
+    <a class="on" href="#" aria-current="page"><span class="sw" style="background:#3f9a63"></span>Rooted Craft Co</a>
+    <a href="#" id="ws-booth"><span class="sw" style="background:#5b86d6"></span>Booth day</a>
+    <a href="#" style="color:var(--meta);font-weight:500">+ New</a>
+  </nav>
+  <div class="sp"></div>
+  <button class="agentchip" type="button" id="agent-chip" aria-label="Open quick chat with Sorrel"><span class="badge b-agent">Sorrel</span><span class="st">idle · next look 12:00</span></button>
+  <button class="btn" type="button" id="share-btn">Share <span style="opacity:.6;font-weight:500">2</span></button>
+  <span class="ledger" id="ledger">Ledger verified, 58 records</span>
+</header>
+
+<div class="wrap">
+  <section class="cover">
+    <h1>Thursday, two days to market.</h1>
+    <div class="voice">Rooted Craft Co — grow it, make it, sell it Saturday. Three things need you. Sorrel, your workspace agent, kept working overnight and stopped where it needed you.</div>
+    <div class="offline" id="offline">Can't reach the studio — retrying. Last seen 09:41. Nothing here is lost; approvals and undo wait until it's back.</div>
+    <div class="resume glass" id="resume">
+      <div><div class="t">You left off: “Why your mosaic haze won't wipe off”, draft 2</div><div class="d">Grouting tips for the site. Edited yesterday at 21:14. Autosaved to this workspace, visible only to you.</div></div>
+      <div class="acts"><button class="btn primary" type="button" data-resume="resume">Resume</button><button class="btn" type="button" data-resume="fresh">Start fresh</button></div>
+    </div>
+  </section>
+
+  <main class="main">
+    <div>
+      <div class="h2row"><h2>Needs you</h2><span class="note">ordered by Sorrel · it can raise these, never act on them</span></div>
+      <div class="glass" id="attention">
+        <div class="need" data-need="etsy"><div class="bar" style="background:var(--human)"></div><div style="flex:1">
+          <div class="s"><b>Etsy listing</b> is drafted and waiting on you, <span class="age">for 14 hours</span></div>
+          <div class="sub">Monstera albo, 3-node rooted cutting, $85. Written by the listing writer from tray B7; the price gate allowed it.</div>
+          <div class="acts"><button class="btn primary" type="button" data-approve="etsy">Publish listing</button><button class="btn text" type="button" data-art="etsy-draft-4471">Read the draft</button></div>
+        </div></div>
+        <div class="need" data-need="ig"><div class="bar" style="background:var(--human)"></div><div style="flex:1">
+          <div class="s"><b>Saturday carousel</b> is ready to post, <span class="age">for 11 hours</span></div>
+          <div class="sub">Six photos for “Fall Harvest Market, booth C12”: path stones, the Log Cabin quilt, the albo tray, and the vampire frog.</div>
+          <div class="acts"><button class="btn primary" type="button" data-approve="ig">Post to Instagram</button><button class="btn text" type="button" data-art="site-draft-212">See the held photos</button></div>
+        </div></div>
+        <div class="need" data-need="square"><div class="bar" style="background:var(--warn)"></div><div style="flex:1">
+          <div class="s"><b>Booth inventory</b> can't sync to Square, <span class="age">for 9 hours</span></div>
+          <div class="sub">The Square credential expired Tuesday. The sheet is still yours; nothing was sent. <a href="#ev-square" data-jump="ev-square">See what the agent tried</a></div>
+          <div class="acts"><button class="btn" type="button" data-approve="square">Reconnect Square</button></div>
+        </div></div>
+        <div class="need" data-need="prop"><div class="bar" style="background:var(--agent)"></div><div style="flex:1">
+          <div class="s">Overnight, the <b>propagation tracker</b> moved 4 Thai Constellation nodes to ready <span class="age calm">at 23:05</span></div>
+          <div class="sub">Day 21, roots over two inches. They can go on the Saturday table at $120.</div>
+        </div></div>
+        <div class="empty" id="attention-empty">Nothing needs you. The studio will say so when something does.</div>
+      </div>
+
+      <div class="sec"><div class="h2row"><h2>Goals in Rooted Craft Co</h2><span class="note">tap a goal for Sorrel's plan</span></div>
+        <div class="glass" id="goals">
+          <div class="goal" tabindex="0"><span>Fall Harvest Market, Sat Oct 4, booth C12</span><span class="st run">Packing, 31 of 40 tagged</span>
+            <div class="plan"><div class="k"><span>Desired</span><span>40 items tagged, priced and in Square by Friday 18:00</span><span>Accountable</span><span><b>Sorrel</b>, delegating to booth inventory</span><span>Now</span><span>31 tagged. Sync to Square stopped: credential expired</span><span>Blocker</span><span>Square credential (yours to reconnect)</span><span>Next</span><span>Retry the sync the minute Square is back; then tag the last 9 from the tray list</span><span>Runs</span><span class="mono">run-2291 done · run-2304 stopped · 1 waiting</span></div></div></div>
+          <div class="goal" tabindex="0"><span>Monstera albo batch #7</span><span class="st wait">Ready to list</span>
+            <div class="plan"><div class="k"><span>Desired</span><span>3 rooted cuttings listed on Etsy and 1 held for the booth</span><span>Accountable</span><span><b>Sorrel</b>, delegating to listing writer</span><span>Now</span><span>Draft written at $85; waiting on you to publish</span><span>Blocker</span><span>Nothing. Publishing is yours by policy</span><span>Next</span><span>After you publish: watch the listing, raise a note if it sells before Saturday</span><span>Runs</span><span class="mono">run-2310 done · seq 58</span></div></div></div>
+          <div class="goal" tabindex="0"><span>Mosaic grouting tutorial (video)</span><span class="st wait">Needs your voiceover</span>
+            <div class="plan"><div class="k"><span>Desired</span><span>A 6-minute grouting tutorial on the site and YouTube by Oct 12</span><span>Accountable</span><span><b>Sorrel</b></span><span>Now</span><span>Cut is assembled (5:48). Script matches draft 2 of the haze post</span><span>Blocker</span><span>Voiceover: only you</span><span>Next</span><span>Waiting. Sorrel won't synthesize your voice; it will remind you Friday if the cut is still silent</span><span>Runs</span><span class="mono">run-2278 done · 0 active</span></div></div></div>
+          <div class="goal" tabindex="0"><span>Holiday drop: vampire frog prints ×12</span><span class="st run">8 of 12 signed</span>
+            <div class="plan"><div class="k"><span>Desired</span><span>12 signed, numbered prints listed the week after market</span><span>Accountable</span><span><b>Sorrel</b>, delegating to listing writer (later)</span><span>Now</span><span>8 signed. Listing draft not started: it waits for the count</span><span>Blocker</span><span>4 signatures (yours)</span><span>Next</span><span>Draft the listing the day the count reaches 12; use the Dracula-costume photo you starred</span><span>Runs</span><span class="mono">0 · nothing owed yet</span></div></div></div>
+          <div class="goal" tabindex="0"><span>String of Turtles winter care guide</span><span class="st done">Drafted Tue</span>
+            <div class="plan"><div class="k"><span>Desired</span><span>Guide live before the first frost warning</span><span>Accountable</span><span><b>Sorrel</b>, delegating to care-guide writer</span><span>Now</span><span>Draft complete. Publishing a care guide is within the writer's bounds; Sorrel is holding it so it doesn't land the same day as the pearls guide</span><span>Blocker</span><span>None. Pacing choice, yours to override</span><span>Next</span><span>Publish Monday 09:00 unless you say sooner</span><span>Runs</span><span class="mono">run-2299 done · 1 scheduled</span></div></div></div>
+        </div></div>
+
+      <div class="sec" id="sugsec"><div class="h2row"><h2>Sorrel suggests</h2><span class="note">unpinned space, composed for you</span><button class="pin" type="button" id="pin-sug">Pin this region</button></div>
+        <div class="glass" id="sug">
+          <div class="sug" data-sug="1"><div class="t">A one-card winter watering guide for the plant table</div><div class="d">String-of plants, pothos and arrowhead on one QR card. Draft is 180 words; you'd print 50.</div>
+            <div class="whyh"><b>Why this is here:</b> at the last three markets your most-asked question was winter watering for string-of plants (booth notes, Sep 6 and 13). The pearls guide is live; this puts it on the table.</div>
+            <div class="acts"><button class="btn text" type="button" data-sug-take="1">Draft it</button><button class="btn quiet" type="button" data-sug-less="1">Less like this</button><button class="btn quiet" type="button" data-sug-dismiss="1">Dismiss</button></div></div>
+          <div class="sug" data-sug="2"><div class="t">Hold one albo cutting back from Etsy for Saturday</div><div class="d">Rare cuttings sold at the booth in September went for $95 to $110 against $85 online.</div>
+            <div class="whyh"><b>Why this is here:</b> your September booth sales (Square, 4 rows) beat the Etsy price on every variegated cutting. Sorrel can't change the listing; the draft says 3 cuttings, and this asks whether it should say 2.</div>
+            <div class="acts"><button class="btn text" type="button" data-sug-take="2">Hold one back</button><button class="btn quiet" type="button" data-sug-less="2">Less like this</button><button class="btn quiet" type="button" data-sug-dismiss="2">Dismiss</button></div></div>
+          <div class="sug" data-sug="3"><div class="t">The vampire frog wants a reel</div><div class="d">A 20-second reel of the Dracula-costume sketch coming together, from the six process photos you saved.</div>
+            <div class="whyh"><b>Why this is here:</b> the frog photo was your most-saved post in August (Instagram insights, 312 saves). Sorrel would draft the reel only; posting stays yours.</div>
+            <div class="acts"><button class="btn text" type="button" data-sug-take="3">Draft the reel</button><button class="btn quiet" type="button" data-sug-less="3">Less like this</button><button class="btn quiet" type="button" data-sug-dismiss="3">Dismiss</button></div></div>
+          <div class="empty" id="sug-empty">Nothing suggested. Sorrel will fill this space again after its 12:00 look, or never, if you pin it.</div>
+        </div></div>
+
+      <div class="sec"><h2>Propagations ready for Saturday</h2>
+        <div class="glass tray" id="tray">
+          <div class="skel" style="width:85%"></div><div class="skel" style="width:60%"></div><div class="skel" style="width:72%"></div>
+          <div class="mono">Reading tray B3 and B7</div>
+        </div></div>
+
+      <div class="sec"><h2>Booth checklist</h2>
+        <div class="glass" id="checklist">
+          <label class="check"><input type="checkbox" id="ck-stones" checked><span>Mosaic path stones, wrapped</span><span class="n">9</span></label>
+          <label class="check"><input type="checkbox" id="ck-pots" checked><span>Mosaic terra cotta pots</span><span class="n">14</span></label>
+          <label class="check"><input type="checkbox" id="ck-quilts"><span>Quilts (3) and jelly roll rugs (5)</span><span class="n">8</span></label>
+          <label class="check"><input type="checkbox" id="ck-frog"><span>Vampire frog prints, signed</span><span class="n">8 / 12</span></label>
+          <label class="check"><input type="checkbox" id="ck-square"><span>Square reader charged</span><span class="n"></span></label>
+          <label class="check"><input type="checkbox" id="ck-qr"><span>Care-guide QR cards for the plant table</span><span class="n">50</span></label>
+          <div class="cap">Ticks are yours alone and stay on this device. The studio never tells you a box is done.</div>
+        </div></div>
+
+      <div class="sec"><h2>This week</h2>
+        <div class="glass cal">
+          <div class="row"><span class="d today">Thu</span><span>Grouting tips post: “Why your mosaic haze won't wipe off” (draft 2 is open)</span></div>
+          <div class="row"><span class="d">Fri</span><span>Propagation reel: cutting Thai Constellation nodes, 40 seconds</span></div>
+          <div class="row"><span class="d">Sat</span><span>Fall Harvest Market, booth C12, 8:00 to 15:00</span></div>
+          <div class="row"><span class="d">Sun</span><span>Embroidery tutorial: French knots on linen, part 2</span></div>
+        </div></div>
+
+      <div class="sec"><h2>Sorrel, your workspace agent</h2>
+        <div class="glass agentcard">
+          <div class="top2"><span class="av">S</span><div><div class="nm">Sorrel <span class="badge b-agent">agent</span></div><div class="as">acted as <b>overseer</b> · persistent, one per workspace</div></div></div>
+          <div class="kv">
+            <span>It does</span><span>Turns what you ask for into a Goal it’s accountable for, decides what should happen next, composes or delegates the work, waits when it needs you, and orders Attention. Every physical step is a run you can open.</span>
+            <span>It delegates to</span><span class="deleg"><span>listing writer</span><span>care-guide writer</span><span>propagation tracker</span><span>social poster</span><span>booth inventory</span><span>storyboard specialist</span></span>
+            <span>It can't</span><span>Publish anything with a price, post outside 11:00 to 13:00, touch a plant, or spend past its window without asking.</span>
+            <span>Budget</span><span>Overnight window 23:00 to 06:40, 80K tokens, 3 runs<div class="bud"><i></i></div><span class="mono">41K of 80K used · 3 of 3 runs · resets tonight</span></span>
+            <span>Waiting on</span><span>You ×2 (listing, carousel) · Square ×1 · nothing else</span>
+            <span>Next look</span><span>12:00, or sooner if Square comes back</span>
+          </div>
+          <div class="night"><div class="t">While you were away (23:00 to 06:40)</div>
+            <ul>
+              <li>Moved 4 Thai Constellation nodes to Ready <span class="n">seq 55</span></li>
+              <li>Drafted the albo listing; did not publish <span class="n">seq 58</span></li>
+              <li>Held 2 unwatermarked quilt photos; did not post <span class="n">seq 56</span></li>
+              <li>Did not retry Square with the stale credential <span class="n">by policy</span></li>
+            </ul></div>
+          <div class="cap" style="padding:10px 0 0">Every line above is in the timeline with its why. Sorrel can't write to the ledger without a run behind it.</div>
+        </div></div>
+
+      <div class="sec"><h2>People in this workspace</h2>
+        <div class="glass">
+          <div class="person"><span class="av">J</span>Jules<span class="role">Owner</span></div>
+          <div class="person"><span class="av">B</span>Blake<span class="role">Viewer</span></div>
+          <div class="cap">Viewers can read and comment. They can't publish, archive or delete.</div>
+        </div></div>
+      <div class="hive" id="hive">Studio connected. Last event 09:41:12, three agents idle.</div>
+    </div>
+
+    <div>
+      <h2>What happened, and who decided</h2>
+      <div class="filters" id="filters">
+        <button class="f on" type="button" data-filter="all">Everything<i id="cnt-all">58</i></button>
+        <button class="f" type="button" data-filter="human">You<i>19</i></button>
+        <button class="f" type="button" data-filter="agent">Studio agents<i>12</i></button>
+        <button class="f" type="button" data-filter="gate">Gates<i>24</i></button>
+        <button class="f" type="button" data-filter="system">System<i>3</i></button>
+      </div>
+      <div class="tl" id="tl">
+        <div class="day" data-day="today" style="margin-top:0">Today</div>
+
+        <article class="ev glass agent" id="ev-etsy" data-kind="agent" data-day="today">
+          <div class="hd"><span class="who">Listing writer</span><span class="badge b-agent">agent</span><span class="as">as <b>editor</b>, delegated by you</span><span class="at">07:12</span></div>
+          <div class="s">Drafted the Etsy listing for “Monstera albo, 3-node rooted cutting” at $85. Draft only; nothing is live.</div>
+          <div class="m mono">listing=etsy-draft-4471 · source=tray B7 · req 3c9a1f20 · seq 58</div>
+          <div class="links"><button class="art" type="button" data-art="etsy-draft-4471"><span class="k draft">draft</span>Etsy listing · Monstera albo</button><button class="art" type="button" data-art="tray-b7"><span class="k">source</span>Tray B7 log</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn quiet" type="button" data-undo="restore" data-undo-text="Discarded the draft. Tray B7 is untouched.">Undo</button></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>Tray B7 (3 nodes, roots 2.4 in, day 24); your last four albo listings for tone and photos</span><span>Constraint</span><span>Draft only. Cannot publish or change prices without you</span><span>Path</span><span class="path">read tray → match tone from past listings → price from your $70 floor + last sale ($85) → draft</span></div></div>
+          <div class="result" hidden></div>
+        </article>
+
+        <article class="ev glass gate quiet" data-kind="gate" data-day="today">
+          <div class="hd"><span class="who">Price floor</span><span class="badge b-gate">gate</span><span class="as">policy <b>pricing/1</b></span><span class="at">06:58</span></div>
+          <div class="s">Allowed the albo listing at $85. Your floor for albo cuttings is $70.</div>
+        </article>
+
+        <article class="ev glass gate" id="ev-photos" data-kind="gate" data-day="today">
+          <div class="hd"><span class="who">Photo check</span><span class="badge b-gate">gate</span><span class="as">policy <b>photos/1</b>, blocked</span><span class="at">06:40</span></div>
+          <div class="s">Held 2 of 6 photos from the Log Cabin quilt post: no watermark. The other 4 passed and are waiting in the carousel.</div>
+          <div class="m mono">post=site-draft-212 · held=IMG_4471, IMG_4473 · seq 56</div>
+          <div class="links"><button class="art" type="button" data-art="site-draft-212"><span class="k held">2 held</span>Log Cabin quilt post · 6 photos</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn" type="button" data-retry>Add watermark and retry</button></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>6 photos attached to the draft</span><span>Constraint</span><span>Anything published to the site carries the Rooted Craft Co watermark</span><span>Path</span><span class="path">scan 6 → 2 without watermark → hold those 2, pass 4 → tell you</span></div></div>
+          <div class="result" hidden></div>
+        </article>
+
+        <div class="day" data-day="yesterday">Yesterday</div>
+
+        <article class="ev glass agent" data-kind="agent" data-day="yesterday">
+          <div class="hd"><span class="who">Propagation tracker</span><span class="badge b-agent">agent</span><span class="as">as <b>scanner</b>, read-only</span><span class="at">Wed 23:05</span></div>
+          <div class="s">Moved 4 Thai Constellation nodes in tray B3 to Ready: day 21, roots over two inches.</div>
+          <div class="m mono">tray=B3 · nodes=4 · rule=roots&gt;2in ∧ day≥21 · seq 55</div>
+          <div class="links"><button class="art" type="button" data-art="tray-b3"><span class="k">log</span>Tray B3 · 4 nodes</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn quiet" type="button" disabled>Undo</button><span class="mono">read-only, nothing to roll back</span></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>Tray B3 log: 4 nodes cut Sep 3, root length you measured Tuesday</span><span>Constraint</span><span>Read-only. It can change a status, never a plant</span><span>Path</span><span class="path">read log → 4 nodes past both thresholds → mark Ready → surface in Attention</span></div></div>
+        </article>
+
+        <article class="ev glass human" data-kind="human" data-day="yesterday">
+          <div class="hd"><span class="who">Jules</span><span class="badge b-human">you</span><span class="as">as <b>owner</b></span><span class="at">Wed 21:14</span></div>
+          <div class="s">Saved draft 2 of “Why your mosaic haze won't wipe off”.</div>
+          <div class="m mono">doc=site-draft-214 · words=640 · seq 54</div>
+          <div class="links"><button class="art" type="button" data-art="site-draft-214"><span class="k draft">draft 2</span>Why your mosaic haze won't wipe off</button></div>
+        </article>
+
+        <article class="ev glass agent" data-kind="agent" data-day="yesterday">
+          <div class="hd"><span class="who">Care-guide writer</span><span class="badge b-agent">agent</span><span class="as">as <b>editor</b>, delegated by you</span><span class="at">Wed 18:30</span></div>
+          <div class="s">Published “String of Pearls: why your pearls shrivel, and the fix” to the site's care guides.</div>
+          <div class="m mono">page=rootedcraft.co/care/string-of-pearls · words=910 · req 8e12d0c4 · seq 52</div>
+          <div class="links"><button class="art" type="button" data-art="care-pearls"><span class="k live">live</span>rootedcraft.co/care/string-of-pearls</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn quiet" type="button" data-undo="compensate" data-undo-text="Unpublished by a compensating action: the page is back in drafts. Verify on the site.">Undo</button></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>Your outline from Monday's chat, the three most-asked booth questions about string-of plants</span><span>Constraint</span><span>May publish care guides under your name; may not publish anything with a price</span><span>Path</span><span class="path">outline → draft → your Tuesday edits applied → publish to /care</span></div></div>
+          <div class="result" hidden></div>
+        </article>
+
+        <article class="ev glass agent" id="ev-square" data-kind="agent" data-day="yesterday">
+          <div class="hd"><span class="who">Booth inventory</span><span class="badge b-agent">agent</span><span class="as">as <b>syncer</b>, delegated by you</span><span class="at">Wed 16:02</span></div>
+          <div class="s">Tried to push 40 booth items to Square and stopped: the credential expired. Nothing was sent, nothing was changed.</div>
+          <div class="m mono">target=square.catalog · items=40 · error=credential_expired · seq 50</div>
+          <div class="links"><button class="art" type="button" data-art="square-2304"><span class="k">request log</span>What it sent to Square</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn quiet" type="button" disabled>Undo</button><span class="mono">nothing to roll back</span></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>Booth sheet (40 rows), Square catalog credential</span><span>Constraint</span><span>Stop at the first failed call; never retry with a stale credential</span><span>Path</span><span class="path">read sheet → auth → 401 → stop → raise in Attention</span></div></div>
+        </article>
+
+        <div class="day" data-day="tuesday">Tuesday</div>
+
+        <article class="ev glass agent" data-kind="agent" data-day="tuesday">
+          <div class="hd"><span class="who">Social poster</span><span class="badge b-agent">agent</span><span class="as">as <b>editor</b>, delegated by you</span><span class="at">Tue 12:20</span></div>
+          <div class="s">Posted “Jelly roll rug, finished. 48 strips, one very patient cat.” to Instagram.</div>
+          <div class="m mono">post=ig-3391 · url=instagram.com/p/rcc-3391 · reach=1,240 · seq 47</div>
+          <div class="links"><button class="art" type="button" data-art="ig-3391"><span class="k live">live</span>Instagram post · jelly roll rug</button></div>
+          <div class="acts"><button class="btn text" type="button" data-why>Why this decision</button><button class="btn quiet" type="button" data-undo="refuse" data-undo-text="Can't fully undo. The post reached 1,240 people; deleting it now doesn't unsend it. Marked as not fully undoable rather than shown as undone.">Undo</button></div>
+          <div class="why" hidden><div class="t">Why this decision</div><div class="k"><span>Inputs</span><span>Your photo and caption from Tuesday's chat; your posting window (11:00 to 13:00)</span><span>Constraint</span><span>Only photos you attached; no sales copy; one post a day</span><span>Path</span><span class="path">caption approved by you → window open → post → record reach</span></div></div>
+          <div class="result" hidden></div>
+        </article>
+
+        <article class="ev glass system quiet" data-kind="system" data-day="tuesday">
+          <div class="hd"><span class="who">Scheduler</span><span class="badge b-system">system</span><span class="as">schedule <b>weekly-email</b></span><span class="at">Tue 17:00</span></div>
+          <div class="s">Sent the market reminder to 212 subscribers: “Saturday, booth C12, bring a box for path stones.”</div>
+          <div class="links"><button class="art" type="button" data-art="email-wk38"><span class="k live">sent</span>The email · 212 recipients</button></div>
+          <div class="acts"><button class="btn quiet" type="button" disabled>Undo</button><span class="mono">email is sent; nothing to roll back</span></div>
+        </article>
+
+        <article class="ev glass gate quiet" data-kind="gate" data-day="tuesday">
+          <div class="hd"><span class="who">Warden</span><span class="badge b-gate">gate</span><span class="as">policy <b>chat-gate/1</b></span><span class="at">Tue 09:12</span></div>
+          <div class="s">Allowed a chat message. Reason: clean, no findings.</div>
+        </article>
+      </div>
+    </div>
+  </main>
+</div>
+
+<aside class="viewer glass" id="viewer" hidden aria-label="Artifact">
+  <div class="hd"><div><div class="nm" id="v-name"></div><div class="sub" id="v-url"></div></div><button class="x" type="button" id="v-close" aria-label="Close">×</button></div>
+  <div class="body"><div id="v-body"></div><div class="prov" id="v-prov"></div></div>
+  <div class="acts" id="v-acts"></div>
+</aside>
+<aside class="dock glass" id="dock" hidden aria-label="Quick chat with Sorrel">
+  <div class="hd"><span class="badge b-agent">Sorrel</span><div><div class="nm">Quick chat</div><div class="sub">same conversation as the full chat, just smaller</div></div><button class="x" type="button" id="dock-close" aria-label="Close">×</button></div>
+  <div class="msgs" id="msgs">
+    <div class="msg ag"><span class="who">Sorrel</span>Morning. Two things wait on you, one on Square. The albo draft is at $85 and I held two quilt photos for a watermark. Ask me about any of it, or tell me what you want made and I’ll plan it.<span class="cite">read: attention (3), tray B7, seq 50 to 58</span></div>
+  </div>
+  <div class="brief" id="brief" hidden aria-live="polite" aria-label="Brief so far"></div>
+  <div class="chips" id="chips">
+    <button class="chip go" type="button" data-say="Let’s make a new video, let’s start drafting a storyboard">Let’s make a new video</button>
+    <button class="chip" type="button" data-say="What did you do overnight?">What did you do overnight?</button>
+    <button class="chip" type="button" data-say="Why $85 for the albo?">Why $85 for the albo?</button>
+    <button class="chip" type="button" data-say="What's the plan for Saturday?">Plan for Saturday</button>
+    <button class="chip" type="button" data-say="Post the carousel now">Post the carousel now</button>
+  </div>
+  <form id="dock-form"><input id="dock-input" type="text" placeholder="Ask Sorrel about the record" autocomplete="off"><button class="btn primary" type="submit">Send</button></form>
+  <div class="foot">Ask for work and Sorrel turns it into a Goal it’s accountable for, then a run you can watch. Ask about the record and it answers from the ledger. Publishing still needs the same approval as anywhere else.</div>
+</aside>
+<div class="pick glass" role="group" aria-label="Demo controls">
+  <span class="lbl">Demo</span>
+  <button class="tg" type="button" id="tg-light">Light</button>
+  <button class="tg" type="button" id="tg-dark">Dark</button>
+  <button class="tg" type="button" id="tg-offline">Go offline</button>
+  <button class="tg" type="button" id="tg-reset">Reset</button>
+</div>
+<div class="toast glass" id="toast" role="status" aria-live="polite"><span class="ic">✓</span><span id="toast-text"></span></div>
+
+<script>
+(function(){
+  var root=document.documentElement, body=document.body;
+  var ledger=58, offline=false;
+  var $=function(s,el){return (el||document).querySelector(s)}, $$=function(s,el){return Array.prototype.slice.call((el||document).querySelectorAll(s))};
+  function toast(text,warn){var t=$('#toast');$('#toast-text').textContent=text;t.classList.toggle('warn',!!warn);t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show')},2600)}
+  function bump(){ledger++;$('#ledger').textContent='Ledger verified, '+ledger+' records';$('#cnt-all').textContent=ledger}
+  function guard(){if(offline){toast("Can't reach the studio. Your action is kept and will run when it's back.",true);return true}return false}
+  function nowClock(){var d=new Date();return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
+  function addHumanEntry(sentence,machine,art){
+    var tl=$('#tl'), day=$('.day[data-day="today"]');
+    var art=document.createElement('article'); art.className='ev glass human new'; art.setAttribute('data-kind','human'); art.setAttribute('data-day','today');
+    art.innerHTML='<div class="hd"><span class="who">Jules</span><span class="badge b-human">you</span><span class="as">as <b>owner</b></span><span class="at">'+nowClock()+'</span></div><div class="s"></div><div class="m mono"></div><div class="result logged"><span class="ic">✓</span><span></span></div>';
+    $('.s',art).textContent=sentence; $('.m',art).textContent=machine+' · seq '+ledger; $('.result span:last-child',art).textContent='Logged as seq '+ledger+'.';
+    if(arguments[2]){var l=document.createElement('div');l.className='links';l.innerHTML='<button class="art" type="button"><span class="k '+arguments[2][1]+'"></span></button>';var ab=$('.art',l);ab.setAttribute('data-art',arguments[2][0]);$('.k',ab).textContent=arguments[2][1];ab.appendChild(document.createTextNode(arguments[2][2]));$('.m',art).after(l)}
+    day.parentNode.insertBefore(art, day.nextSibling); applyFilter(); art.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+  var approvals={
+    etsy:{sentence:'Published the Etsy listing “Monstera albo, 3-node rooted cutting” at $85.',machine:'listing=etsy-4471 · from draft-4471 · url=etsy.com/listing/4471',toast:'Published. It’s live on Etsy and in the ledger.',art:['etsy-4471','live','Etsy listing · live']},
+    ig:{sentence:'Posted the Saturday carousel to Instagram: 4 photos; the 2 held photos stayed out.',machine:'post=ig-3402 · photos=4 · url=instagram.com/p/rcc-3402',toast:'Posted. The two held photos are still waiting for a watermark.',art:['ig-3402','live','Instagram post · carousel']},
+    square:{sentence:'Reconnected Square. The booth inventory sync will run again in the next minute.',machine:'credential=square.catalog · rotated',toast:'Square reconnected. The syncer will retry on its own.'}
+  };
+  $$('[data-approve]').forEach(function(b){b.addEventListener('click',function(){
+    if(guard())return; var k=b.getAttribute('data-approve'), a=approvals[k];
+    bump(); addHumanEntry(a.sentence,a.machine,a.art); toast(a.toast);
+    var need=$('.need[data-need="'+k+'"]'); need.classList.add('gone');
+    if($$('.need:not(.gone)').length===0)$('#attention-empty').style.display='block';
+  })});
+  $$('[data-jump]').forEach(function(b){b.addEventListener('click',function(e){e.preventDefault();var el=document.getElementById(b.getAttribute('data-jump'));if(!el)return;el.scrollIntoView({behavior:'smooth',block:'center'});var w=$('.why',el);if(w){w.hidden=false;var wb=$('[data-why]',el);if(wb)wb.textContent='Hide why'}})});
+  $$('[data-why]').forEach(function(b){b.addEventListener('click',function(){var w=$('.why',b.closest('.ev'));w.hidden=!w.hidden;b.textContent=w.hidden?'Why this decision':'Hide why'})});
+  $$('[data-undo]').forEach(function(b){b.addEventListener('click',function(){
+    if(guard())return; var kind=b.getAttribute('data-undo'), text=b.getAttribute('data-undo-text'), ev=b.closest('.ev'), r=$('.result',ev);
+    r.hidden=false; r.className='result '+(kind==='refuse'?'partial':'ok'); r.innerHTML='<span class="ic">'+(kind==='refuse'?'!':'✓')+'</span><span></span>'; $('span:last-child',r).textContent=text;
+    b.disabled=true; bump(); toast(kind==='refuse'?'Undo refused honestly, and the refusal is in the ledger.':'Undone. The compensating action is in the ledger.',kind==='refuse');
+  })});
+  $$('[data-retry]').forEach(function(b){b.addEventListener('click',function(){
+    if(guard())return; var ev=b.closest('.ev'), r=$('.result',ev); r.hidden=false; r.className='result ok'; r.innerHTML='<span class="ic">✓</span><span>Watermarked IMG_4471 and IMG_4473 and re-checked: 6 of 6 pass. They joined the carousel.</span>'; b.disabled=true; bump(); toast('Both photos pass now. The carousel has all six.');
+  })});
+  $$('[data-resume]').forEach(function(b){b.addEventListener('click',function(){var k=b.getAttribute('data-resume');$('#resume').style.display='none';toast(k==='resume'?'Opening draft 2. Nothing else was restored.':'Started fresh. Draft 2 is still saved, just not open.')})});
+  var current='all';
+  function applyFilter(){
+    $$('.ev').forEach(function(ev){ev.classList.toggle('hidden',current!=='all'&&ev.getAttribute('data-kind')!==current)});
+    $$('.day').forEach(function(d){var k=d.getAttribute('data-day');var any=$$('.ev[data-day="'+k+'"]').some(function(e){return !e.classList.contains('hidden')});d.classList.toggle('hidden',!any)});
+  }
+  $$('.f').forEach(function(f){f.addEventListener('click',function(){$$('.f').forEach(function(x){x.classList.remove('on')});f.classList.add('on');current=f.getAttribute('data-filter');applyFilter()})});
+  setTimeout(function(){
+    var t=$('#tray'); t.innerHTML='';
+    [['Thai Constellation, rooted node','4','$120'],['Monstera albo, 3-node cutting','3','$85'],['Swedish ivy, 4 in pot','12','$8'],['String of Turtles','6','$14'],['String of Hearts, variegated','5','$18'],['Pothos ‘Manjula’','7','$12'],['Arrowhead ‘Pink Splash’','4','$10']].forEach(function(r){
+      var d=document.createElement('div');d.className='row';d.innerHTML='<span></span><span class="n"></span>';$('span',d).textContent=r[0];$('.n',d).textContent=r[1]+' ready · '+r[2];t.appendChild(d)});
+    var c=document.createElement('div');c.className='cap';c.style.padding='8px 0 0';c.textContent='41 plants, read from trays B3 and B7 at 09:41. The tracker counts; you price.';t.appendChild(c);
+  },900);
+  $$('.check input').forEach(function(cb){
+    try{var v=localStorage.getItem('rooted.'+cb.id);if(v!==null)cb.checked=v==='1'}catch(e){}
+    cb.closest('.check').classList.toggle('done',cb.checked);
+    cb.addEventListener('change',function(){cb.closest('.check').classList.toggle('done',cb.checked);try{localStorage.setItem('rooted.'+cb.id,cb.checked?'1':'0')}catch(e){}});
+  });
+  function setTheme(t){if(t)root.setAttribute('data-theme',t);else root.removeAttribute('data-theme');$('#tg-light').classList.toggle('on',t==='light');$('#tg-dark').classList.toggle('on',t==='dark')}
+  $('#tg-light').addEventListener('click',function(){setTheme('light')});
+  $('#tg-dark').addEventListener('click',function(){setTheme('dark')});
+  $('#tg-offline').addEventListener('click',function(){offline=!offline;body.classList.toggle('is-offline',offline);$('#tg-offline').classList.toggle('on',offline);$('#tg-offline').textContent=offline?'Back online':'Go offline';$('#hive').textContent=offline?"Can't reach the studio. Retrying every 10 s. Last seen 09:41:12.":'Studio connected. Last event '+nowClock()+':00, three agents idle.'});
+  $('#tg-reset').addEventListener('click',function(){location.reload()});
+  $('#ws-booth').addEventListener('click',function(e){e.preventDefault();toast('Booth day is a second workspace: same you, a slate cover, a Saturday-only room. It’s the next screen, not this demo.')});
+  $('#share-btn').addEventListener('click',function(){toast('Jules (owner), Blake (viewer). Viewers can read and comment; they can’t publish, archive or delete.')});
+
+
+  // artifacts: the thing an entry produced, opened in place
+  var ART={
+    'etsy-draft-4471':{name:'Etsy listing · Monstera albo, 3-node rooted cutting',url:'etsy.com/your/shops/rootedcraftco/tools/listings/4471 (draft)',status:'draft',by:'Listing writer · run-2310 · seq 58',
+      body:'<div class="prev"><h4>Monstera albo, 3-node rooted cutting <span class="status" style="background:var(--human-soft);color:var(--human)">draft</span></h4><div class="price">$85 · quantity 3</div><div class="photos"><div class="ph albo">node 1, 2.4 in roots</div><div class="ph albo">variegation, both sides</div><div class="ph albo">tray B7, day 24</div></div><p>Three-node cutting of Monstera deliciosa albo, rooted 24 days in perlite, roots over two inches. Variegation on every leaf, no full-white sections (they stay alive). Ships Monday in a 4-inch pot, bare-root on request.</p><p>Care card included: bright indirect light, let the top inch dry, and nothing below 60°F.</p><div class="cap">Tone matched to your last four albo listings. Photos are the three you starred in tray B7.</div></div>',
+      acts:[['Publish listing','approve','etsy'],['Open in Etsy ↗','ext','In the product this opens the Etsy listing editor. The record keeps the URL.']]},
+    'tray-b7':{name:'Tray B7 log',url:'studio://trays/B7',status:'source',by:'Propagation tracker · read-only',
+      body:'<div class="prev"><table><tr><td>Monstera albo, node A</td><td class="n">cut Aug 26 · roots 2.4 in</td></tr><tr><td>Monstera albo, node B</td><td class="n">cut Aug 26 · roots 2.1 in</td></tr><tr><td>Monstera albo, node C</td><td class="n">cut Aug 26 · roots 2.6 in</td></tr></table><div class="cap">Root lengths are the ones you measured Tuesday. The tracker reads; it never edits a plant.</div></div>',acts:[]},
+    'site-draft-212':{name:'Site post · The Log Cabin quilt, start to finish',url:'rootedcraft.co/blog/log-cabin-quilt (draft)',status:'2 photos held',by:'Photo check · policy photos/1 · seq 56',
+      body:'<div class="prev"><h4>The Log Cabin quilt, start to finish <span class="status" style="background:var(--warn-soft);color:var(--warn)">2 held</span></h4><div class="photos"><div class="ph quilt">strips cut</div><div class="ph quilt held">first block</div><div class="ph quilt">rows pinned</div><div class="ph quilt held">on the frame</div><div class="ph quilt">binding</div><div class="ph quilt">finished, on the line</div></div><p>Four passed with your watermark. Two were held: they came straight off the phone and never went through the export that stamps it.</p><div class="cap">Retry adds the watermark to the two and re-checks all six.</div></div>',
+      acts:[['Add watermark and retry','retry',''],['Open the draft ↗','ext','In the product this opens the site editor on this draft.']]},
+    'tray-b3':{name:'Tray B3 log · Thai Constellation',url:'studio://trays/B3',status:'4 ready',by:'Propagation tracker · run-2301 · seq 55',
+      body:'<div class="prev"><table><tr><td>Node 1</td><td class="n">day 21 · roots 2.3 in · <b>ready</b></td></tr><tr><td>Node 2</td><td class="n">day 21 · roots 2.8 in · <b>ready</b></td></tr><tr><td>Node 3</td><td class="n">day 21 · roots 2.0 in · <b>ready</b></td></tr><tr><td>Node 4</td><td class="n">day 21 · roots 2.5 in · <b>ready</b></td></tr><tr><td>Node 5</td><td class="n">day 21 · roots 1.4 in · not yet</td></tr></table><div class="cap">Rule: roots over 2 in and day 21 or later. Node 5 stays.</div></div>',acts:[]},
+    'site-draft-214':{name:'Site post · Why your mosaic haze won’t wipe off',url:'rootedcraft.co/blog/mosaic-haze (draft 2)',status:'draft 2 · 640 words',by:'Jules · seq 54',
+      body:'<div class="prev"><h4>Why your mosaic haze won’t wipe off <span class="status" style="background:var(--human-soft);color:var(--human)">draft 2</span></h4><p>That cloudy film on a finished path stone isn’t dirt. It’s grout haze: cement fines that dried on the shard faces because the sponge was too wet, or the wipe came too late. Here’s the order that works on terra cotta and on concrete pavers.</p><p><b>1. Wipe at 20 minutes, not 40.</b> Sanded grout on porous shards sets faster than the bag says…</p><div class="cap">Autosaved yesterday 21:14. Only you can see a draft.</div></div>',
+      acts:[['Resume editing','resume',''],['Open the draft ↗','ext','In the product this opens the editor on draft 2.']]},
+    'care-pearls':{name:'Care guide · String of Pearls: why your pearls shrivel, and the fix',url:'rootedcraft.co/care/string-of-pearls',status:'live',by:'Care-guide writer · run-2296 · seq 52',
+      body:'<div class="prev"><h4>String of Pearls: why your pearls shrivel, and the fix <span class="status" style="background:var(--success-soft);color:var(--success)">live</span></h4><p>Shrivelled pearls mean one of two opposite things, and people usually guess wrong. Press one: if it’s soft and translucent, the roots rotted from sitting wet. If it’s firm but wrinkled like a raisin, it’s thirsty.</p><p><b>The fix for thirsty:</b> bottom-water for 20 minutes, then let it dry fully. <b>The fix for rotted:</b> cut the green strands above the rot and restart them on top of dry soil…</p><div class="cap">910 words. Your Tuesday edits are in. Undo on the entry unpublishes it back to drafts.</div></div>',
+      acts:[['Open the page ↗','ext','In the product this opens the live page in a new tab.']]},
+    'square-2304':{name:'Square sync · request log',url:'studio://runs/run-2304',status:'stopped',by:'Booth inventory · run-2304 · seq 50',
+      body:'<div class="prev"><table><tr><td>16:02:11 read booth sheet</td><td class="n">40 rows</td></tr><tr><td>16:02:12 POST /v2/catalog/batch-upsert</td><td class="n">401 credential_expired</td></tr><tr><td>16:02:12 stop</td><td class="n">by policy: no retry on stale credential</td></tr></table><div class="cap">Nothing reached Square. The 40 rows are unchanged in your sheet.</div></div>',
+      acts:[['Reconnect Square','approve','square']]},
+    'ig-3391':{name:'Instagram post · Jelly roll rug, finished',url:'instagram.com/p/rcc-3391',status:'live · reach 1,240',by:'Social poster · run-2288 · seq 47',
+      body:'<div class="prev"><div class="photos"><div class="ph rug">the rug, done</div><div class="ph rug">48 strips</div><div class="ph rug">one patient cat</div></div><p>Jelly roll rug, finished. 48 strips, one very patient cat. This one’s coming to the booth Saturday, C12.</p><div class="cap">Reach 1,240 · 96 saves · posted Tue 12:20 inside your 11:00 to 13:00 window.</div></div>',
+      acts:[['Open on Instagram ↗','ext','In the product this opens the post in a new tab.']]},
+    'email-wk38':{name:'Market reminder · week 38',url:'studio://email/wk38',status:'sent · 212',by:'Scheduler · weekly-email · seq 45',
+      body:'<div class="prev"><div class="mail">to: 212 subscribers · from: hello@rootedcraft.co · Tue 17:00</div><h4>Saturday, booth C12. Bring a box for path stones.</h4><p>Fall Harvest Market, 8:00 to 15:00. New this week: mosaic path stones (9, and they’re heavy, hence the box), fourteen mosaic pots, three quilts, and the first Thai Constellation cuttings of the season. The vampire frog is coming too.</p><div class="cap">Sent means sent. There is no undo for email, and the entry says so.</div></div>',acts:[]},
+    'ig-3402':{name:'Instagram post · Saturday carousel',url:'instagram.com/p/rcc-3402',status:'live',by:'Jules approved · social poster posted',
+      body:'<div class="prev"><div class="photos"><div class="ph stone">path stones</div><div class="ph albo">albo tray</div><div class="ph pot">mosaic pots</div><div class="ph frog">vampire frog</div></div><p>Saturday, Fall Harvest Market, booth C12. Path stones, mosaic pots, the albo tray, and yes, the frog.</p><div class="cap">4 photos posted. The 2 held quilt photos are still waiting for a watermark.</div></div>',acts:[['Open on Instagram ↗','ext','In the product this opens the post in a new tab.']]},
+    'etsy-4471':{name:'Etsy listing · Monstera albo, 3-node rooted cutting',url:'etsy.com/listing/4471',status:'live',by:'Jules published · listing writer drafted',
+      body:'<div class="prev"><h4>Monstera albo, 3-node rooted cutting <span class="status" style="background:var(--success-soft);color:var(--success)">live</span></h4><div class="price">$85 · quantity 3</div><div class="photos"><div class="ph albo">node 1</div><div class="ph albo">variegation</div><div class="ph albo">tray B7</div></div><p>Live on Etsy. Sorrel watches it and will raise a note if it sells before Saturday.</p></div>',acts:[['Open on Etsy ↗','ext','In the product this opens the listing in a new tab.']]}
+  };
+  var viewer=$('#viewer');
+  function openArt(id){var a=ART[id];if(!a&&/^goal-9\d+$/.test(id))a=ART.__goal(id);if(!a&&/^brief-goal-9\d+-v1$/.test(id))a=ART.__brief(id);if(!a)return;$('#v-name').textContent=a.name;$('#v-url').textContent=a.url+' · '+a.status;$('#v-body').innerHTML=a.body;
+    $('#v-prov').innerHTML='<span>Produced by</span><span></span><span>Lives at</span><span class="mono"></span><span>In the ledger</span><span>Yes, with its why. Open the entry to read it.</span>';
+    $('#v-prov span:nth-child(2)').textContent=a.by;$('#v-prov span:nth-child(4)').textContent=a.url;
+    var acts=$('#v-acts');acts.innerHTML='';
+    a.acts.forEach(function(x){var b=document.createElement('button');b.type='button';b.className='btn'+(x[1]==='approve'||x[1]==='retry'?' primary':'');b.textContent=x[0];
+      b.addEventListener('click',function(){
+        if(x[1]==='ext')toast(x[2]);
+        else if(x[1]==='redirect'){ART.__redirect(x[2]);viewer.hidden=true}
+        else if(x[1]==='cancel'){ART.__cancel(x[2]);viewer.hidden=true}
+        else if(x[1]==='approve'){var ab=$('[data-approve="'+x[2]+'"]');if(ab&&!ab.closest('.need').classList.contains('gone'))ab.click();else toast('Already done. It’s in the ledger.');viewer.hidden=true}
+        else if(x[1]==='retry'){var rb=$('[data-retry]');if(rb&&!rb.disabled)rb.click();else toast('Already retried; all six pass.');viewer.hidden=true}
+        else if(x[1]==='resume'){$('[data-resume="resume"]').click();viewer.hidden=true}
+      });acts.appendChild(b)});
+    var c=document.createElement('button');c.type='button';c.className='btn quiet';c.textContent='Close';c.addEventListener('click',function(){viewer.hidden=true});acts.appendChild(c);
+    $('#dock').hidden=true;viewer.hidden=false}
+  $('#v-close').addEventListener('click',function(){viewer.hidden=true});
+  document.addEventListener('click',function(e){var b=e.target.closest('[data-art]');if(b)openArt(b.getAttribute('data-art'))});
+  // goals: reconciliation plans
+  $$('.goal').forEach(function(g){function t(){g.classList.toggle('open')}g.addEventListener('click',function(e){if(e.target.closest('.plan'))return;t()});g.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();t()}})});
+  // agent-composed region
+  var pinned=false;
+  $('#pin-sug').addEventListener('click',function(){pinned=!pinned;var b=$('#pin-sug');b.classList.toggle('on',pinned);b.textContent=pinned?'Pinned · yours':'Pin this region';$('#sugsec .note').textContent=pinned?'pinned: Sorrel will not change this space':'unpinned space, composed for you';toast(pinned?'Pinned. Sorrel keeps its hands off this region until you unpin it.':'Unpinned. Sorrel may fill this space at its next look.')});
+  function sugGone(n){$('.sug[data-sug="'+n+'"]').classList.add('gone');if($$('.sug:not(.gone)').length===0)$('#sug-empty').style.display='block'}
+  var takes={1:['Asked Sorrel to draft the winter watering card for the plant table.','goal=care-guides · delegate=care-guide writer','Sorrel delegated the card to the care-guide writer. Draft only; printing is yours.'],2:['Told Sorrel to hold one albo cutting back for Saturday; the Etsy draft now says 2.','listing=etsy-draft-4471 · qty 3→2','Held one back. The draft says 2 cuttings; the tray is unchanged.'],3:['Asked Sorrel to draft a 20-second reel of the vampire frog sketch.','goal=holiday-drop · delegate=social poster (draft only)','Reel drafting started. Posting will come back to you as an approval.']};
+  $$('[data-sug-take]').forEach(function(b){b.addEventListener('click',function(){if(guard())return;var n=b.getAttribute('data-sug-take'),t=takes[n];bump();addHumanEntry(t[0],t[1]);toast(t[2]);sugGone(n)})});
+  $$('[data-sug-less]').forEach(function(b){b.addEventListener('click',function(){var n=b.getAttribute('data-sug-less');bump();addHumanEntry('Told Sorrel: less like this. Fewer suggestions of this kind.','preference=less · suggestion='+n+' · user model updated');toast('Noted in your user model, and in the ledger, so you can see what Sorrel learned.');sugGone(n)})});
+  $$('[data-sug-dismiss]').forEach(function(b){b.addEventListener('click',function(){sugGone(b.getAttribute('data-sug-dismiss'));toast('Dismissed. Not recorded as a preference; it just goes away.')})});
+  // quick chat
+  var dock=$('#dock'), msgs=$('#msgs');
+  function openDock(){dock.hidden=false;$('#dock-input').focus()}
+  $('#agent-chip').addEventListener('click',openDock);
+  $('#dock-close').addEventListener('click',function(){dock.hidden=true});
+  function push(cls,html){var d=document.createElement('div');d.className='msg '+cls;d.innerHTML=html;msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;return d}
+  function esc(t){return t.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  var answers=[
+    [/overnight|away|while i was/i,'Three runs between 23:00 and 06:40, 41K of my 80K tokens. I moved 4 Thai Constellation nodes to Ready, drafted the albo listing without publishing it, and held two quilt photos that had no watermark. I did not retry Square: the credential expired and my policy says stop, not retry.','seq 55, 58, 56 · run-2310, run-2304 · budget 41K/80K'],
+    [/\$85|price|albo/i,'Your floor for albo cuttings is $70 and your last sale was $85, so the listing writer priced at $85 and the price gate allowed it. September booth sales for variegated cuttings ran $95 to $110, which is why I suggested holding one back. I can’t change the price; the draft is waiting on you.','seq 57 (pricing/1) · Square Sep rows 4 · listing=etsy-draft-4471'],
+    [/saturday|market|plan|booth/i,'Booth C12, 8:00 to 15:00. 31 of 40 items are tagged; the last 9 are the ready plants from trays B3 and B7. The Square sync is stopped until you reconnect it, then I retry within a minute and tag the rest. The reminder email went to 212 people Tuesday. The carousel is ready to post once you approve it.','goal fall-market · run-2291, run-2304 · seq 45, 50'],
+    [/post|carousel|instagram|publish/i,'I can’t post from here. Posting is yours by policy, and the same approval applies in chat as on the page: it’s the “Post to Instagram” button under Needs you. When you press it, four photos go; the two held ones wait for a watermark.','policy photos/1 · social poster bounds · seq 56'],
+    [/frog|vampire|holiday|print/i,'Eight of twelve prints are signed. I haven’t started the listing; it waits for the count to reach twelve, then the listing writer drafts it with the Dracula-costume photo you starred. The frog photo was your most-saved post in August, which is why I suggested a reel.','goal holiday-drop · Instagram insights Aug · 0 runs'],
+    [/turtle|pearl|string of|care guide|guide/i,'The String of Pearls guide is live since Wednesday 18:30; the String of Turtles winter guide is drafted and I’m holding it for Monday so two guides don’t land the same week. Say the word and it publishes today.','seq 52 · run-2299 · 1 scheduled'],
+    [/square|inventory|sync/i,'The booth inventory sync tried to push 40 items to Square at 16:02 yesterday and got a 401: the credential expired Tuesday. Nothing was sent. I don’t retry with a stale credential. Reconnect Square under Needs you and I retry within a minute.','seq 50 · error=credential_expired · target=square.catalog'],
+    [/who are you|what are you|what can you/i,'I’m the persistent agent for this workspace: I read your goals, decide what’s eligible, delegate to the writers and trackers, wait when something needs you, and order Attention. I can’t publish with a price, post outside your window, touch a plant, or spend past my budget. Everything I do runs as a run you can open.','ADR-091626-ba4f · workspace agent bounds']
+  ];
+  // ── intent → Goal → CreativeBrief → delegated Subgoal → a run you can watch ──
+  var flow=null, videoSeq=0;
+  var VIDEOS={grout:{title:'Mosaic grouting tutorial, part 1: the 20-minute wipe',desired:'A short tutorial cut from the assembled 5:48 edit',src:'the assembled cut (run-2278), draft 2 of the haze post',frames:[['path stone, hazy','Open on the haze. “That film isn’t dirt.”','0:00'],['sponge, wrung','“Wipe at 20 minutes, not 40.”','0:04'],['diagonal wipe','Show the diagonal, one pass.','0:09'],['rinse bucket','Two buckets: rinse, then clean.','0:14'],['haze gone, close','Reveal. Shard faces clean.','0:19'],['finished stone','“Cured 72 hours before it goes outside.”','0:24'],['card on table','Care card in frame, QR visible.','0:27'],['end card','Rooted Craft Co. Saturday, C12.','0:29']]},
+    albo:{title:'Reel: cutting and rooting a Thai Constellation node',desired:'A 30-second propagation reel from tray B3',src:'tray B3 log (4 nodes ready), 6 process photos from Sep 3',frames:[['mother plant','Open on the mother plant. No caption yet.','0:00'],['node marked','“Find the node. Cut below it.”','0:04'],['clean cut','Show the cut, clean blade.','0:08'],['perlite cup','“Perlite, damp, not wet.”','0:12'],['day 7 roots','“Day seven.” Roots just showing.','0:16'],['day 21 roots','“Day twenty-one.” Roots past two inches.','0:20'],['ready tray','Four on the Saturday table.','0:25'],['end card','Rooted Craft Co. Saturday, C12.','0:29']]},
+    frog:{title:'Reel: the vampire frog, sketch to print',desired:'A 20-second process reel of the Dracula-costume sketch',src:'6 process photos you saved in August, the starred final',frames:[['blank paper','Open on paper and the marker set.','0:00'],['frog outline','First lines. No caption.','0:03'],['cape blocked in','“Every frog deserves a cape.”','0:07'],['fangs','The fangs go in. Beat.','0:10'],['colour pass','Colour, fast-forwarded.','0:13'],['signed print','Signing print 9 of 12.','0:17'],['end card','Holiday drop, after market.','0:19']]}};
+  var GENERIC_FRAMES=[['the thing itself','Open on it. No caption.','0:00'],['why it matters','One line, in your voice.','0:04'],['first step','Shown, not told.','0:08'],['the part people get wrong','Slow down here.','0:13'],['result','Hold it a beat.','0:18'],['end card','The guide, or the booth.','0:22']];
+  var lastGoal={};
+  function addEntry(kind,who,badge,as,sentence,machine,opts){
+    opts=opts||{};var day=$('.day[data-day="today"]');var art=document.createElement('article');art.className='ev glass '+kind+' new';art.setAttribute('data-kind',kind);art.setAttribute('data-day','today');art.setAttribute('data-flow','1');
+    art.innerHTML='<div class="hd"><span class="who"></span><span class="badge '+badge+'"></span><span class="as"></span><span class="at">'+nowClock()+'</span></div><div class="s"></div><div class="m mono"></div>';
+    $('.who',art).textContent=who;$('.badge',art).textContent=badge==='b-human'?'you':badge==='b-agent'?'agent':badge==='b-gate'?'gate':'system';$('.as',art).innerHTML=as;$('.s',art).textContent=sentence;$('.m',art).textContent=machine+' · seq '+ledger;
+    if(opts.links){var l=document.createElement('div');l.className='links';opts.links.forEach(function(x){var b=document.createElement('button');b.type='button';b.className='art';b.setAttribute('data-art',x[0]);b.innerHTML='<span class="k '+x[1]+'"></span>';$('.k',b).textContent=x[1];b.appendChild(document.createTextNode(x[2]));l.appendChild(b)});art.appendChild(l)}
+    if(opts.why){var w=document.createElement('div');w.className='acts';w.innerHTML='<button class="btn text" type="button">Why this decision</button>';art.appendChild(w);var y=document.createElement('div');y.className='why';y.hidden=true;y.innerHTML='<div class="t">Why this decision</div><div class="k"><span>Inputs</span><span></span><span>Constraint</span><span></span><span>Path</span><span class="path"></span></div>';var ks=$$('.k > span',y);ks[1].textContent=opts.why[0];ks[3].textContent=opts.why[1];ks[5].textContent=opts.why[2];art.appendChild(y);$('button',w).addEventListener('click',function(){y.hidden=!y.hidden;this.textContent=y.hidden?'Why this decision':'Hide why'})}
+    if(opts.logged){var r=document.createElement('div');r.className='result logged';r.innerHTML='<span class="ic">✓</span><span></span>';$('span:last-child',r).textContent=opts.logged;art.appendChild(r)}
+    var anchor=day;var sib=day.nextElementSibling;while(sib&&sib.classList.contains('ev')&&sib.hasAttribute('data-flow')){anchor=sib;sib=sib.nextElementSibling}
+    anchor.parentNode.insertBefore(art,anchor.nextSibling);applyFilter();return art}
+  function setAgentStatus(t){$('#agent-chip .st').textContent=t}
+  function setChips(list,step){var c=$('#chips');c.innerHTML='';list.forEach(function(x){var b=document.createElement('button');b.type='button';b.className='chip go';b.textContent=x[1];b.addEventListener('click',function(){push('me',esc(x[1]));flowAnswer(step,x[0])});c.appendChild(b)});var back=document.createElement('button');back.type='button';back.className='chip';back.textContent='Never mind';back.addEventListener('click',function(){flow=null;resetChips();push('ag','<span class="who">Sorrel</span>Dropped. Nothing was committed: no Goal, no run.<span class="cite">no write</span>')});c.appendChild(back)}
+  function resetChips(){var c=$('#chips');c.innerHTML='<button class="chip go" type="button" data-say="Let’s make a new video, let’s start drafting a storyboard">Let’s make a new video</button><button class="chip" type="button" data-say="What did you do overnight?">What did you do overnight?</button><button class="chip" type="button" data-say="Why $85 for the albo?">Why $85 for the albo?</button><button class="chip" type="button" data-say="What’s the plan for Saturday?">Plan for Saturday</button><button class="chip" type="button" data-say="Post the carousel now">Post the carousel now</button>';$$('[data-say]',c).forEach(function(x){x.addEventListener('click',function(){say(x.getAttribute('data-say'))})})}
+  // ── requirements interview: Sorrel draws the brief out in conversation before committing anything ──
+  // Mirrors maistro.agents.hyperagent.interview_status / current_interview_question: ordered steps,
+  // one question at a time, record-derived answers skipped, assumed defaults marked as such.
+  var IV_FIELDS=[
+    {k:'subject', l:'Subject',  req:1, q:'First: what’s the video about? A thing you make, a plant, a fix, anything. Plain words are fine.',
+      cite:'read: goals (5) · no open video Subgoal · storyboard specialist on the roster', chips:['The grouting haze fix','Cutting a Thai Constellation node','The vampire frog, sketch to print']},
+    {k:'outcome', l:'Outcome',  req:1, q:'What should it do for you: teach something, sell something, or show the making?', cite:'read: last 30 days of posts · saves vs. clicks by kind', chips:['Teach it','Sell it','Show the making']},
+    {k:'channel', l:'Channel',  req:1, q:'Where does it live? That sets length and frame shape.', cite:'read: posting window 11:00 to 13:00 · Instagram and YouTube bound · site embeds allowed', chips:['Instagram reel','YouTube','The guide page on the site']},
+    {k:'source',  l:'Source',   req:1, q:'What do I work from? Footage or photos you already have, or is this a fresh shoot?', cite:'read: media library · run logs', chips:['Use what’s in the record','Fresh shoot this week']},
+    {k:'deadline',l:'Deadline', req:1, q:'When does it need to be out? Before Saturday’s market, after it, or a date?', cite:'read: calendar · fall-market Sep 19 · holiday-drop Oct 31', chips:['Before the market','After the market','No rush']},
+    {k:'voice',   l:'Voice',    req:0, dflt:['Your usual voice: warm, plain, a little dry (persona v3)','assumed']},
+    {k:'claims',  l:'Claims',   req:0, dflt:['Only what your published care guides say; no growth-rate or price claims','assumed']},
+    {k:'mode',    l:'Control',  req:0, dflt:['Collaborative: the specialist drafts, you mark up, nothing publishes','assumed']}
+  ];
+  var IV_LEN={reel:'a 30-second vertical reel',yt:'a YouTube video, up to 6 minutes, landscape',site:'a 2-minute landscape embed for the guide page'};
+  var IV_CH={reel:'Instagram reel, 30 s, 9:16',yt:'YouTube, up to 6 min, 16:9',site:'Site guide page embed, 2 min, 16:9'};
+  var iv=null;
+  function ivField(k){for(var i=0;i<IV_FIELDS.length;i++)if(IV_FIELDS[i].k===k)return IV_FIELDS[i];return null}
+  function ivSet(k,val,how,extra){iv.a[k]={v:val,how:how||'known'};if(extra)for(var x in extra)iv.a[k][x]=extra[x];ivPanel()}
+  function ivHas(k){return !!(iv&&iv.a[k])}
+  // parsers: return {v,how,...} or null (null = keep verbatim)
+  var IV_PARSE={
+    subject:function(t){
+      if(/grout|haze|mosaic|path stone|wipe/i.test(t))return {v:VIDEOS.grout.title,video:'grout'};
+      if(/albo|thai|constellation|propagat|cutting|node|root(ing)?\b/i.test(t))return {v:VIDEOS.albo.title,video:'albo'};
+      if(/frog|vampire|dracula|sketch|holiday|print/i.test(t))return {v:VIDEOS.frog.title,video:'frog'};
+      return null},
+    outcome:function(t){
+      if(/teach|how[- ]to|tutorial|guide|learn|explain|\btips?\b/i.test(t))return {v:'Teach it',key:'teach'};
+      if(/sell|listing|shop|buy|etsy|\bdrop\b|sale/i.test(t))return {v:'Sell it',key:'sell'};
+      if(/process|making|behind|show|studio|sketch to/i.test(t))return {v:'Show the making',key:'process'};
+      return null},
+    channel:function(t){
+      if(/reel|instagram|insta|\big\b|tiktok|short|vertical|story\b/i.test(t))return {v:IV_LEN.reel,key:'reel'};
+      if(/youtube|yt\b|long|landscape|full/i.test(t))return {v:IV_LEN.yt,key:'yt'};
+      if(/site|website|guide page|embed|blog/i.test(t))return {v:IV_LEN.site,key:'site'};
+      return null},
+    source:function(t){
+      if(/record|what you have|already|use that|use those|that’s fine|that's fine|^(yes|yep|sure|fine|ok|okay)\b/i.test(t)){var vv=iv.a.subject&&iv.a.subject.video;if(vv)return {v:VIDEOS[vv].src,how:'record'}}
+      return null},
+    deadline:function(t){
+      if(/after|next week|following/i.test(t))return {v:'After the market, week of Sep 21',stop:'Sep 26 passes'};
+      if(/before|this week|saturday|market|friday|tomorrow|asap|today/i.test(t))return {v:'Before Saturday’s market (Sep 19)',stop:'Sep 19 passes'};
+      if(/holiday|october|oct\b|halloween/i.test(t))return {v:'Before the holiday drop, Oct 31',stop:'Oct 31 passes'};
+      if(/no rush|whenever|no deadline|eventually|someday/i.test(t))return {v:'No date; open until Oct 31',stop:'Oct 31 passes',how:'assumed'};
+      var m=t.match(/\b(\d{1,2})\/(\d{1,2})\b|\b(sep|oct|nov|dec)[a-z]*\.?\s*(\d{1,2})\b/i);if(m)return {v:'By '+m[0],stop:m[0]+' passes'};
+      return null},
+    voice:function(t){return null},
+    claims:function(t){return null},
+    mode:function(t){
+      if(/just (do|make|show)|you decide|delegat|don’t need to see|don't need to see|surprise/i.test(t))return {v:'Delegated: the specialist drafts and cuts; you see the result',key:'delegated'};
+      if(/mark\s?(?:it|that|them)?\s?up|review|collab|I’ll look|I'll look|notes|together/i.test(t))return {v:'Collaborative: the specialist drafts, you mark up, nothing publishes',key:'collaborative'};
+      if(/step by step|direct|each frame|approve each/i.test(t))return {v:'Direct: you approve every frame before the next',key:'direct'};
+      return null}
+  };
+  var IV_DEFAULT={
+    subject:null,
+    outcome:function(){var vv=iv.a.subject&&iv.a.subject.video;return vv==='frog'?{v:'Show the making',key:'process'}:{v:'Teach it',key:'teach'}},
+    channel:function(){return {v:IV_LEN.reel,key:'reel'}},
+    source:function(){var vv=iv.a.subject&&iv.a.subject.video;return vv?{v:VIDEOS[vv].src,how:'record'}:{v:'A fresh shoot; the specialist writes a shot list first'}},
+    deadline:function(){return {v:'No date; open until Oct 31',stop:'Oct 31 passes'}}
+  };
+  function ivPanel(){var p=$('#brief');if(!iv){p.hidden=true;return}p.hidden=false;var known=0,req=0;var h='';
+    IV_FIELDS.forEach(function(f){var a=iv.a[f.k];var st=a?a.how:(f.req?'open':'assumed');var v=a?a.v:(f.req?'not yet':f.dflt[0]);if(f.req){req++;if(a)known++}
+      h+='<div class="row '+st+'"><span class="l">'+f.l+'</span><span class="v"></span><span class="tag '+st+'">'+(st==='record'?'from record':st)+'</span></div>';});
+    p.innerHTML='<div class="t"><span>Brief so far</span><span class="mono">'+known+' of '+req+' needed · nothing written yet</span></div>'+h;
+    var rows=$$('.row .v',p);IV_FIELDS.forEach(function(f,i){var a=iv.a[f.k];rows[i].textContent=a?a.v:(f.req?'not yet':f.dflt[0])})}
+  function ivChips(list){var c=$('#chips');c.innerHTML='';(list||[]).forEach(function(t){var b=document.createElement('button');b.type='button';b.className='chip go';b.textContent=t;b.addEventListener('click',function(){say(t)});c.appendChild(b)});
+    [['You decide','you decide'],['Never mind','never mind']].forEach(function(x){var b=document.createElement('button');b.type='button';b.className='chip';b.textContent=x[0];b.addEventListener('click',function(){say(x[1])});c.appendChild(b)})}
+  function ivAsk(f){iv.step=f.k;var chips=f.chips?f.chips.slice():[];var q=f.q,cite=f.cite;
+    if(f.k==='outcome'){var d=IV_DEFAULT.outcome();q='What should it do for you: teach something, sell something, or show the making? From your last thirty days I’d guess “'+d.v.toLowerCase()+'”.';chips.sort(function(a,b){return a===d.v?-1:b===d.v?1:0})}
+    push('ag','<span class="who">Sorrel</span>'+esc(q)+'<span class="cite">'+esc(cite)+'</span>');ivChips(chips)}
+  function ivStart(opening){flow={step:'interview'};iv={a:{},opening:opening,step:null,extras:false};
+    var pre=[];['subject','channel','outcome','deadline'].forEach(function(k){var r=IV_PARSE[k](opening);if(r){ivSet(k,r.v,r.how||'known',r);pre.push(ivField(k).l.toLowerCase()+': '+r.v)}});
+    if(ivHas('subject')&&iv.a.subject.video&&!ivHas('source')){var s=VIDEOS[iv.a.subject.video].src;ivSet('source',s,'record');}
+    var intro='Good. That’s new work, so it becomes a Goal I’m accountable for, with a brief and a run you can watch. Before I commit anything I want to understand it, so a few questions, one at a time. Say “you decide” on any of them and I’ll assume something and say so.';
+    if(pre.length)intro+=' From what you just said I already have '+pre.join('; ')+'.';
+    push('ag','<span class="who">Sorrel</span>'+esc(intro)+'<span class="cite">interview: video_brief · 5 needed · answers stay in this chat until you commit</span>');ivPanel();ivNext()}
+  function ivNext(){for(var i=0;i<IV_FIELDS.length;i++){var f=IV_FIELDS[i];if(f.req&&!iv.a[f.k]){ivAsk(f);return}}
+    if(!iv.extras){iv.extras=true;iv.step='extras';push('ag','<span class="who">Sorrel</span>That’s enough to commit. Anything else I should carry into the brief: a different voice, something not to claim, or whether you want to mark up the board or just see it? Or say “that’s it”.<span class="cite">optional: voice · claims · control mode · defaults shown in the brief</span>');ivChips(['That’s it','I want to mark it up','Just show me the result']);return}
+    ivSummary()}
+  function ivSpec(){var a=iv.a;var video=a.subject.video||null;var ch=a.channel.key||'reel';var out=(a.outcome&&a.outcome.key)||'teach';var subj=a.subject.v;
+    var title=video?VIDEOS[video].title:(out==='teach'?'How to: ':out==='sell'?'Listing video: ':'Making of: ')+subj;
+    var desired=video?VIDEOS[video].desired:(out==='teach'?'A short tutorial on '+subj:out==='sell'?'A short video that sends people to the '+subj+' listing':'A process video of '+subj);
+    return {video:video,title:title,desired:desired,where:ch,len:IV_LEN[ch],ch:IV_CH[ch],src:a.source.v,srcHow:a.source.how,deadline:a.deadline.v,stop:a.deadline.stop||'Oct 31 passes',outcome:a.outcome.v,
+      voice:a.voice?a.voice.v:ivField('voice').dflt[0],claims:a.claims?a.claims.v:ivField('claims').dflt[0],mode:(a.mode&&a.mode.key)||'collaborative',modeText:a.mode?a.mode.v:ivField('mode').dflt[0],
+      assumed:IV_FIELDS.filter(function(f){var x=iv.a[f.k];return x?x.how==='assumed':!f.req}).map(function(f){return f.l.toLowerCase()}),opening:iv.opening}}
+  function ivSummary(){iv.step='confirm';var s=ivSpec();
+    push('ag','<span class="who">Sorrel</span>Here’s what I’d commit, and nothing is written until you say so. <b>Goal:</b> “'+esc(s.title)+'”. Desired: '+esc(s.desired)+' as '+esc(s.len)+', posted with your approval. Success: '+esc(s.outcome.toLowerCase())+', posted in your window. Stop: you cancel, or '+esc(s.stop)+'. <b>Brief v1</b> from that Goal: channel '+esc(s.ch)+'; source truth '+esc(s.src)+'; voice: '+esc(s.voice.toLowerCase())+'; claims: '+esc(s.claims.toLowerCase())+'. Then a storyboard Subgoal to the storyboard specialist, '+esc(s.modeText.toLowerCase())+'.'+(s.assumed.length?' I assumed '+esc(s.assumed.join(', '))+'; say “change …” to fix any of them.':'')+'<span class="cite">would write: Goal rev 1 · CreativeBrief v1 · Subgoal · no run yet</span>');
+    ivChips(['Commit it','Change something'])}
+  function ivReflect(f,r){var how=r.how||'known';var line=how==='record'?'From the record, '+f.l.toLowerCase()+': '+r.v+'.':how==='assumed'?'I’ll assume '+f.l.toLowerCase()+': '+r.v+'. Say so if that’s wrong.':how==='verbatim'?'Noted, as you said it. '+f.l+': “'+r.v+'”.':'Got it. '+f.l+': '+r.v+'.';
+    push('ag','<span class="who">Sorrel</span>'+esc(line)+'<span class="cite">brief: '+esc(f.k)+' ← '+(how==='record'?'record':how==='assumed'?'default':'your answer')+'</span>')}
+  function ivHandle(t){var q=t.trim();
+    if(/^(never ?mind|cancel|drop it|forget it|stop)\b/i.test(q)){flow=null;iv=null;ivPanel();resetChips();push('ag','<span class="who">Sorrel</span>Dropped. Nothing was committed: no Goal, no brief, no run. The answers you gave stay in this chat only.<span class="cite">no write</span>');return}
+    var ch=q.match(/^(?:change|actually|no,?|make it|switch)\s*(?:the\s+)?(subject|video|topic|outcome|channel|where|platform|source|footage|deadline|when|voice|tone|claims?|mode|control)\b(?:\s*(?:to|:|is|should be|->)?\s*)(.*)$/i);
+    if(ch){var map={video:'subject',topic:'subject',where:'channel',platform:'channel',footage:'source',when:'deadline',tone:'voice',claim:'claims',control:'mode'};var k=map[ch[1].toLowerCase()]||ch[1].toLowerCase();var f=ivField(k);var rest=ch[2].trim();
+      if(!rest){iv.step=k;push('ag','<span class="who">Sorrel</span>Sure. '+esc(f.q||('What should '+f.l.toLowerCase()+' be?'))+'<span class="cite">brief: '+esc(k)+' reopened</span>');ivChips(f.chips||[]);return}
+      var r=IV_PARSE[k](rest)||{v:rest,how:'verbatim'};ivSet(k,r.v,r.how||'known',r);if(k==='subject'&&r.video&&(!iv.a.source||iv.a.source.how==='record'))ivSet('source',VIDEOS[r.video].src,'record');ivReflect(f,r);
+      if(iv.step==='confirm')ivSummary();else ivNext();return}
+    if(iv.step==='confirm'){if(/^(commit|yes|yep|go|do it|ok|okay|sure|that’s it|that's it|looks good|fine|good)\b/i.test(q)){runVideoFlow(ivSpec());return}
+      var ex=null;['mode','claims','voice'].forEach(function(k){if(ex)return;var r=IV_PARSE[k](q);if(r)ex=[k,r]});if(ex){ivSet(ex[0],ex[1].v,'known',ex[1]);ivReflect(ivField(ex[0]),ex[1]);ivSummary();return}
+      if(/change|something|no\b|wrong|different/i.test(q)){push('ag','<span class="who">Sorrel</span>Which one? Say it like “change channel to YouTube” or “change deadline, after the market”.<span class="cite">brief fields: subject · outcome · channel · source · deadline · voice · claims · control</span>');return}
+      push('ag','<span class="who">Sorrel</span>I’ll take that as a note for the brief, not a change to the Goal. Commit as summarised, or tell me what to change.<span class="cite">brief: notes ← your answer</span>');iv.notes=(iv.notes||[]).concat([q]);return}
+    if(iv.step==='extras'){if(/^(that’s it|that's it|no|nope|nothing|done|all good|go)\b/i.test(q)){ivSummary();return}
+      var hit=false;['mode','claims','voice'].forEach(function(k){if(hit)return;var r=IV_PARSE[k](q);if(r){ivSet(k,r.v,'known',r);ivReflect(ivField(k),r);hit=true}});
+      if(!hit){if(/claim|say|promise|guarantee|don’t|don't|never/i.test(q)){ivSet('claims',q,'verbatim');ivReflect(ivField('claims'),{v:q,how:'verbatim'})}else{ivSet('voice',q,'verbatim');ivReflect(ivField('voice'),{v:q,how:'verbatim'})}}
+      push('ag','<span class="who">Sorrel</span>Anything else, or “that’s it”?<span class="cite">optional fields</span>');return}
+    var f=ivField(iv.step);if(!f){ivNext();return}
+    if(/^(you decide|skip|whatever|don’t care|don't care|up to you|your call|dunno|not sure)/i.test(q)){var d=IV_DEFAULT[f.k]?IV_DEFAULT[f.k]():null;
+      if(!d){push('ag','<span class="who">Sorrel</span>That one I can’t assume: I don’t start a Goal without knowing what it’s about. A word or two is enough.<span class="cite">interview: subject is required · no default</span>');return}
+      d.how='assumed';ivSet(f.k,d.v,'assumed',d);ivReflect(f,d);ivNext();return}
+    var r=IV_PARSE[f.k](q);
+    if(!r){var other=null;IV_FIELDS.forEach(function(g){if(other||!g.req||g.k===f.k||iv.a[g.k]||!IV_PARSE[g.k])return;var rr=IV_PARSE[g.k](q);if(rr)other=[g,rr]});
+      if(other){ivSet(other[0].k,other[1].v,other[1].how||'known',other[1]);push('ag','<span class="who">Sorrel</span>That sounds like the '+esc(other[0].l.toLowerCase())+', so I’ve put it there: '+esc(other[1].v)+'. Still need '+esc(f.l.toLowerCase())+'.<span class="cite">brief: '+esc(other[0].k)+' ← your answer · '+esc(f.k)+' still open</span>');ivAsk(f);return}}
+    if(!r){if(/\?$/.test(q)){push('ag','<span class="who">Sorrel</span>Fair question, but I can’t look that up from here without a run. Answer as best you can, or say “you decide” and I’ll assume something and mark it.<span class="cite">interview paused on: '+esc(f.k)+'</span>');return}
+      r={v:q.replace(/^(it’s|it's|about|the)\s+/i,''),how:'verbatim'};if(f.k==='deadline')r.stop=q+' passes'}
+    ivSet(f.k,r.v,r.how||'known',r);
+    if(f.k==='subject'&&r.video&&!iv.a.source)ivSet('source',VIDEOS[r.video].src,'record');
+    ivReflect(f,r);
+    if(f.k==='subject'&&iv.a.source&&iv.a.source.how==='record')push('ag','<span class="who">Sorrel</span>The record already has source material for that: '+esc(iv.a.source.v)+'. I’ll use it unless you tell me there’s new footage.<span class="cite">brief: source ← record · skipped a question</span>');
+    ivNext()}
+  function startVideoFlow(opening){ivStart(opening||'Let’s make a new video')}
+  function flowAnswer(step,key){
+    if(step==='generic'){flow=null;resetChips();bump();addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Drafted a Goal from your turn and parked it as a queued question: it needs a desired state, a success condition and a stop before I own it.','goal=draft · rev=0 · state=awaiting your confirmation',{why:['Your turn','A wish without success and stop conditions is not a Goal; I won’t start work against one','turn → draft → queued question in Attention → your confirmation → rev 1']});var need=document.createElement('div');need.className='need';need.innerHTML='<div class="bar" style="background:var(--agent)"></div><div style="flex:1"><div class="s"><b>A new Goal</b> needs its success and stop conditions <span class="age calm">queued · won’t interrupt</span></div><div class="sub">Sorrel drafted it from your last turn. Confirm the conditions in the full chat and it becomes rev 1.</div></div>';$('#attention').insertBefore(need,$('#attention-empty'));$('#attention-empty').style.display='none';push('ag','<span class="who">Sorrel</span>Drafted and parked in Attention as a queued question. In this demo the video path runs end to end; try “Let’s make a new video” to watch a Goal go all the way to an artifact.<span class="cite">wrote: goal draft · attention: queued</span>')}
+  }
+  function runVideoFlow(spec){
+    var v=spec.video?VIDEOS[spec.video]:{title:spec.title,desired:spec.desired,src:spec.src,frames:GENERIC_FRAMES}, where=spec.where, len=spec.len, n=++videoSeq, goalId='goal-9'+n, briefId='brief-'+goalId+'-v1', runA='run-231'+(2*n), runB='run-231'+(2*n+1), sbId='storyboard-'+goalId+'-v1';
+    lastGoal[goalId]={v:v,len:len,where:where,s:spec};lastGoal[briefId]={v:v,len:len,where:where,s:spec};
+    var nAns=Object.keys(iv.a).length, nAss=spec.assumed.length;flow=null;iv=null;ivPanel();resetChips();
+    bump();addEntry('human','Jules','b-human','as <b>owner</b>, in chat','Asked Sorrel for a new video, “'+v.title+'”, and answered the brief interview in chat: '+nAns+' fields, '+nAss+' left to Sorrel.','turn='+runA+' · session=quick-chat',{logged:'Your turn is a run: '+runA+'.'});
+    bump();addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Committed Goal “'+v.title+'”, revision 1. Desired: '+v.desired+' as '+len+', posted with your approval. Success: '+spec.outcome.toLowerCase()+', posted in your window. Stop: you cancel, or '+spec.stop+'.','goal='+goalId+' · rev=1 · project=root · owner=sorrel',{why:['Your turn in '+runA+' and the interview: '+nAns+' answers, '+nAss+' assumed and marked; the five goals already open (none is this video)','A Goal needs a desired state, a success condition and a stop condition, or it isn’t one. Committing it never grants any tool permission','intent → desired state → success and stop → revision 1 → owned by me until delegated'],links:[[goalId,'rev 1','Goal · '+v.title]]});
+    bump();addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Derived CreativeBrief v1 for Goal rev 1: audience, channel, source truth, allowed claims, and the artifact request (a storyboard).','brief='+briefId+' · goal='+goalId+'@1 · persona=rooted-craft-co@3 · design=workspace/greenhouse',{why:['Goal rev 1; Persona (voice, taste); the greenhouse design system; '+v.src,'A brief projects the Goal for creative work. It can’t change the Goal or grant anything; a new creative direction is a new brief version, a new outcome is a new Goal revision','goal rev 1 → audience and channel from your answers → source truth from the record → prohibited claims from the care-guide policy → v1'],links:[[briefId,'v1','CreativeBrief v1']]});
+    bump();var del=addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Delegated Subgoal “storyboard v1” to the storyboard specialist. '+(spec.mode==='delegated'?'Delegated branch: it drafts and cuts; you see the result. Nothing publishes.':spec.mode==='direct'?'Direct branch: you approve each frame before the next. Nothing publishes.':'Collaborative branch: it drafts, you mark up, nothing publishes.'),'subgoal='+goalId+'.1 · delegate=storyboard-specialist · mode='+spec.mode,{why:['Brief v1 asks for a storyboard; the storyboard specialist is the roster agent bound to Design Studio frames (Canvas, fixed-page)','Delegation moves accountability for the Subgoal, not authorization: the specialist has draft-only bounds and no publish binding','reconcile → eligible work: storyboard → no Graph running → delegate → wait for its run']});
+    var sp=document.createElement('span');sp.className='mode';sp.textContent=spec.mode;$('.hd',del).insertBefore(sp,$('.at',del));
+    setAgentStatus('working · '+runB);
+    bump();var run=addEntry('agent','Storyboard specialist','b-agent','as <b>editor</b>, delegated by Sorrel','Drafting storyboard v1 from CreativeBrief v1.','run='+runB+' · graph=design.storyboard@2 · brief='+briefId,{why:['CreativeBrief v1 (goal rev 1); the source photos and log it names; the greenhouse design system','Draft only. Frames are Canvas fixed-page artifacts; no provider is called for video, no post is made','brief → shot list → frames → voice-over lines in Persona voice → v1 for your markup']});
+    var st=document.createElement('span');st.className='runstate';st.textContent='queued';$('.hd',run).insertBefore(st,$('.at',run));
+    var steps=document.createElement('div');steps.className='steps';steps.innerHTML='<div data-i="1">NodeRun 1 · read brief and sources</div><div data-i="2">NodeRun 2 · shot list</div><div data-i="3">NodeRun 3 · frames and voice-over</div>';$('.s',run).after(steps);
+    push('ag','<span class="who">Sorrel</span>Committed. Goal rev 1, brief v1, and the storyboard Subgoal is delegated. The specialist’s run is <b>'+runB+'</b>; watch it in the timeline. I’ll say when v1 is ready for your notes.<span class="cite">wrote: '+goalId+'@1 · '+briefId+' · '+goalId+'.1 · '+runB+' queued</span>');
+    var t=0;function at(ms,f){t+=ms;setTimeout(f,t)}
+    at(900,function(){st.className='runstate running';st.textContent='running';$('[data-i="1"]',steps).classList.add('on')});
+    at(1100,function(){$('[data-i="1"]',steps).className='done';$('[data-i="2"]',steps).classList.add('on')});
+    at(1300,function(){$('[data-i="2"]',steps).className='done';$('[data-i="3"]',steps).classList.add('on')});
+    at(1500,function(){$('[data-i="3"]',steps).className='done';st.className='runstate completed';st.textContent='completed';
+      $('.s',run).textContent='Drafted storyboard v1 from CreativeBrief v1: '+v.frames.length+' frames, '+v.frames[v.frames.length-1][2]+' long, voice-over in your voice.';
+      ART[sbId]={name:'Storyboard v1 · '+v.title,url:'studio://artifacts/'+sbId,status:'v1 · '+spec.mode+' · draft',by:'Storyboard specialist · '+runB+' · from '+briefId+' (goal '+goalId+'@1)',body:'<div class="prev"><h4>'+esc(v.title)+' <span class="status" style="background:var(--human-soft);color:var(--human)">v1 · '+spec.mode+'</span></h4><p>'+v.frames.length+' frames, '+esc(v.frames[v.frames.length-1][2])+'. Lock a frame and it survives the next version; add a note and it goes into brief v2.</p><div class="frames">'+v.frames.map(function(f,i){return '<div class="frame" data-frame="'+i+'"><div class="shot" style="background:linear-gradient(160deg,'+(i%2?'#5d8a5e,#2f5d3c':'#8a9a78,#3f5d3c')+')">'+(i+1)+' · '+esc(f[0])+'</div><div class="vo"><b>'+esc(f[2])+'</b>'+esc(f[1])+'</div><div class="fa"><button type="button" data-fr-lock="'+i+'">Lock</button><button type="button" data-fr-note="'+i+'">Add a note</button></div></div>'}).join('')+'</div><div class="cap">Every frame is a Canvas fixed-page artifact under this Subgoal. Nothing here is video yet; that is the next run, and it waits for your v2.</div></div>',
+        acts:[['Redirect: make brief v2 from my notes','redirect',goalId],['Cancel this branch','cancel',goalId+'.1'],['Open in Design Studio ↗','ext','In the product this opens the storyboard in Design Studio with the same Goal and brief lineage.']]};
+      var l=document.createElement('div');l.className='links';l.innerHTML='<button class="art" type="button" data-art="'+sbId+'"><span class="k draft">v1</span>Storyboard · '+v.frames.length+' frames</button>';$('.m',run).after(l);
+      var g=document.createElement('div');g.className='goal';g.tabIndex=0;g.innerHTML='<span></span><span class="st wait">Storyboard v1 · your notes</span><div class="plan"><div class="k"><span>Desired</span><span></span><span>Accountable</span><span><b>Sorrel</b>; storyboard Subgoal delegated to the storyboard specialist ('+spec.mode+')</span><span>Now</span><span>Storyboard v1 drafted; waiting for your markup</span><span>Blocker</span><span>None. Your notes are the next input</span><span>Next</span><span>Your notes become brief v2 → storyboard v2; then a cut; then your approval to post</span><span>Runs</span><span class="mono">'+runA+' done · '+runB+' done · 0 active</span></div></div>';$('span',g).textContent=v.title;$$('.plan .k > span',g)[1].textContent=v.desired+' as a '+len;$('#goals').prepend(g);g.addEventListener('click',function(e){if(e.target.closest('.plan'))return;g.classList.toggle('open')});
+      var need=document.createElement('div');need.className='need';need.setAttribute('data-need','sb'+n);need.innerHTML='<div class="bar" style="background:var(--agent)"></div><div style="flex:1"><div class="s"><b>Storyboard v1</b> is ready for your notes <span class="age calm">queued · won’t interrupt</span></div><div class="sub">'+v.frames.length+' frames from brief v1. Mark up or lock frames; Sorrel makes v2 from your notes.</div><div class="acts"><button class="btn text" type="button" data-art="'+sbId+'">Open the storyboard</button></div></div>';$('#attention').insertBefore(need,$('#attention-empty'));$('#attention-empty').style.display='none';
+      setAgentStatus('idle · next look 12:00');
+      push('ag','<span class="who">Sorrel</span>Storyboard v1 is ready: '+v.frames.length+' frames. It’s in Attention as a queued question, not a blocker. Mark up what’s wrong and I’ll cut brief v2 and a v2 board from your notes. <button class="chip go" type="button" data-art="'+sbId+'" style="margin-top:6px">Open storyboard v1</button><span class="cite">'+runB+' completed · 3 NodeRuns · artifact '+sbId+'</span>');
+      toast('Storyboard v1 drafted. It’s in the timeline with its run and its brief.');
+    });
+  }
+  document.addEventListener('click',function(e){var lk=e.target.closest('[data-fr-lock]');if(lk){var f=lk.closest('.frame');f.classList.toggle('locked');lk.textContent=f.classList.contains('locked')?'Unlock':'Lock';bump();toast(f.classList.contains('locked')?'Frame locked. It survives the next version; logged.':'Frame unlocked; logged.');return}
+    var nt=e.target.closest('[data-fr-note]');if(nt){var fr=nt.closest('.frame');if($('.note',fr))return;var d=document.createElement('div');d.className='vo note';d.innerHTML='<b>your note</b>Tighter: cut the beat, hold the reveal a second longer.';fr.insertBefore(d,$('.fa',fr));bump();toast('Note saved on frame '+(parseInt(nt.getAttribute('data-fr-note'))+1)+'. It goes into brief v2, not into the Goal.')}});
+  ART.__redirect=function(goalId){bump();addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Recorded CreativeBrief v2 for Goal rev 1 from your notes and locks. The Goal did not change, so its revision did not either.','brief='+goalId+'-v2 · goal='+goalId+'@1 · locks kept',{why:['Your frame notes and locks','Creative guidance changes make a brief version; only a changed outcome makes a Goal revision','notes → brief v2 → storyboard v2 queued behind my next look']});toast('Brief v2 recorded. Storyboard v2 queues at Sorrel’s next look.')};
+  ART.__cancel=function(sub){bump();addEntry('agent','Sorrel','b-agent','as <b>overseer</b>','Cancelled Subgoal '+sub+' at your request. The Goal stays open; its storyboard branch is stopped and the v1 artifact is kept as history.','subgoal='+sub+' · state=cancelled · goal unchanged',{why:['Your cancel','Cancelling a branch never deletes what it produced; lineage stays readable','cancel requested → specialist run already terminal → branch stopped']});toast('Branch cancelled. The Goal and the v1 artifact remain in the record.')};
+  ART.__goal=function(goalId){var g=lastGoal[goalId];if(!g)return null;var v=g.v;return {name:'Goal · '+v.title,url:'studio://goals/'+goalId+'@1',status:'rev 1 · open · owner Sorrel',by:'Sorrel · overseer · committed from your turn',body:'<div class="prev brief"><h4>'+esc(v.title)+' <span class="status" style="background:var(--agent-soft);color:var(--agent)">rev 1</span></h4><div class="k"><span>Desired state</span><span>'+esc(v.desired)+' as '+esc(g.len)+', posted with your approval</span><span>Success</span><span>'+esc(g.s.outcome)+'; posted inside your 11:00 to 13:00 window, by you</span><span>Stop</span><span>You cancel, or '+esc(g.s.stop)+'</span><span>Deadline</span><span>'+esc(g.s.deadline)+'</span><span>Project</span><span>Root project, Rooted Craft Co</span><span>Owner</span><span>Sorrel (accountable). Subgoal .1 storyboard: storyboard specialist</span><span>Runs</span><span class="mono">see the timeline; a Goal may use many, and none of them is the Goal’s status</span></div></div>',acts:[]}};
+  ART.__brief=function(briefId){var g=lastGoal[briefId];if(!g)return null;var v=g.v;var ch=g.s.ch;return {name:'CreativeBrief v1',url:'studio://briefs/'+briefId,status:'v1 · immutable',by:'Sorrel · overseer · projection of goal rev 1',body:'<div class="prev brief"><h4>CreativeBrief v1 <span class="status" style="background:var(--agent-soft);color:var(--agent)">goal rev 1</span></h4><div class="k"><span>Goal</span><span>'+esc(v.title)+' @ rev 1</span><span>Persona</span><span>Rooted Craft Co @ v3</span><span>Voice</span><span>'+esc(g.s.voice)+'</span><span>Design system</span><span>workspace / greenhouse</span><span>Audience</span><span>People who buy at the booth and follow for care help; not other sellers</span><span>Channel</span><span>'+ch+'</span><span>Source truth</span><span>'+esc(g.s.src)+(g.s.srcHow==='record'?' (from the record)':'')+'</span><span>Allowed claims</span><span>'+esc(g.s.claims)+'</span><span>Control mode</span><span>'+esc(g.s.modeText)+'</span><span>Assumed</span><span>'+(g.s.assumed.length?esc(g.s.assumed.join(', '))+' (defaults, marked in the interview)':'nothing; every field came from you or the record')+'</span><span>Artifact request</span><span>Storyboard: 6 to 8 frames with voice-over lines; then a cut, later</span><span>Bounds</span><span>Draft only. Publishing is yours. A new direction is v2; a new outcome is a Goal revision</span></div></div>',acts:[]}};
+
+  function answer(q){
+    if(flow&&iv){ivHandle(q);return}
+    if(flow){push('ag','<span class="who">Sorrel</span>One thing at a time: pick an option above, or say never mind.<span class="cite">flow: '+esc(flow.step)+'</span>');return}
+    if(/\b(video|storyboard|reel|film|clip)\b/i.test(q)&&/\b(make|new|start|draft|let|want|create|shoot|plan)\b/i.test(q)){startVideoFlow(q);return}
+    var hit=null;for(var i=0;i<answers.length;i++){if(answers[i][0].test(q)){hit=answers[i];break}}
+    var typing=push('ag typing','Sorrel is reading the record…');
+    setTimeout(function(){typing.remove();
+      if(hit)push('ag','<span class="who">Sorrel</span>'+esc(hit[1])+'<span class="cite">read: '+esc(hit[2])+'</span>');
+      else if(/\?$/.test(q.trim())||/^(what|why|when|how|who|where|did|is|are|do|does)\b/i.test(q.trim()))push('ag','<span class="who">Sorrel</span>Nothing in the record answers that yet. If it’s something you want done, say so and I’ll commit it as a Goal; if it’s a question about the studio, the full chat can go looking with a run you can watch.<span class="cite">no matching record · offered: Goal or full chat</span>');
+      else{push('ag','<span class="who">Sorrel</span>That reads as new work. I’d commit it as a Goal: “'+esc(q.trim())+'”, owned by me, then work out what has to happen first. It needs a desired state, a success condition and a stop before it’s a Goal and not a wish; want me to draft those for you to confirm?<span class="cite">would write: Goal rev 1 · no run yet</span>');setChips([['generic','Draft the Goal']],'generic')}
+    },700);
+  }
+  function say(q){q=(q||'').trim();if(!q)return;push('me',esc(q));answer(q)}
+  $$('[data-say]').forEach(function(c){c.addEventListener('click',function(){say(c.getAttribute('data-say'))})});
+  $('#dock-form').addEventListener('submit',function(e){e.preventDefault();var i=$('#dock-input');say(i.value);i.value=''});
+  var initial=root.getAttribute('data-theme');if(initial)setTheme(initial);
+})();
+</script>
+
+</body></html>
