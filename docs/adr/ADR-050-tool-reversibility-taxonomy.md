@@ -97,12 +97,13 @@ class ToolReversibility(StrEnum):
     REVERSIBLE = "reversible"
     IRREVERSIBLE = "irreversible"
 
+
 class ToolRegistration(BaseModel):
     name: str
     reversibility: ToolReversibility
-    compensator: str | None = None        # code-registry ref, REQUIRED if reversibility == REVERSIBLE
-    impact_estimator: str | None = None   # code-registry ref, RECOMMENDED if IRREVERSIBLE
-    idempotency_key: str | None = None    # code-registry ref, RECOMMENDED if IRREVERSIBLE
+    compensator: str | None = None  # code-registry ref, REQUIRED if reversibility == REVERSIBLE
+    impact_estimator: str | None = None  # code-registry ref, RECOMMENDED if IRREVERSIBLE
+    idempotency_key: str | None = None  # code-registry ref, RECOMMENDED if IRREVERSIBLE
 ```
 
 Sentinel exposes:

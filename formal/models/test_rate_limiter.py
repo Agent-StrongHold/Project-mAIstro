@@ -6,8 +6,7 @@ import asyncio
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security._types import RateLimitConfig
 from maistro.security.rate_limiter import InMemoryRateLimiter
 
@@ -120,7 +119,7 @@ def test_disabled_allows_everything(rpm, n):
     for _ in range(n):
         _run(limiter.record("disabled-key"))
 
-    ok, headers = _run(limiter.check("disabled-key"))
+    ok, _headers = _run(limiter.check("disabled-key"))
     assert ok
 
 
@@ -136,7 +135,7 @@ def test_headers_populated(rpm, n):
     for _ in range(n):
         _run(limiter.record("hdr-key"))
 
-    ok, headers = _run(limiter.check("hdr-key"))
+    _ok, headers = _run(limiter.check("hdr-key"))
     assert "X-RateLimit-Limit" in headers
     assert headers["X-RateLimit-Limit"] == str(rpm)
     assert "X-RateLimit-Remaining" in headers

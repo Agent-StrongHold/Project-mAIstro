@@ -5,7 +5,6 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
 from maistro.security._types import SentinelVerdict
 from maistro.security.sentinel.validator import validate_and_repair
 

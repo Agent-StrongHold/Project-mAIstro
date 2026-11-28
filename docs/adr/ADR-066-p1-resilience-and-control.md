@@ -159,10 +159,12 @@ is incremented, so it is the natural chokepoint.
 from enum import StrEnum
 from dataclasses import dataclass
 
+
 class DepthRole(StrEnum):
     ROOT = "root"
     ORCHESTRATOR = "orchestrator"
     LEAF = "leaf"
+
 
 @dataclass(frozen=True)
 class DepthDescriptor:
@@ -181,6 +183,7 @@ class DepthDescriptor:
         if self.role == DepthRole.ORCHESTRATOR:
             return "subtree"
         return "node"
+
 
 def compute_role(depth: int, max_depth: int) -> DepthDescriptor:
     if depth == 0:
@@ -242,6 +245,7 @@ Produce a concise summary preserving all facts needed for remaining nodes.
 from dataclasses import dataclass, field
 from typing import Protocol
 
+
 @dataclass
 class CompactionResult:
     summary: str
@@ -251,14 +255,18 @@ class CompactionResult:
     entries_compacted: int
     preserved_critical: list[str]
 
+
 class CompactionThreshold(Protocol):
     def should_compact(self, serialized_size: int, context_window: int) -> bool: ...
+
 
 @dataclass
 class PercentageThreshold:
     percentage: float = 0.8
+
     def should_compact(self, serialized_size: int, context_window: int) -> bool:
         return serialized_size > context_window * self.percentage
+
 
 class CompactionEngine:
     def __init__(
@@ -320,11 +328,13 @@ current execution context without restarting or interrupting in-flight nodes.
 import asyncio
 from dataclasses import dataclass, field
 
+
 @dataclass
 class SteeringEntry:
     guidance: str
     timestamp: float
     source_depth: int
+
 
 class SteeringQueue:
     def __init__(self) -> None:
@@ -333,17 +343,20 @@ class SteeringQueue:
 
     async def append(self, guidance: str, source_depth: int) -> None:
         async with self._lock:
-            self._entries.append(SteeringEntry(
-                guidance=guidance,
-                timestamp=time.monotonic(),
-                source_depth=source_depth,
-            ))
+            self._entries.append(
+                SteeringEntry(
+                    guidance=guidance,
+                    timestamp=time.monotonic(),
+                    source_depth=source_depth,
+                )
+            )
 
     async def drain(self) -> list[SteeringEntry]:
         async with self._lock:
             entries = self._entries.copy()
             self._entries.clear()
             return entries
+
 
 @dataclass
 class SteeringGuidance:
@@ -410,6 +423,7 @@ import json
 import time
 from typing import Protocol
 
+
 @dataclass(frozen=True)
 class RateLimitState:
     provider: str
@@ -417,10 +431,12 @@ class RateLimitState:
     updated_at: float
     limit_type: str
 
+
 class RateCoordinationStore(Protocol):
     async def read(self, provider: str) -> RateLimitState | None: ...
     async def write(self, state: RateLimitState) -> None: ...
     async def clear(self, provider: str) -> None: ...
+
 
 class FileRateCoordinationStore:
     def __init__(
@@ -448,6 +464,7 @@ class FileRateCoordinationStore:
         """Remove entry for provider. Used when rate limit window passes."""
         ...
 
+
 class RateCoordinator:
     def __init__(self, store: RateCoordinationStore) -> None: ...
 
@@ -469,12 +486,14 @@ class RateCoordinator:
         limit_type: str = "rpm",
     ) -> None:
         """Record that provider returned 429. Writes reset_at."""
-        await self._store.write(RateLimitState(
-            provider=provider,
-            reset_at=time.monotonic() + retry_after_seconds,
-            updated_at=time.monotonic(),
-            limit_type=limit_type,
-        ))
+        await self._store.write(
+            RateLimitState(
+                provider=provider,
+                reset_at=time.monotonic() + retry_after_seconds,
+                updated_at=time.monotonic(),
+                limit_type=limit_type,
+            )
+        )
 ```
 
 **Integration:** `NodeRun.execute()` calls `coordinator.check_before_call(provider)` before
@@ -505,11 +524,13 @@ with stage-appropriate behaviour.
 from dataclasses import dataclass
 from enum import StrEnum
 
+
 class OperationStage(StrEnum):
     READ = "read"
     EVALUATE = "evaluate"
     WRITE = "write"
     LLM_CALL = "llm_call"
+
 
 @dataclass(frozen=True)
 class RetryConfig:
@@ -519,24 +540,38 @@ class RetryConfig:
     exponential: bool
     idempotency_required: bool
 
+
 DEFAULT_POLICIES: dict[OperationStage, RetryConfig] = {
     OperationStage.READ: RetryConfig(
-        max_attempts=3, base_delay_s=0.25, max_delay_s=2.0,
-        exponential=False, idempotency_required=False,
+        max_attempts=3,
+        base_delay_s=0.25,
+        max_delay_s=2.0,
+        exponential=False,
+        idempotency_required=False,
     ),
     OperationStage.EVALUATE: RetryConfig(
-        max_attempts=2, base_delay_s=1.0, max_delay_s=8.0,
-        exponential=True, idempotency_required=False,
+        max_attempts=2,
+        base_delay_s=1.0,
+        max_delay_s=8.0,
+        exponential=True,
+        idempotency_required=False,
     ),
     OperationStage.WRITE: RetryConfig(
-        max_attempts=1, base_delay_s=0.0, max_delay_s=0.0,
-        exponential=False, idempotency_required=True,
+        max_attempts=1,
+        base_delay_s=0.0,
+        max_delay_s=0.0,
+        exponential=False,
+        idempotency_required=True,
     ),
     OperationStage.LLM_CALL: RetryConfig(
-        max_attempts=3, base_delay_s=2.0, max_delay_s=16.0,
-        exponential=True, idempotency_required=False,
+        max_attempts=3,
+        base_delay_s=2.0,
+        max_delay_s=16.0,
+        exponential=True,
+        idempotency_required=False,
     ),
 }
+
 
 class StageAwareRetryPolicy:
     def __init__(
@@ -565,7 +600,7 @@ class StageAwareRetryPolicy:
     def delay_for(self, stage: OperationStage, attempt: int) -> float:
         cfg = self.config_for(stage)
         if cfg.exponential:
-            delay = cfg.base_delay_s * (2 ** attempt)
+            delay = cfg.base_delay_s * (2**attempt)
             return min(delay, cfg.max_delay_s)
         return cfg.base_delay_s
 
@@ -617,6 +652,7 @@ from typing import Protocol
 
 PROBE_TIERS: list[int] = [4096, 16384, 65536, 131072, 204800]
 
+
 @dataclass(frozen=True)
 class ProbeResult:
     model: str
@@ -625,9 +661,11 @@ class ProbeResult:
     provider: str
     method: str  # "probe_success", "error_parse", "binary_search"
 
+
 class ModelRegistry(Protocol):
     async def get_context_limit(self, model: str) -> int | None: ...
     async def set_context_limit(self, model: str, limit: int) -> None: ...
+
 
 class ContextLengthProber:
     def __init__(
@@ -648,8 +686,10 @@ class ContextLengthProber:
         cached = await self._registry.get_context_limit(model)
         if cached is not None:
             return ProbeResult(
-                model=model, context_limit=cached,
-                probed_at=time.monotonic(), provider=provider,
+                model=model,
+                context_limit=cached,
+                probed_at=time.monotonic(),
+                provider=provider,
                 method="cached",
             )
 
@@ -658,7 +698,9 @@ class ContextLengthProber:
             prompt = self._make_probe_prompt(tier)
             try:
                 await self._llm_call(
-                    model=model, prompt=prompt, max_tokens=1,
+                    model=model,
+                    prompt=prompt,
+                    max_tokens=1,
                 )
                 last_success = tier
             except ContextOverflowError as e:
@@ -666,35 +708,49 @@ class ContextLengthProber:
                 if parsed:
                     await self._registry.set_context_limit(model, parsed)
                     return ProbeResult(
-                        model=model, context_limit=parsed,
-                        probed_at=time.monotonic(), provider=provider,
+                        model=model,
+                        context_limit=parsed,
+                        probed_at=time.monotonic(),
+                        provider=provider,
                         method="error_parse",
                     )
                 limit = await self._binary_search(
-                    model, last_success, tier,
+                    model,
+                    last_success,
+                    tier,
                 )
                 await self._registry.set_context_limit(model, limit)
                 return ProbeResult(
-                    model=model, context_limit=limit,
-                    probed_at=time.monotonic(), provider=provider,
+                    model=model,
+                    context_limit=limit,
+                    probed_at=time.monotonic(),
+                    provider=provider,
                     method="binary_search",
                 )
 
         await self._registry.set_context_limit(model, self._probe_tiers[-1])
         return ProbeResult(
-            model=model, context_limit=self._probe_tiers[-1],
-            probed_at=time.monotonic(), provider=provider,
+            model=model,
+            context_limit=self._probe_tiers[-1],
+            probed_at=time.monotonic(),
+            provider=provider,
             method="probe_success",
         )
 
     async def _binary_search(
-        self, model: str, low: int, high: int, tolerance: int = 1024,
+        self,
+        model: str,
+        low: int,
+        high: int,
+        tolerance: int = 1024,
     ) -> int:
         """Binary search between low and high to find exact limit."""
         ...
 
     def _parse_limit_from_error(
-        self, error: ContextOverflowError, provider: str,
+        self,
+        error: ContextOverflowError,
+        provider: str,
     ) -> int | None:
         """Provider-specific error parsing."""
         ...

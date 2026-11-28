@@ -100,6 +100,7 @@ class PlanValidationFinding:
     message: str
     task_id: str | None = None
 
+
 @dataclass(frozen=True)
 class PlanValidationReport:
     findings: tuple[PlanValidationFinding, ...] = ()
@@ -107,6 +108,7 @@ class PlanValidationReport:
     @property
     def is_valid(self) -> bool:
         return not any(f.severity == "error" for f in self.findings)
+
 
 async def validate_plan(
     waves: list[list[WorkItem]],

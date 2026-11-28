@@ -5,7 +5,6 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
 from maistro.memory.scopes import build_scope_filter, matches_scope
 from maistro.memory.types import EpisodicMemory, MemoryScope
 

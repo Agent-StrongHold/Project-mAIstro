@@ -119,6 +119,7 @@ class PrivilegeLevel(Enum):
     ADMIN = "admin"
     USER = "user"
 
+
 @dataclass
 class ElevationRequest:
     user: str
@@ -126,6 +127,7 @@ class ElevationRequest:
     args: dict
     risk: str
     reason: str
+
 
 class PrivilegeService:
     def get_level(self, user: str) -> PrivilegeLevel: ...

@@ -65,30 +65,38 @@ a different axis (an agent using a strong model can still be bad at "terse chang
 @dataclass(frozen=True)
 class CostVector:
     """Measured, not estimated. Populated from observed calls, not declared once."""
-    standing: dict[str, float] = field(default_factory=dict)   # cpu, mem, replicas_min (heavy agents)
+
+    standing: dict[str, float] = field(
+        default_factory=dict
+    )  # cpu, mem, replicas_min (heavy agents)
     cold_start_ms: float = 0.0
-    per_call_compute: float = 0.0   # normalized compute-seconds
-    per_call_tokens: float = 0.0    # input+output tokens, EMA over recent calls
-    tool_fees: float = 0.0          # metered third-party API cost, if any
-    overhead: float = 0.0           # warden/sentinel/context-build cost attributable to the call
+    per_call_compute: float = 0.0  # normalized compute-seconds
+    per_call_tokens: float = 0.0  # input+output tokens, EMA over recent calls
+    tool_fees: float = 0.0  # metered third-party API cost, if any
+    overhead: float = 0.0  # warden/sentinel/context-build cost attributable to the call
+
 
 @dataclass(frozen=True)
 class SkillScore:
     """Intent-conditional competence, EMA-updated from eval outcomes (SPEC-278)."""
-    value: float          # 0.0-10.0
-    sample_count: int = 0 # 0 = still the declared prior; never decayed in v1 (see SPEC-278)
+
+    value: float  # 0.0-10.0
+    sample_count: int = 0  # 0 = still the declared prior; never decayed in v1 (see SPEC-278)
+
 
 class Permission(StrEnum):
     ALLOWED = "allowed"
     BLOCKED = "blocked"
 
+
 @dataclass(frozen=True)
 class CapabilityEntry:
-    capability: str        # e.g. "write_text", "run_shell", "call_agent:ranger"
-    intent_class: str      # e.g. "summary", "report", "prose" — "*" for intent-agnostic capabilities
+    capability: str  # e.g. "write_text", "run_shell", "call_agent:ranger"
+    intent_class: str  # e.g. "summary", "report", "prose" — "*" for intent-agnostic capabilities
     permission: Permission
     skill: SkillScore
     cost: CostVector
+
 
 @dataclass(frozen=True)
 class CapabilityProfile:

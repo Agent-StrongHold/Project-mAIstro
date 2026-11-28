@@ -100,6 +100,7 @@ class CodeKind(StrEnum):
     MERGE_RESOLVER = "merge_resolver"
     DYNAMIC_GATE = "dynamic_gate"
 
+
 @dataclass(frozen=True)
 class CodeEntry:
     name: str
@@ -109,16 +110,22 @@ class CodeEntry:
     signature: bytes
     trusted: bool = False
 
+
 class CodeRefUnresolved(Exception): ...
+
+
 class InvalidSignature(Exception): ...
+
 
 # maistro/code_registry/verify.py
 class SignatureVerifier(Protocol):
     def verify(self, message: bytes, signature: bytes) -> bool: ...
 
+
 class Ed25519Verifier:
     def __init__(self, public_key: bytes) -> None: ...
     def verify(self, message: bytes, signature: bytes) -> bool: ...
+
 
 # maistro/code_registry/registry.py
 class CodeRegistry:

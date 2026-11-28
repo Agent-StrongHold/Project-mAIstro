@@ -67,20 +67,23 @@ review queue.
 ```python
 @dataclass
 class MergeProposal:
-    primary: EpisodicMemory       # the surviving record, incrementally amended
+    primary: EpisodicMemory  # the surviving record, incrementally amended
     absorbed: list[EpisodicMemory]
-    merged_weight: float          # weighted average by absorbed memories' current weight
+    merged_weight: float  # weighted average by absorbed memories' current weight
+
 
 @dataclass
 class ContradictionFlag:
     a: EpisodicMemory
     b: EpisodicMemory
-    confidence_delta: float       # amount both sides' confidence drops
+    confidence_delta: float  # amount both sides' confidence drops
+
 
 @dataclass
 class ConsolidationResult:
     merges: list[MergeProposal]
     contradictions: list[ContradictionFlag]
+
 
 def consolidate(
     memories: list[EpisodicMemory],

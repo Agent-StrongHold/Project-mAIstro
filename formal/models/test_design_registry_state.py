@@ -19,14 +19,13 @@ for pkg in ("maistro-core", "maistro-canvas", "maistro-design"):
     if src.exists() and str(src) not in sys.path:
         sys.path.insert(0, str(src))
 
-from hypothesis import settings  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
-from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule  # noqa: E402
-
-from maistro_design.skills.builtins import load_builtins  # noqa: E402
-from maistro_design.skills.registry import InMemoryDesignSkillRegistry  # noqa: E402
-from maistro_design.trust import TrustTier  # noqa: E402
-from maistro_design.types import DesignSkill, OutputFormat, SkillMode  # noqa: E402
+from hypothesis import settings
+from hypothesis import strategies as st
+from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
+from maistro_design.skills.builtins import load_builtins
+from maistro_design.skills.registry import InMemoryDesignSkillRegistry
+from maistro_design.trust import TrustTier
+from maistro_design.types import DesignSkill, OutputFormat, SkillMode
 
 _MODES = [m.value for m in SkillMode]
 _TIERS = [TrustTier.T0, TrustTier.T1, TrustTier.T2, TrustTier.T3]
@@ -115,7 +114,7 @@ class DesignRegistryMachine(RuleBasedStateMachine):
 
     @invariant()
     def list_by_mode_subset_of_list_all(self) -> None:
-        all_skills = set(id(s) for s in self.registry.list_all())
+        all_skills = {id(s) for s in self.registry.list_all()}
         for mode in _MODES:
             by_mode = self.registry.list_by_mode(mode)
             for s in by_mode:

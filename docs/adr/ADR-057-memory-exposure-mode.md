@@ -56,8 +56,8 @@ A `MemoryExposureMode` enum, configurable per agent instance and inheritable fro
 ```python
 class MemoryExposureMode(StrEnum):
     SYSTEM_MANAGED = "system_managed"  # admin-curated blocks; agent read-only
-    AGENT_MANAGED = "agent_managed"    # agent reads + writes + promotes
-    HYBRID = "hybrid"                  # per-block exposure tags; default SYSTEM_MANAGED
+    AGENT_MANAGED = "agent_managed"  # agent reads + writes + promotes
+    HYBRID = "hybrid"  # per-block exposure tags; default SYSTEM_MANAGED
 ```
 
 Mode is **per-agent-instance**, not global. Each product (maistro-turing autonoetic agents → `AGENT_MANAGED`; a future curated-context product → `SYSTEM_MANAGED`; canvas Da Vinci agent → its choice) picks at instantiation. Engine code never inspects product identity (ADR-019 / ADR-030 governance).
@@ -81,12 +81,16 @@ class Actor(StrEnum):
     SYSTEM = "system"
     AGENT = "agent"
 
-class MemoryStore(Protocol):   # extends existing ADR-014 protocols
+
+class MemoryStore(Protocol):  # extends existing ADR-014 protocols
     exposure_mode: MemoryExposureMode
 
     async def read(self, scope: MemoryScope, query: str) -> list[MemoryBlock]: ...
-    async def write(self, scope: MemoryScope, block: MemoryBlock, *, actor: Actor) -> WriteResult: ...
+    async def write(
+        self, scope: MemoryScope, block: MemoryBlock, *, actor: Actor
+    ) -> WriteResult: ...
     async def promote(self, block_id: UUID, *, actor: Actor) -> PromoteResult: ...
+
 
 class MemoryWriteDenied(Exception):
     scope: MemoryScope

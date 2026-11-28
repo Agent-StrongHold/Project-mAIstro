@@ -64,14 +64,15 @@ class LLMCaller(Protocol):
         lane: str,
     ) -> dict[str, Any]: ...  # {"content": str, "model": str, "usage": dict}
 
+
 class Spawner:
     def __init__(
         self,
         llm_caller: LLMCaller,
-        prompt_manager=None,       # optional
-        langfuse_tracer=None,      # optional — uses existing trace_agent decorator
-        variant_selector=None,     # optional VariantSelector
-        recipe_registry=None,      # optional RecipeRegistry
+        prompt_manager=None,  # optional
+        langfuse_tracer=None,  # optional — uses existing trace_agent decorator
+        variant_selector=None,  # optional VariantSelector
+        recipe_registry=None,  # optional RecipeRegistry
     ) -> None: ...
 
     async def spawn(self, spec: AgentSpec) -> AgentOutput: ...

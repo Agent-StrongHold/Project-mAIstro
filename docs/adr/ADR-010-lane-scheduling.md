@@ -48,8 +48,9 @@ Concretely: `TaskRunner` splits `max_workers` into `live_slots=2` and `backgroun
 ```python
 # tasks/runner.py — additions only
 class TaskRunner:
-    live_slots: int = 2          # reserved for Lane.LIVE
-    background_slots: int        # = max_workers - live_slots
+    live_slots: int = 2  # reserved for Lane.LIVE
+    background_slots: int  # = max_workers - live_slots
+
 
 # api/chat_completions.py — already creates tasks; tag them LIVE
 # api/tasks.py — tag tasks BACKGROUND by default

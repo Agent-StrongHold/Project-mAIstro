@@ -6,10 +6,8 @@ import re
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.quota.billing import cycle_key, daily_budget
-
 
 _DAILY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTHLY_RE = re.compile(r"^\d{4}-\d{2}$")

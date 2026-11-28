@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.strikes import (
     DISABLED,
     ELEVATED,

@@ -7,8 +7,7 @@ from typing import Any
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security._types import AuthContext, WardenVerdict
 from maistro.security.sentinel.policy import Sentinel, check_permission
 

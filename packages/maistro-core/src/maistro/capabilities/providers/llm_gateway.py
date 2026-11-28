@@ -58,11 +58,6 @@ DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF = "litellm-gateway"
 _GATEWAY_TRUST_TIER = "t1"
 
 logger = logging.getLogger(__name__)
-#: Cross-instance 429 coordination for the approved gateway Provider (#2318).
-_GATEWAY_RATE_LIMITS = RateLimitCoordinator()
-#: Adaptive context-window probe for models that omit a declared max (#2318).
-_CONTEXT_PROBE = ContextProbe()
-_GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
 
 
 def _adapter_identity_suffix(spec: Any) -> str:
@@ -95,6 +90,13 @@ def _adapter_log_fields(adapter_provider: Any) -> dict[str, str]:
         fields: dict[str, str] = attribution.to_log_fields()
         return fields
     return {"adapter_id": str(adapter_provider.spec.adapter_id)}
+
+
+#: Cross-instance 429 coordination for the approved gateway Provider (#2318).
+_GATEWAY_RATE_LIMITS = RateLimitCoordinator()
+#: Adaptive context-window probe for models that omit a declared max (#2318).
+_CONTEXT_PROBE = ContextProbe()
+_GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
 
 
 class GatewayEndpoint(BaseModel):
@@ -593,9 +595,30 @@ async def _dispatch_adapter_model_chat(
     request: ModelChatRequest,
     endpoint: GatewayEndpoint,
 ) -> dict[str, object]:
-    """Transport one adapter-provider call over its declared preflight shape."""
+    """Transport one adapter-provider call over its declared preflight shape.
+
+    Only adapter handles cross this seam: an adapter contributes its
+    normalized payload, its declared credential presentation, its timeout,
+    and its error taxonomy over the one governed POST — never a second
+    transport, a second authorization path, or a second Invocation.
+    """
 
     preflight = _adapter_preflight(adapter_provider, request, endpoint)
+    _raise_if_gateway_rate_limited()
+    response = await _post_chat_completion(preflight)
+    fields = _adapter_log_fields(adapter_provider)
+    logger.info(
+        "extension adapter model call: adapter=%s model=%s %s",
+        adapter_provider.spec.adapter_id,
+        adapter_provider.model,
+        log_fields_suffix(fields),
+        extra=fields,
+    )
+    return _adapter_response_body(adapter_provider, response)
+
+
+async def _post_chat_completion(preflight: _ModelCallPreflight) -> Any:
+    """Issue the one governed POST; connection failures are not-applied."""
     try:
         async with shared_client(timeout=preflight.timeout_s) as client:
             # params only crosses when an adapter declared query-style auth, so
@@ -614,15 +637,7 @@ async def _dispatch_adapter_model_chat(
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
-    fields = _adapter_log_fields(adapter_provider)
-    logger.info(
-        "extension adapter model call: adapter=%s model=%s %s",
-        adapter_provider.spec.adapter_id,
-        adapter_provider.model,
-        log_fields_suffix(fields),
-        extra=fields,
-    )
-    return _adapter_response_body(adapter_provider, response)
+    return response
 
 
 async def _post_model_chat(

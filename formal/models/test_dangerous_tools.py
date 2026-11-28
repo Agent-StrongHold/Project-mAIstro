@@ -14,11 +14,8 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
-from maistro.tools.sandbox.microvm import MicroVMSandbox, MicroVMRunSpec
-
-import maistro.security.dangerous_tools as dangerous_tools
-
+from maistro.security import dangerous_tools
+from maistro.tools.sandbox.microvm import MicroVMRunSpec, MicroVMSandbox
 
 _ORACLE_PATH = Path(__file__).parents[1] / "fixtures" / "security_oracle.json"
 _ORACLE = json.loads(_ORACLE_PATH.read_text(encoding="utf-8"))

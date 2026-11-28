@@ -219,32 +219,40 @@ the tier; it never decides.
 
 ```python
 class Tier(StrEnum):
-    OPEN = "open"; ROLE_AUTO = "role_team_auto"; SELF_ELEVATION = "self_elevation"
-    DELEGATED = "delegated_approval"; ADMIN = "admin_elevation"; BLOCKED = "blocked"
+    OPEN = "open"
+    ROLE_AUTO = "role_team_auto"
+    SELF_ELEVATION = "self_elevation"
+    DELEGATED = "delegated_approval"
+    ADMIN = "admin_elevation"
+    BLOCKED = "blocked"
+
 
 class Principal(BaseModel):
     id: str
     kind: Literal["human", "agent"]
     roles: list[str]
-    scopes: list[str]                 # e.g. ["team:1", "org:acme"]
-    owner: str | None = None          # required when kind == "agent"
+    scopes: list[str]  # e.g. ["team:1", "org:acme"]
+    owner: str | None = None  # required when kind == "agent"
+
 
 class AuthzDecision(BaseModel):
     tier: Tier
-    authorized: bool                  # step 2
-    needs: Literal["none","self_elevation","scoped_2fa","delegated","admin"]
-    approver_scope: str | None        # resolved from the policy matrix (§C)
-    within_budget: bool               # step 3
-    rlphd: RlphdVerdict | None        # predicted p, threshold θ, auto-acted?
+    authorized: bool  # step 2
+    needs: Literal["none", "self_elevation", "scoped_2fa", "delegated", "admin"]
+    approver_scope: str | None  # resolved from the policy matrix (§C)
+    within_budget: bool  # step 3
+    rlphd: RlphdVerdict | None  # predicted p, threshold θ, auto-acted?
     reason: str
 
+
 # Realized by Sentinel; NOT a new component. Warden feeds the risk signal into step 1.
-class SentinelPolicy(Protocol):                # extends the ADR-050 SentinelPolicy
-    def resolve_tier(self, call: ToolCall, p: Principal) -> Tier: ...      # §B/§C
+class SentinelPolicy(Protocol):  # extends the ADR-050 SentinelPolicy
+    def resolve_tier(self, call: ToolCall, p: Principal) -> Tier: ...  # §B/§C
     async def authorize(self, call: ToolCall, p: Principal) -> AuthzDecision: ...  # §F 1-4
 
+
 class Warden(Protocol):
-    def risk(self, untrusted: ToolArgs) -> RiskScore: ...   # boundary scan → CLASSIFY input
+    def risk(self, untrusted: ToolArgs) -> RiskScore: ...  # boundary scan → CLASSIFY input
 ```
 
 **Enforcement points.** Sentinel is the per-tool-call PDP/PEP (in-process, MCP gateway, and

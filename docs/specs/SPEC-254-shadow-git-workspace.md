@@ -113,6 +113,7 @@ class PrCandidate:
     squashed_diff: str
     files_changed: list[str]
 
+
 @dataclass
 class ShadowGitWorkspace:
     workspace_ref: Path
@@ -122,6 +123,7 @@ class ShadowGitWorkspace:
     def diff_against_base(self) -> str: ...
     def produce_pr_candidate(self, base: str, branch: str) -> PrCandidate: ...
     def discard(self) -> None: ...
+
 
 def create_shadow_workspace(root: Path, task_id: str) -> ShadowGitWorkspace: ...
 ```

@@ -133,20 +133,21 @@ A generic protocol any subsystem can implement (`I` = input, `S` = solution, `E`
 
 ```python
 class Repertoire(Protocol):
-    def recall(self, input_class: str) -> Entry | None: ...                 # Perform
-    def improvise(self, inp: Input, priors: list[Entry]) -> Solution: ...   # Improvise
-    def rehearse(self, candidate: Solution) -> Verdict: ...                 # Rehearse (verify)
-    def compose(self, verified: Solution, input_class: str) -> Entry: ...   # Compose (distill)
+    def recall(self, input_class: str) -> Entry | None: ...  # Perform
+    def improvise(self, inp: Input, priors: list[Entry]) -> Solution: ...  # Improvise
+    def rehearse(self, candidate: Solution) -> Verdict: ...  # Rehearse (verify)
+    def compose(self, verified: Solution, input_class: str) -> Entry: ...  # Compose (distill)
+
 
 async def repertoire_run(rep: Repertoire, inp: Input, *, stakes: float) -> Solution:
     entry = rep.recall(class_of(inp))
-    if entry and gate_perform(entry, stakes):          # explore/exploit (ADR-007 / ADR-068)
+    if entry and gate_perform(entry, stakes):  # explore/exploit (ADR-007 / ADR-068)
         return adapt(entry, inp)
     candidate = rep.improvise(inp, priors=rep.nearest(class_of(inp)))
-    verdict = rep.rehearse(candidate)                  # verify before commit (ADR-032)
+    verdict = rep.rehearse(candidate)  # verify before commit (ADR-032)
     if not verdict.ok:
         raise RehearsalFailed(verdict)
-    rep.compose(candidate, class_of(inp))              # distill → signed entry (ADR-069)
+    rep.compose(candidate, class_of(inp))  # distill → signed entry (ADR-069)
     return candidate
 ```
 

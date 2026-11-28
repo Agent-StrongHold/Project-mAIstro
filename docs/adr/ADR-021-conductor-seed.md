@@ -114,11 +114,13 @@ One-page printable card containing: 24 words in 6x4 grid, QR of `m/0'` public ke
 ```python
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class DerivedKey:
-    path: str          # e.g. "m/0'"
+    path: str  # e.g. "m/0'"
     public_key: bytes  # raw public key bytes
-    curve: str         # "ed25519" | "secp256k1"
+    curve: str  # "ed25519" | "secp256k1"
+
 
 class ConductorSeed:
     @staticmethod

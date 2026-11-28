@@ -6,7 +6,6 @@ import asyncio
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
 from maistro.security.strikes import InMemoryStrikeTracker, StrikeRecord
 
 

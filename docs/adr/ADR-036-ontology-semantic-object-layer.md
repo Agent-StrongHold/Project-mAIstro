@@ -65,9 +65,10 @@ v1.0 ships **Semantic only**: Pydantic types, SQLAlchemy persistence, an in-proc
 ```python
 class OntologyEntity(BaseModel):
     id: UUID
-    kind: str            # registered entity type
-    revision: int = 1    # bumps on Dynamic facet edits (v2.0)
+    kind: str  # registered entity type
+    revision: int = 1  # bumps on Dynamic facet edits (v2.0)
     facets: dict[Facet, dict] = Field(default_factory=dict)
+
 
 class Ontology(Protocol):
     def register(self, kind: str, semantic: type[BaseModel]) -> None: ...

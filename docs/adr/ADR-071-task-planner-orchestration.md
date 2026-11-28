@@ -112,17 +112,23 @@ approval/budget.
 ## Interface (sketch)
 
 ```python
-class SuperPlanner:                                   # orchestrator/planner.py (formalized)
-    def plan(self, goal: Goal) -> list[list[WorkItem]]: ...   # goal → parallel-safe waves
+class SuperPlanner:  # orchestrator/planner.py (formalized)
+    def plan(self, goal: Goal) -> list[list[WorkItem]]: ...  # goal → parallel-safe waves
+
     # internally: Repertoire.recall(template) → adapt;  on miss → improvise(MCTS/ToT)
 
-class MasterOrchestrator:                             # orchestrator/master.py (formalized)
-    async def execute(self, waves: list[list[WorkItem]], *, budget: Budget) -> OrchestratorResult: ...
+
+class MasterOrchestrator:  # orchestrator/master.py (formalized)
+    async def execute(
+        self, waves: list[list[WorkItem]], *, budget: Budget
+    ) -> OrchestratorResult: ...
+
     # BSP supersteps + reconcile loop: priority/preemption, deadlines, speculative exec, self-heal
+
 
 class ReconcileLoop(Protocol):
     def desired(self) -> SuccessConditions: ...
-    async def step(self, actual: State) -> list[Action]: ...   # drive actual → desired
+    async def step(self, actual: State) -> list[Action]: ...  # drive actual → desired
 ```
 
 ## Acceptance criteria

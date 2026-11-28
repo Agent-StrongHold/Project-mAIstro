@@ -70,9 +70,11 @@ untrusted ──canary metrics + admin sign──▶ canary ──canary metrics
 
 ```python
 class SkillTrust(BaseModel):
-    publisher_vc: VerifiableCredential        # ADR-024; absent/invalid -> refused
+    publisher_vc: VerifiableCredential  # ADR-024; absent/invalid -> refused
     tier: Literal["untrusted", "canary", "trusted"]
-    sandbox: Literal["microvm", "relaxed"]    # microvm for untrusted/canary; relaxed only when trusted
+    sandbox: Literal[
+        "microvm", "relaxed"
+    ]  # microvm for untrusted/canary; relaxed only when trusted
 ```
 
 ### Part B — MCP gateway: untrusted-code boundary
@@ -95,10 +97,10 @@ a hostile boundary:
 
 ```python
 class MCPServerPolicy(BaseModel):
-    allow_listed_by: AdminPrincipal           # required; no implicit trust
-    egress_allow: list[Host]                  # SSRF guard, ADR-058 posture
+    allow_listed_by: AdminPrincipal  # required; no implicit trust
+    egress_allow: list[Host]  # SSRF guard, ADR-058 posture
     default_reversibility: Literal["irreversible"] = "irreversible"  # ADR-050
-    code_paths_sandboxed: bool = True         # microVM, ADR-069
+    code_paths_sandboxed: bool = True  # microVM, ADR-069
     # Sentinel (ADR-073) on every call; Warden scans in AND out
 ```
 

@@ -6,16 +6,14 @@ import re
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.external_content import (
     ContentSource,
+    _normalize_text,
     contains_markers,
     detect_injection,
     wrap_external_content,
-    _normalize_text,
 )
-
 
 _START_MARKER = "<<<EXTERNAL_UNTRUSTED_CONTENT>>>"
 _END_MARKER = "<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>"

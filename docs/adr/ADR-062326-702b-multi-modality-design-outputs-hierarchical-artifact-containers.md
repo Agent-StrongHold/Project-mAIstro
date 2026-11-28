@@ -78,6 +78,7 @@ boundaries.
 @dataclass
 class ArtifactNode:
     """A single artifact (file, binary blob, or nested container)."""
+
     key: str  # kebab-case identifier within parent, e.g. "main", "sidebar", "characters"
     kind: Literal["file", "blob", "container"]  # file/text, binary data, or nested
     format: OutputFormat  # HTML, CSS, PNG, SVG, etc.
@@ -85,9 +86,11 @@ class ArtifactNode:
     children: dict[str, ArtifactNode] = field(default_factory=dict)  # nested artifacts
     metadata: dict[str, Any] = field(default_factory=dict)  # e.g. "width": 1920
 
+
 @dataclass
 class DesignOutput:
     """A generated design artifact (multi-modality, hierarchical)."""
+
     root: ArtifactNode  # root container holding the artifact tree
     trust_tier: TrustTier = TrustTier.T3
     metadata: dict[str, Any] = field(default_factory=dict)  # output-level metadata
@@ -128,7 +131,7 @@ class OutputFormat(StrEnum):
     PDF = "pdf"
     CSS = "css"
     JSON = "json"
-    JS = "js"      # ← NEW
+    JS = "js"  # ← NEW
 ```
 
 ### 5. Renderer protocols per modality
@@ -140,9 +143,11 @@ Define abstract interfaces for each renderer backend (caller injects):
 class HTMLRenderer(Protocol):
     async def render(self, html: str, css: str | None = None) -> bytes: ...  # → PNG/PDF
 
+
 @runtime_checkable
 class SVGRenderer(Protocol):
     async def render(self, svg: str, format: Literal["png", "pdf"]) -> bytes: ...
+
 
 @runtime_checkable
 class TypographyRenderer(Protocol):

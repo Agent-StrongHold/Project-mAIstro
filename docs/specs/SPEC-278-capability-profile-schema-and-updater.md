@@ -139,9 +139,9 @@ declared `(capability, intent_class)` pair fails at load time with a field-ident
 ```python
 def update_skill_score(
     current: SkillScore,
-    outcome_score: float,   # 0.0-10.0, from an eval outcome event
+    outcome_score: float,  # 0.0-10.0, from an eval outcome event
     *,
-    alpha: float = 0.2,     # ConfigStore-backed per ADR-062226-674b's "Tunable" stage; ships as a default
+    alpha: float = 0.2,  # ConfigStore-backed per ADR-062226-674b's "Tunable" stage; ships as a default
 ) -> SkillScore:
     """EMA: new = alpha * outcome + (1 - alpha) * current. sample_count increments."""
     new_value = alpha * outcome_score + (1 - alpha) * current.value

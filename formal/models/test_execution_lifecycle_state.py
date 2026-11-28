@@ -62,11 +62,10 @@ import pytest
 from hypothesis import settings as hyp_settings
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 from hypothesis.strategies import sampled_from
-
 from maistro.graph import Graph, Node
 from maistro.runs import AcceptedNodeOutcome, AttemptResult
 from maistro.runs.lifecycle import ATTEMPT_TRANSITIONS, RUN_TRANSITIONS, InvalidLifecycleTransition
-from maistro.runs.model import AttemptStatus, RunStatus, TERMINAL_RUN_STATUSES
+from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, RunStatus
 from maistro.runs.pg_store import _ACTIVE_ATTEMPT_STATUSES
 from maistro.runs.store import ActiveAttemptExists, RunIntegrityError
 
@@ -100,7 +99,6 @@ class _Server:
 
     async def _create_pool(self, dsn: str) -> Any:
         import asyncpg
-
         from maistro.persistence import _register_json_codecs
 
         return await asyncpg.create_pool(

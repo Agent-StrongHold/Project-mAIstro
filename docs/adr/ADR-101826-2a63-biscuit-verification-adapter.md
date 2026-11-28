@@ -112,9 +112,9 @@ The adapter exposes exactly three operations, mapping 1:1 onto the binding's cal
 ### Mint
 
 ```python
-token = BiscuitBuilder(datalog, params).build(private_key)   # signs the authority block
-token = token.append(BlockBuilder(checks_datalog, params))   # initial narrowing, if any
-wire = token.to_base64()                                     # opaque carrying form
+token = BiscuitBuilder(datalog, params).build(private_key)  # signs the authority block
+token = token.append(BlockBuilder(checks_datalog, params))  # initial narrowing, if any
+wire = token.to_base64()  # opaque carrying form
 ```
 
 - The authority block carries the delegated capability facts (subject, action, resource
@@ -139,14 +139,14 @@ narrowed = token.append(BlockBuilder("check if ...", params))
 ```python
 token = Biscuit.from_base64(wire, public_key_or_key_selector)
 authorizer_builder = AuthorizerBuilder(policies, params)
-authorizer_builder.set_time()               # no argument: stamps the host clock
-limits = authorizer_builder.limits()        # no Python constructor in 0.4.0: fetch, mutate, set back
-limits.max_facts = 1_000                    # pinned bounds (fields are writable)
+authorizer_builder.set_time()  # no argument: stamps the host clock
+limits = authorizer_builder.limits()  # no Python constructor in 0.4.0: fetch, mutate, set back
+limits.max_facts = 1_000  # pinned bounds (fields are writable)
 limits.max_iterations = 100
 limits.max_time = timedelta(seconds=1)
 authorizer_builder.set_limits(limits)
 authorizer = authorizer_builder.build(token)
-policy_id = authorizer.authorize()          # raises on any failure
+policy_id = authorizer.authorize()  # raises on any failure
 ```
 
 - Verification runs signature (whole chain), caveat/check evaluation, scope checks, expiry

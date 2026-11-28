@@ -100,13 +100,13 @@ new seven so existing `LayerRecord` rows still validate.
 
 ```python
 class LayerKind(StrEnum):
-    BACKGROUND   # layered (sky / mid / foreground) with a ground plane
-    STRUCTURE    # buildings, walls, bridges, large static props (trees, rocks)
-    VEHICLE      # cars, trains, boats, planes; wheel/keel-anchored
-    PROP         # hand-held / movable items, attached to a parent socket
-    CHARACTER    # pose-anchored, asset-sheet-conditioned
-    FX           # weather, sparkles, motion lines; composited last
-    TEXT         # canvas-rendered, never baked into images
+    BACKGROUND  # layered (sky / mid / foreground) with a ground plane
+    STRUCTURE  # buildings, walls, bridges, large static props (trees, rocks)
+    VEHICLE  # cars, trains, boats, planes; wheel/keel-anchored
+    PROP  # hand-held / movable items, attached to a parent socket
+    CHARACTER  # pose-anchored, asset-sheet-conditioned
+    FX  # weather, sparkles, motion lines; composited last
+    TEXT  # canvas-rendered, never baked into images
 ```
 
 `STRUCTURE` covers what game engines call "props" that don't move
@@ -130,9 +130,9 @@ This collapses most of the old `Anchor` enum:
 
 ```python
 class Anchor(StrEnum):
-    GROUND_CONTACT   # standing on the BackgroundComposition.ground_plane
-    HORIZON          # placed at horizon line
-    FLOATING         # explicit no-anchor (FX, atmospheric)
+    GROUND_CONTACT  # standing on the BackgroundComposition.ground_plane
+    HORIZON  # placed at horizon line
+    FLOATING  # explicit no-anchor (FX, atmospheric)
     # All other "anchors" are now parent_id + parent_socket combinations
 ```
 
@@ -150,25 +150,28 @@ inline anonymous `AssetDefinition` object (one-off use).
 ```python
 @dataclass(frozen=True)
 class Socket:
-    name: str                # "door", "porch", "hand_l", "driver_seat"
-    x: float; y: float       # normalized 0..1 within the asset's image
+    name: str  # "door", "porch", "hand_l", "driver_seat"
+    x: float
+    y: float  # normalized 0..1 within the asset's image
     role: str | None = None  # optional semantic hint
+
 
 @dataclass(frozen=True)
 class AssetDefinition:
-    asset_id: str            # "farmhouse_red_v1" — empty for inline
+    asset_id: str  # "farmhouse_red_v1" — empty for inline
     kind: LayerKind
-    base_prompt: str         # canonical prompt that produced the sheet
+    base_prompt: str  # canonical prompt that produced the sheet
     asset_sheet: AssetSheet | None
     sockets: tuple[Socket, ...] = ()
     skin_set: dict[str, tuple[str, ...]] | None = None
     default_world_style: WorldStylePartial | None = None
 
+
 @dataclass
 class AssetInstance:
     instance_id: str
     canvas_id: str
-    definition: AssetDefinition | str   # str = registry id, object = inline
+    definition: AssetDefinition | str  # str = registry id, object = inline
     parent_id: str | None = None
     parent_socket: str | None = None
     transform: Transform = Transform()
@@ -196,10 +199,10 @@ it detects reuse.
 ```python
 @dataclass(frozen=True)
 class AssetSheet:
-    asset_id: str            # matches the AssetDefinition
-    refs: tuple[str, ...]    # 3-5 source images (paths or urls)
-    sheet_image: str         # the generated multi-angle/state composite
-    revision: int            # bumps when refs or generation regenerates
+    asset_id: str  # matches the AssetDefinition
+    refs: tuple[str, ...]  # 3-5 source images (paths or urls)
+    sheet_image: str  # the generated multi-angle/state composite
+    revision: int  # bumps when refs or generation regenerates
     generation_params: dict[str, Any] = field(default_factory=dict)
 ```
 
@@ -215,18 +218,24 @@ fine-tune is an opt-in `revision` graduation when sample count permits.
 @dataclass(frozen=True)
 class PersonalizationSlot:
     kind: Literal[
-        "child_name", "child_likeness", "companion", "pet",
-        "gift", "place_name", "pronouns",
+        "child_name",
+        "child_likeness",
+        "companion",
+        "pet",
+        "gift",
+        "place_name",
+        "pronouns",
     ]
-    binding: str             # key into ChildProfile / BookVariables
+    binding: str  # key into ChildProfile / BookVariables
+
 
 @dataclass(frozen=True)
 class ChildProfile:
     profile_id: str
     name: str
     pronouns: str | None = None
-    likeness_refs: tuple[str, ...] = ()    # photos
-    accommodations: tuple[str, ...] = ()   # "headphones", "AAC", "fidget", "comfort_object"
+    likeness_refs: tuple[str, ...] = ()  # photos
+    accommodations: tuple[str, ...] = ()  # "headphones", "AAC", "fidget", "comfort_object"
     age_range: str | None = None
     reading_level: str | None = None
 ```
@@ -244,18 +253,20 @@ the skin carries the *how* (which variant to render).
 ```python
 @dataclass(frozen=True)
 class WorldStyle:
-    era: str                 # "modern", "victorian", "fantasy-medieval", ...
+    era: str  # "modern", "victorian", "fantasy-medieval", ...
     realism: Literal["cel", "painterly", "watercolor", "photoreal", "line"]
-    architectural_register: str    # "cottage", "brownstone", "castle", ...
-    vehicle_register: str          # "1970s-pickup", "sailboat", "spaceship", ...
+    architectural_register: str  # "cottage", "brownstone", "castle", ...
+    vehicle_register: str  # "1970s-pickup", "sailboat", "spaceship", ...
     palette_anchors: tuple[str, ...]
     fauna_realism: Literal["cute", "realistic"]
     perspective: Literal["flat", "one_point", "two_point", "isometric"] = "flat"
-                                   # serialized into generation prompts (#2398)
+    # serialized into generation prompts (#2398)
+
 
 @dataclass(frozen=True)
 class WorldStylePartial:
     """Sparse overrides; any field None inherits from the parent."""
+
     era: str | None = None
     realism: Literal["cel", "painterly", "watercolor", "photoreal", "line"] | None = None
     architectural_register: str | None = None
@@ -263,17 +274,21 @@ class WorldStylePartial:
     palette_anchors: tuple[str, ...] | None = None
     fauna_realism: Literal["cute", "realistic"] | None = None
 
+
 @dataclass(frozen=True)
 class RenderStyle:
     """Per-image overrides applied above WorldStyle."""
+
     style_token: str | None = None
     palette_override: tuple[str, ...] | None = None
     line_weight: float | None = None
 
+
 @dataclass(frozen=True)
 class StyleVolume:
     """Page-range world-style override. Models dream sequences, flashbacks."""
-    page_range: tuple[int, int]    # inclusive
+
+    page_range: tuple[int, int]  # inclusive
     partial_world_style: WorldStylePartial | None = None
     partial_render_style: RenderStyle | None = None
 ```
@@ -292,26 +307,33 @@ that other layers can anchor against:
 ```python
 @dataclass(frozen=True)
 class GroundPlane:
-    horizon_y: float                          # 0..1 normalised
+    horizon_y: float  # 0..1 normalised
     vanishing_x: float | None = None
     perspective: Literal["flat", "one_point", "two_point", "isometric"] = "flat"
 
+
 @dataclass(frozen=True)
 class BackgroundComposition:
-    sky: str | None = None         # image path or generation prompt fragment
+    sky: str | None = None  # image path or generation prompt fragment
     mid: str | None = None
     foreground: str | None = None
     ground_plane: GroundPlane
 
+
 @dataclass(frozen=True)
 class Slot:
     """Rectangular bounding hint, normalised 0..1."""
-    x: float; y: float; w: float; h: float
+
+    x: float
+    y: float
+    w: float
+    h: float
+
 
 @dataclass(frozen=True)
 class OcclusionHint:
-    in_front_of: tuple[str, ...] = ()     # other instance_ids
-    behind: tuple[str, ...] = ()          # other instance_ids
+    in_front_of: tuple[str, ...] = ()  # other instance_ids
+    behind: tuple[str, ...] = ()  # other instance_ids
 ```
 
 A character standing in front of a tree but behind a fence:
@@ -323,16 +345,19 @@ The compositor resolves these to a topological z-order at render time.
 ```python
 @dataclass(frozen=True)
 class FoundationFootprint:
-    polygon: tuple[tuple[float, float], ...]   # normalised, where the asset meets the ground
+    polygon: tuple[tuple[float, float], ...]  # normalised, where the asset meets the ground
+
 
 @dataclass(frozen=True)
 class WheelAnchors:
-    points: tuple[tuple[float, float], ...]    # normalised wheel/keel contact points
+    points: tuple[tuple[float, float], ...]  # normalised wheel/keel contact points
+
 
 @dataclass(frozen=True)
 class CharacterPose:
-    bones: dict[str, tuple[float, float]]      # named bone positions
+    bones: dict[str, tuple[float, float]]  # named bone positions
     facial_keypoints: dict[str, tuple[float, float]] | None = None
+
 
 PoseGeometry = FoundationFootprint | WheelAnchors | CharacterPose
 ```

@@ -92,14 +92,14 @@ Lifecycle:
 
 ```python
 class Schedule(Base):
-    id: UUID                         # primary key
-    profile_id: str                  # tenant/profile scoping
-    name: str                        # human label
-    cron: str                        # standard 5-field cron, UTC
-    timezone: str = "UTC"            # IANA tz, applied to cron
-    task_template: dict              # frozen TaskCreate payload
+    id: UUID  # primary key
+    profile_id: str  # tenant/profile scoping
+    name: str  # human label
+    cron: str  # standard 5-field cron, UTC
+    timezone: str = "UTC"  # IANA tz, applied to cron
+    task_template: dict  # frozen TaskCreate payload
     enabled: bool = True
-    max_runs: int | None             # repeat counter cap; None = unlimited
+    max_runs: int | None  # repeat counter cap; None = unlimited
     runs_so_far: int = 0
     last_task_id: UUID | None
     last_fired_at: datetime | None

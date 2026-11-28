@@ -80,19 +80,24 @@ class WaveSpec(BaseModel):
     agent_recipe: str
     inputs: dict[str, Any]
 
+
 class WaveHandle(BaseModel):
     wave_id: str
-    branch: str            # "wave-<wave_id>" under task's shadow repo
+    branch: str  # "wave-<wave_id>" under task's shadow repo
     status: Literal["running", "succeeded", "failed"]
     head_sha: str | None
+
 
 class FanInResult(BaseModel):
     merged_sha: str | None
     conflicts: list[ConflictRecord]
     failed_waves: list[WaveHandle]
 
+
 class WaveOrchestrator(Protocol):
-    async def fan_out(self, parent_task: TaskRecord, wave_specs: list[WaveSpec]) -> list[WaveHandle]: ...
+    async def fan_out(
+        self, parent_task: TaskRecord, wave_specs: list[WaveSpec]
+    ) -> list[WaveHandle]: ...
     async def fan_in(self, parent_task: TaskRecord, waves: list[WaveHandle]) -> FanInResult: ...
 ```
 

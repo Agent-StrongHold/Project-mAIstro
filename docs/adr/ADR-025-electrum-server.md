@@ -99,8 +99,8 @@ class ElectrumServerPlugin:
     def install(self, config: ElectrumConfig) -> None: ...
     def sync_status(self) -> SyncStatus: ...
     def is_chain_current(self) -> bool: ...
-    def get_electrum_endpoint(self) -> str: ...     # for household wallets
-    def get_rpc_endpoint(self) -> str: ...           # localhost-only
+    def get_electrum_endpoint(self) -> str: ...  # for household wallets
+    def get_rpc_endpoint(self) -> str: ...  # localhost-only
 ```
 
 ## Acceptance criteria

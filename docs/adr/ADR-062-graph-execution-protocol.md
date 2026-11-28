@@ -93,6 +93,7 @@ class NodePhase(StrEnum):
     SKIPPED = "skipped"
     CANCELLED = "cancelled"
 
+
 class GraphPhase(StrEnum):
     IDLE = "idle"
     RUNNING = "running"

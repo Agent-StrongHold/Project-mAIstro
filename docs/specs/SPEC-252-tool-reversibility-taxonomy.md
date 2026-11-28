@@ -107,6 +107,7 @@ class ToolReversibility(StrEnum):
     REVERSIBLE = "reversible"
     IRREVERSIBLE = "irreversible"
 
+
 @dataclass(frozen=True)
 class ToolRegistration:
     name: str
@@ -115,10 +116,13 @@ class ToolRegistration:
     impact_estimator: str | None = None
     idempotency_key: str | None = None
 
+
 class ToolRegistrationError(Exception): ...
+
 
 def default_for_external() -> ToolReversibility:
     return ToolReversibility.IRREVERSIBLE
+
 
 # maistro/tools/reversibility_registry.py
 class ReversibilityRegistry:

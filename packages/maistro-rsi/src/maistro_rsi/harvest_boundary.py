@@ -236,7 +236,7 @@ class WardenHarvestBoundary:
 
     def __init__(
         self,
-        warden: Warden | None | object = _UNSET_WARDEN,
+        warden: Warden | object | None = _UNSET_WARDEN,
         *,
         correlation: HarvestCorrelation | None = None,
         audit_sink: AuditSink | None = None,

@@ -44,7 +44,7 @@ were left out, and each was left out for a reason that no longer holds.
 `container.py` passes the Run id as the turn identity:
 
 ```python
-turn_id=run.run_id if run is not None else None,
+turn_id = (run.run_id if run is not None else None,)
 ```
 
 but `turn_id` is, by its own contract, an opaque idempotency key. Its whole

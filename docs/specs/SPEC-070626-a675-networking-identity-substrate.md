@@ -72,14 +72,16 @@ pyproject dependency).
 ```python
 # maistro/connectivity/substrate.py
 
+
 @dataclass(frozen=True)
 class PeerAddress:
-    endpoint: str                    # resolved URL/host:port to actually connect to
-    identity_attested: bool          # did the substrate itself vouch for peer identity
-    public_exposure: bool = False    # is this endpoint reachable from the public internet
+    endpoint: str  # resolved URL/host:port to actually connect to
+    identity_attested: bool  # did the substrate itself vouch for peer identity
+    public_exposure: bool = False  # is this endpoint reachable from the public internet
+
 
 class Substrate(Protocol):
-    name: str                        # "direct_http" | "tailscale" | ...
+    name: str  # "direct_http" | "tailscale" | ...
 
     async def resolve(self, peer_id: str) -> PeerAddress:
         """Resolve a peer identifier (hostname, Tailscale name, DID, etc.) to
@@ -89,11 +91,12 @@ class Substrate(Protocol):
         """Whether this substrate is currently usable (e.g. tailscale daemon
         running and authenticated)."""
 
+
 class SubstrateRegistry(Protocol):
     async def active(self) -> Substrate:
         """The currently configured/active substrate."""
-    async def list_available(self) -> list[Substrate]:
-        ...
+
+    async def list_available(self) -> list[Substrate]: ...
 ```
 
 ### did:web resolution
@@ -101,9 +104,8 @@ class SubstrateRegistry(Protocol):
 ```python
 # maistro/connectivity/did_web.py
 
-async def resolve_did_web(
-    did: str, *, http_client: HTTPClient
-) -> DIDDocument:
+
+async def resolve_did_web(did: str, *, http_client: HTTPClient) -> DIDDocument:
     """did:web:example.com:path -> GET https://example.com/path/.well-known/did.json
     (or https://example.com/.well-known/did.json with no path segment), per the
     did:web method spec. Parses the response into SPEC-070626-4ec8's DIDDocument.
@@ -123,13 +125,16 @@ async def resolve_did_web(
 class DirectHttpSubstrate(Substrate):
     """peer_id is treated as a hostname/URL directly; no identity attestation
     beyond whatever TLS cert the endpoint presents."""
+
     name = "direct_http"
+
 
 class TailscaleSubstrate(Substrate):
     """peer_id is a Tailscale hostname (e.g. "pi-conductor"); resolve() shells
     out to `tailscale status --json` to confirm the peer is a known tailnet
     node before returning its Tailscale IP, so identity_attested=True (the
     tailnet's own node auth vouches for who's on the other end)."""
+
     name = "tailscale"
 
     async def resolve(self, peer_id: str) -> PeerAddress: ...
@@ -143,6 +148,7 @@ class TailscaleSubstrate(Substrate):
 # ~/.conductor/substrate/active.toml
 # [substrate]
 # name = "tailscale"
+
 
 def load_substrate_config(path: Path) -> SubstrateConfig: ...
 def build_registry(config: SubstrateConfig) -> SubstrateRegistry: ...

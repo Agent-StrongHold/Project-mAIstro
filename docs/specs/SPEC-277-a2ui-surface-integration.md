@@ -67,9 +67,9 @@ A new type, `maistro.types.a2ui.A2uiSurface`, tracks server-side surface state:
 @dataclass
 class A2uiSurface:
     surface_id: str
-    catalog_id: str            # must resolve in the CatalogRegistry (Section 3)
-    session_id: str            # scope: tied to maistro.sessions, not global
-    owner_agent: str           # agent_name that created it — surface ownership (Section 5)
+    catalog_id: str  # must resolve in the CatalogRegistry (Section 3)
+    session_id: str  # scope: tied to maistro.sessions, not global
+    owner_agent: str  # agent_name that created it — surface ownership (Section 5)
     send_data_model: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     data_model: dict[str, Any] = field(default_factory=dict)
@@ -97,10 +97,10 @@ A new `A2uiCatalog` registry entry, structurally parallel to `DesignSystem`
 ```python
 @dataclass
 class A2uiCatalog:
-    catalog_id: str                 # URI convention per A2UI spec, e.g. "https://.../v1/catalog.json"
-    schema: dict[str, Any]          # freestanding JSON Schema (components/functions/theme)
+    catalog_id: str  # URI convention per A2UI spec, e.g. "https://.../v1/catalog.json"
+    schema: dict[str, Any]  # freestanding JSON Schema (components/functions/theme)
     trust_tier: TrustTier
-    design_system_slug: str | None = None   # optional link to a DesignSystem for token reuse
+    design_system_slug: str | None = None  # optional link to a DesignSystem for token reuse
     scan_status: Literal["clean", "flagged", "unscanned"] = "unscanned"
 ```
 
@@ -138,6 +138,7 @@ Per ADR-070426-3a1f §3, no engine module imports the `a2ui` package directly. A
 ```python
 class A2uiValidator(Protocol):
     def validate(self, catalog: A2uiCatalog, message: dict[str, Any]) -> ValidationResult: ...
+
 
 class A2uiSchemaPromptBuilder(Protocol):
     def build_system_prompt(self, catalog: A2uiCatalog) -> str: ...

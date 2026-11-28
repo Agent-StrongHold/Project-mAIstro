@@ -67,11 +67,12 @@ Kinetic and Dynamic are reserved for later product-driven specs.
 ```python
 class Facet(StrEnum):
     SEMANTIC = "semantic"
-    KINETIC = "kinetic"   # reserved
-    DYNAMIC = "dynamic"   # reserved
+    KINETIC = "kinetic"  # reserved
+    DYNAMIC = "dynamic"  # reserved
+
 
 class OntologyEntity(BaseModel):
-    id: UUID = Field(default_factory=uuid4)   # UUIDv7-style, time-ordered
+    id: UUID = Field(default_factory=uuid4)  # UUIDv7-style, time-ordered
     kind: str
     revision: int = 1
     facets: dict[Facet, dict[str, Any]] = Field(default_factory=dict)

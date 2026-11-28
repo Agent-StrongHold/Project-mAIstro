@@ -112,21 +112,23 @@ class SpendingPolicy:
     velocity_per_hour: int = 5
     on_breach: str = "deny"
 
+
 @dataclass
 class TransactionIntent:
     chain: str
-    type: str           # "send" | "swap" | "channel_open" etc.
+    type: str  # "send" | "swap" | "channel_open" etc.
     recipient: str
     amount_sats: int
     reason: str
-    requesting: dict    # skill + invocation_id
-    policy_check: str   # "passed" | "violation_details"
+    requesting: dict  # skill + invocation_id
+    policy_check: str  # "passed" | "violation_details"
+
 
 class CryptoOps:
-    def propose(self, intent: TransactionIntent) -> str: ...    # returns intent_id
+    def propose(self, intent: TransactionIntent) -> str: ...  # returns intent_id
     def check_policy(self, intent: TransactionIntent) -> bool: ...
-    def sign_cold(self, intent_id: str) -> bytes: ...           # requires admin
-    def sign_hot(self, intent_id: str) -> bytes | None: ...     # auto within policy
+    def sign_cold(self, intent_id: str) -> bytes: ...  # requires admin
+    def sign_hot(self, intent_id: str) -> bytes | None: ...  # auto within policy
     def execute(self, intent_id: str, signature: bytes) -> str: ...  # returns tx_hash
 ```
 
