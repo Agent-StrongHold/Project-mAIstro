@@ -21,7 +21,9 @@ were wrong drifted apart silently. This is that pin.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -112,3 +114,59 @@ def test_every_before_is_guarded_by_a_protected_ref(workflow: str, expression: s
         f"{workflow}: {BASE_REV_KEY} guards an unexpected ref {sorted(unknown)}; "
         f"`before` is the replaced revision only on {list(PROTECTED_REFS)}"
     )
+
+
+@pytest.mark.parametrize("case", ["valid_ancestor", "no_independent_ancestor", "topic_branch"])
+def test_nightly_mutation_resolves_only_independent_develop_ancestor(
+    tmp_path: Path, case: str
+) -> None:
+    """Exercise the actual workflow selector with real Git ancestry."""
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "develop")
+    git("config", "user.email", "ci@example.invalid")
+    git("config", "user.name", "CI")
+    git("commit", "--allow-empty", "-qm", "trusted")
+    trusted = git("rev-parse", "HEAD")
+    git("checkout", "-qb", "other")
+    git("commit", "--allow-empty", "-qm", "unrelated")
+    unrelated = git("rev-parse", "HEAD")
+    git("checkout", "-q", "develop")
+    git("commit", "--allow-empty", "-qm", "candidate")
+    candidate = git("rev-parse", "HEAD")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text('#!/bin/sh\nprintf "%s\\n" "$MOCK_QUALITY_SHAS"\n', encoding="utf-8")
+    gh.chmod(0o755)
+    output = tmp_path / "output"
+    output.touch()
+    shas = [candidate, unrelated, "not-a-sha"]
+    if case != "no_independent_ancestor":
+        shas.append(trusted)
+
+    workflow = yaml.safe_load((WORKFLOWS / "mutation-nightly.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["nightly-plan"]["steps"]
+    script = next(step["run"] for step in steps if step.get("id") == "ratchet-base")
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REF": "refs/heads/topic" if case == "topic_branch" else "refs/heads/develop",
+        "GITHUB_REPOSITORY": "example/repo",
+        "MEASURED_SHA": candidate,
+        "GITHUB_OUTPUT": str(output),
+        "MOCK_QUALITY_SHAS": "\n".join(shas),
+    }
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+    )
+    if case == "valid_ancestor":
+        assert result.returncode == 0, result.stderr
+        assert output.read_text(encoding="utf-8") == f"sha={trusted}\n"
+    else:
+        assert result.returncode != 0
+        assert output.read_text(encoding="utf-8") == ""
