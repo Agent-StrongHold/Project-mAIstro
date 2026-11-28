@@ -85,5 +85,12 @@ RUN cd /opt/maistro-engine \
 COPY deploy/sbx/template/preseed/ /opt/preseed/
 COPY deploy/sbx/kit/sbx-setup.sh /opt/maistro/sbx-setup.sh
 RUN chmod +x /opt/maistro/sbx-setup.sh
+# #2546: host-context COPYs preserve the builder's file modes; a checkout
+# under a restrictive umask (e.g. 077) lands the /opt workspace root-owned
+# -rw-------, so the `agent` user could not read the engine sources or run
+# first-boot setup (a lone chmod +x leaves the script 700 root-owned). Same
+# normalization as the shipped images: a+rX adds read everywhere and keeps
+# execute only where it already exists; owner/write bits are untouched.
+RUN chmod -R a+rX /opt
 
 USER agent
