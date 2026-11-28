@@ -1257,6 +1257,19 @@ class Container:
         (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
         replay cursor stored beside the events stays truthful for readers
         of the log.
+
+        Both writes are fenced through the primary cursor (#2511): the
+        acknowledgement on the log is written only after `advance` accepted
+        this holder's token, and its position is re-read from the cursor
+        store rather than assumed from this tick's batch -- so a lease taken
+        over between the two writes can only ever publish a position the
+        authoritative cursor already accepted, never this holder's rejected
+        or stale one. A rejected `advance` (the lease lapsed and was
+        reclaimed mid-tick) acknowledges nothing and claims no progress: the
+        tick reports the authoritative position instead. Both writes remain
+        monotonic and neither is the correctness backstop -- that is
+        `InvocationStore.claim` -- so a crash between them costs a replay of
+        already-settled, idempotent work, never a skip.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1278,22 +1291,52 @@ class Container:
         )
         new_cursor = await self._gap_safe_position(batch.cursor, batch.holes)
         if new_cursor > lease.position:
-            await self.consumer_cursor_store.advance(
+            advanced = await self.consumer_cursor_store.advance(
                 LEGACY_BRIDGE_CONSUMER_ID,
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
-            # The log's own replay acknowledgement (#836) records the same
-            # settlement keyed to this consumer, so `get_replay_cursor`
-            # answers from the store the events live in rather than only
-            # from the bridge's separate cursor store. Both writes are
-            # monotonic and neither is the correctness backstop -- that is
-            # `InvocationStore.claim` -- so a crash between them costs a
-            # replay of already-settled, idempotent work, never a skip. The
-            # gap-safe position is acknowledged, not the raw batch cursor:
-            # a hole is not settled yet, and this acknowledgement must not
+            if not advanced:
+                # The lease lapsed mid-tick and another replica took it over
+                # (#2511): the canonical cursor refused this holder's write.
+                # Acknowledging the rejected position on the log -- whose
+                # `event_replay_cursors` row carries no fencing token of its
+                # own -- or reporting it as local progress would publish a
+                # cursor position the authority explicitly declined. The
+                # truthful answer is the authoritative position, whatever the
+                # new holder has made it; the events this tick settled stay
+                # settled in the InvocationStore and the new holder re-derives
+                # them idempotently from there.
+                settled = await self.consumer_cursor_store.current_position(
+                    LEGACY_BRIDGE_CONSUMER_ID
+                )
+                logger.warning(
+                    "durable-event cursor advance rejected: fencing token stale; "
+                    "reporting authoritative position %s instead of attempted %s",
+                    settled,
+                    new_cursor,
+                )
+                self.durable_event_cursor = settled
+                return settled
+            # The primary advance accepted this holder's token, so the stored
+            # position is at least `new_cursor` (the write is monotonic).
+            # Re-read it rather than assuming `new_cursor`: a lease takeover
+            # between this advance and the acknowledgement below must not let
+            # an obsolete holder publish its own position onto the log (#2511)
+            # -- the log's `event_replay_cursors` row has no fencing token, so
+            # deriving the acknowledged position from the authoritative cursor
+            # is what keeps the secondary view inside what the primary
+            # explicitly accepted. The log's own replay acknowledgement (#836)
+            # records the same settlement keyed to this consumer, so
+            # `get_replay_cursor` answers from the store the events live in
+            # rather than only from the bridge's separate cursor store. The
+            # gap-safe position is what was advanced, not the raw batch
+            # cursor: a hole is not settled yet, and no acknowledgement may
             # claim otherwise.
-            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
+            settled = await self.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID)
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, settled)
+            self.durable_event_cursor = settled
+            return settled
         self.durable_event_cursor = new_cursor
         return new_cursor
 
