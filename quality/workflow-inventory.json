@@ -341,6 +341,15 @@
         "workflow_dispatch"
       ],
       "rationale": "On-demand #862/#860 release-soak pressure case (scripts/soak-compose-pressure.py): reads the containment ceiling of a shipped Compose service straight out of the profile, replays it onto a disposable container on the real Docker/Podman daemon, drives OOM and PID exhaustion, and records containment evidence JSON for the soak record - a deliberate release measurement, not a gate. Wires no policy into production; the containment policy itself is enforced per-PR by scripts/check-compose-resources.py in ci.yml."
+    },
+    {
+      "id": "gpu-rental-arbitrage-bench",
+      "file": ".github/workflows/gpu-rental-arbitrage-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #2121 (RESEARCH M8-F) opportunistic GPU-rental arbitrage bench (scripts/bench_gpu_rental_arbitrage.py: versioned marketplace-offer schema with freshness/eligibility rules, sparse synthetic capability registry where unknown compatibility is ineligible, four routes ranked on expected accepted-task cost with risk-adjusted unverified leads, eight injected failure modes under idempotent checkpoint/resume execution with a hard billing cap, and three ownership strategies priced at 22 and 24 h/day); deterministic and offline, re-measured when the offer schema, the capability registry, or the cost model changes - a measurement, not a gate. Provisions nothing, spends nothing, reads no credentials, and wires no route into production; the research disposition lives in docs/research/2121-gpu-rental-arbitrage.md."
     }
   ],
   "retained_branches": [
