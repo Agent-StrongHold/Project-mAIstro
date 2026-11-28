@@ -45,7 +45,12 @@ async def ensure_capability_schema(pool: Any) -> None:
     migrate first and boot second (#2405 real-PostgreSQL evidence). The
     legacy constraint is reconciled to the scope-keyed identity the store
     actually writes, guarded on the exact legacy definition so a fresh
-    table's constraint is never rebuilt.
+    table's constraint is never rebuilt. The reconciliation first backfills
+    every pre-scope row with its physical NodeRun scope: the ``ADD COLUMN``
+    default stamped ``effect_scope=''`` on all of them, and the legacy
+    constraint could hold several NodeRuns visiting one ``(run_id,
+    binding_id, effect_key)`` — creating the scope-keyed constraint over the
+    shared '' scope would collide and roll the whole upgrade back.
     """
 
     async with pool.acquire() as conn, conn.transaction():
@@ -64,6 +69,17 @@ async def ensure_capability_schema(pool: Any) -> None:
             """
         )
         if legacy_shape:
+            # The ADD COLUMN default stamped effect_scope='' on every
+            # pre-scope row, and the legacy constraint admitted several
+            # NodeRuns visiting one (run_id, binding_id, effect_key). Those
+            # rows would all collide on the shared '' scope when the
+            # scope-keyed constraint lands, rolling the upgrade back. Backfill
+            # each with its physical NodeRun scope — exactly the identity the
+            # store ascribes to a scope-less row (``effect_scope or
+            # node_run_id``), so no row's payload identity changes.
+            await conn.execute(
+                "UPDATE capability_approvals SET effect_scope = node_run_id WHERE effect_scope = ''"
+            )
             await conn.execute(
                 "ALTER TABLE capability_approvals DROP CONSTRAINT uq_capability_approval_effect"
             )
