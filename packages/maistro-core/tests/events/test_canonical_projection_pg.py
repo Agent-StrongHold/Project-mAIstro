@@ -471,3 +471,96 @@ async def test_event_log_dedupe_converges_bridge_and_projector_on_one_row(pg_poo
         await pg_pool.execute("DELETE FROM event_log WHERE source_event_id = $1", source)
         if created:
             await pg_pool.execute("DELETE FROM event_log WHERE id = ANY($1::bigint[])", created)
+
+
+async def test_the_pg_watermark_is_the_durable_mark_not_the_surviving_rows(pg_pool) -> None:
+    """`stream_watermark` positions a stream's #2506 projection registration.
+
+    It must read the mark table, not the surviving rows: retention deletes
+    rows (possibly the highest sequence first) but never rewinds the mark, so
+    a fully purged stream still registers past its retired sequences instead
+    of rescanning or reusing them. An unknown stream is 0, never an error.
+    """
+    from maistro.events.pg_envelope import PgEventStore
+
+    store = PgEventStore(pg_pool)
+    await store.ensure_schema()
+    stream = f"ws-wm-{uuid.uuid4().hex[:8]}"
+    stream_id = _envelope("evt-wm-seed", stream).stream_id
+    try:
+        first = await store.append(_envelope(f"evt-wm-{uuid.uuid4().hex[:8]}", stream))
+        second = await store.append(_envelope(f"evt-wm-{uuid.uuid4().hex[:8]}", stream))
+        assert (first.sequence, second.sequence) == (1, 2)
+        assert await store.stream_watermark(stream_id) == 2
+
+        # Retention: every surviving row of the stream is purged; the mark stays.
+        await pg_pool.execute("DELETE FROM canonical_event_log WHERE stream_id = $1", stream_id)
+        assert await store.stream_watermark(stream_id) == 2
+        assert await store.stream_watermark(f"workspace:never-{stream}") == 0
+    finally:
+        await pg_pool.execute(
+            "DELETE FROM canonical_event_stream_watermarks WHERE stream_id = $1", stream_id
+        )
+
+
+async def test_the_pg_failure_store_counts_attempts_and_dead_letters_terminally(pg_pool) -> None:
+    """The PostgreSQL twin of the SQLite poison bookkeeping: bounded attempts,
+    backoff, and a terminal disposition a later failed attempt cannot revive.
+
+    `project_canonical_events` records one attempt per failing append; past
+    the bound the same write stamps `failed_at`, `poisoned_records()` exposes
+    the row for repair, and a further failure returns dead-lettered without
+    incrementing or moving the stamp (the dead disposition is terminal).
+    """
+    from maistro.events.pg_stores import PgProjectionFailureStore
+
+    with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+        PgProjectionFailureStore(pg_pool, max_attempts=0)
+    with pytest.raises(ValueError, match="retry_backoff_seconds must be non-negative"):
+        PgProjectionFailureStore(pg_pool, retry_backoff_seconds=-1.0)
+
+    ticks = iter([100.0, 200.0, 300.0])
+    failures = PgProjectionFailureStore(
+        pg_pool, max_attempts=2, retry_backoff_seconds=0.0, clock=lambda: next(ticks)
+    )
+    await failures.ensure_schema()
+    event_id = f"evt-poison-{uuid.uuid4().hex[:8]}"
+    try:
+        assert (
+            await failures.record_failure(event_id, "workspace:ws-2506", "ValueError: first")
+            is False
+        )
+        retryable = await failures.get(event_id)
+        assert retryable is not None
+        assert retryable.attempts == 1
+        assert retryable.poisoned_at is None
+        assert retryable.next_attempt_at == 100.0
+
+        assert (
+            await failures.record_failure(event_id, "workspace:ws-2506", "ValueError: second")
+            is True
+        )
+        dead = await failures.poisoned_records()
+        assert [record.event_id for record in dead] == [event_id]
+        assert dead[0].attempts == 2
+        assert dead[0].poisoned_at == 200.0
+        assert dead[0].last_error == "ValueError: second"
+
+        # The disposition is terminal: a later failed attempt neither
+        # increments the attempt count nor moves the poison timestamp.
+        assert (
+            await failures.record_failure(event_id, "workspace:ws-2506", "ValueError: third")
+            is True
+        )
+        still = (await failures.poisoned_records())[0]
+        assert (still.attempts, still.poisoned_at) == (2, 200.0)
+
+        # Repair clears the row entirely; an unknown event reads as None.
+        await failures.forget(event_id)
+        assert await failures.get(event_id) is None
+        assert await failures.poisoned_records() == []
+        assert await failures.get("evt-never-recorded") is None
+    finally:
+        await pg_pool.execute(
+            "DELETE FROM canonical_projection_failures WHERE event_id = $1", event_id
+        )

@@ -550,6 +550,30 @@ async def test_sqlite_event_log_dedupe_returns_the_existing_row(sqlite_conn) -> 
     assert len(await log.query(event_type="agent.recovery")) == 3
 
 
+async def test_sqlite_watermark_is_the_durable_mark_not_the_surviving_rows(
+    sqlite_conn,
+) -> None:
+    """`stream_watermark` positions a stream's #2506 projection registration.
+
+    It must read the mark table, not the surviving rows: retention deletes
+    rows (possibly the highest sequence first) but never rewinds the mark, so
+    a fully purged stream still registers past its retired sequences instead
+    of rescanning or reusing them. An unknown stream is 0, never an error.
+    """
+    stream_id = _event("wm-sqlite-1").stream_id
+    store = SqliteEventStore(sqlite_conn)
+    first = await store.append(_event("wm-sqlite-1"))
+    second = await store.append(_event("wm-sqlite-2"))
+    assert (first.sequence, second.sequence) == (1, 2)
+    assert await store.stream_watermark(stream_id) == 2
+
+    # Retention: every surviving row of the stream is purged; the mark stays.
+    await sqlite_conn.execute("DELETE FROM canonical_event_log WHERE stream_id = ?", (stream_id,))
+    await sqlite_conn.commit()
+    assert await store.stream_watermark(stream_id) == 2
+    assert await store.stream_watermark("workspace:never-appended") == 0
+
+
 async def test_sqlite_poison_failure_persists_failed_at_for_repair(sqlite_conn) -> None:
     """The terminal attempt stamps `failed_at` in the same write that reports
     dead-lettering — otherwise the projector advances past the event while
@@ -781,6 +805,75 @@ async def test_container_projection_pass_runs_before_the_legacy_pass(
 
         await container.process_durable_events()
         assert delivered == ["same-tick-2506"]
+    finally:
+        monkeypatch.undo()
+        await container.aclose()
+
+
+async def test_a_container_without_a_projection_keeps_the_bridge_only_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`canonical_projection is None` is the hand-built Container fallback.
+
+    The tick must then keep working through the bridge-only ingress — neither
+    reaching for projection tables nor healing anything: healing is what the
+    projection adds, and the bridge's at-most-once window is exactly what the
+    issue documents for a container that lacks it. The branch is also the
+    contract that wiring the projection can never be load-bearing for the
+    legacy pass below it.
+    """
+    from maistro.container import create_container
+    from maistro.events.invocations import ReplaySafety
+    from maistro.types import AgentConfig
+
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    container.canonical_projection = None
+    try:
+        delivered: list[str] = []
+
+        async def recorder(_trigger: object, event: object) -> None:
+            delivered.append(str(getattr(event, "event_type", "")))
+
+        container.handler_caller = recorder
+        await container.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t2506c",
+                name="on-recovery",
+                event_pattern="agent.recovery",
+                handler_url="http://handlers.invalid/recovery",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+
+        # The issue's window, on a container without the projection: the
+        # canonical append commits, the bridge append fails, and no tick can
+        # ever repair it — the durable log never learns of the event.
+        original_append = InMemoryEventLog.append
+
+        async def poisoned_append(self: InMemoryEventLog, event_type: str, **kwargs: Any) -> Any:
+            if event_type == "agent.recovery":
+                raise POISON
+            return await original_append(self, event_type, **kwargs)
+
+        monkeypatch.setattr(InMemoryEventLog, "append", poisoned_append)
+        with pytest.raises(EventSubscriberFailure):
+            await container.canonical_event_publisher.emit(_event("bridge-only-2506"))
+        monkeypatch.setattr(InMemoryEventLog, "append", original_append)
+
+        # The tick completes on the bridge-only path: no healing (the failed
+        # occurrence stays invisible, the documented at-most-once window), and
+        # ordinary durable traffic still dispatches and advances the cursor.
+        assert await container.process_durable_events() == 0
+        rows = await container.durable_event_log.query(event_type="agent.recovery")
+        assert rows == []
+        assert delivered == []
+
+        # A plain (non-canonical) durable row still dispatches through the
+        # trigger the legacy pass serves.
+        await container.durable_event_log.append("agent.recovery", entity_id="bridge-only")
+        assert await container.process_durable_events() > 0
+        assert delivered == ["agent.recovery"]
     finally:
         monkeypatch.undo()
         await container.aclose()

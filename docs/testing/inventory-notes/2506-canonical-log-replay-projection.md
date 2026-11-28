@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +23
+  packages/maistro-core/tests: +27
 ---
 # 2506-canonical-log-replay-projection
 
@@ -227,3 +227,80 @@ and a production mutation injecting one unclaimed extra physical send fails
 at exactly the new per-trigger duplicate assertion (`assert 2 == 1`),
 restored byte-exact afterwards. Test-only change: node counts unchanged, so
 the `inventory-delta` above is still +23.
+
+## Coverage-gate repair round (2026-11-28, head b6c4501f42dd)
+
+The merge-queue evaluation of this head failed the
+`Coverage gate (publish-set floor + diff coverage)` check. Reproduced locally
+against the exact producer arc (fresh pgvector/pg17, `tests/migrations` then
+`alembic upgrade head` then the `coverage-postgres` suite list): the producer
+suites themselves pass, and the failure is the gate's final
+`check-diff-coverage.py` step — 4 files below the per-file floor:
+
+- `container.py` 75.0% of 4 changed branch arcs (partial at 1306:
+  `canonical_projection is None`, the hand-built-Container bridge-only
+  fallback, taken by no test);
+- `events/envelope.py` 78.6% — `SqliteEventStore.stream_watermark` never
+  called;
+- `events/pg_envelope.py` 66.7% — `PgEventStore.stream_watermark` never
+  called (both durable registration paths read the mark table through SQL
+  subqueries, so only the in-memory registry reaches the accessor);
+- `events/pg_stores.py` 79.6% — `PgProjectionFailureStore` ctor guards,
+  `ensure_schema`, `record_failure` (incl. the terminal no-RETURNING row
+  path), `poisoned_records` and `_row_to_projection_failure` — the PG poison
+  bookkeeping had no direct tests, while its SQLite twin did.
+
+Four tests join, mirroring semantics the suite already holds elsewhere:
+
+- `test_sqlite_watermark_is_the_durable_mark_not_the_surviving_rows` /
+  `test_the_pg_watermark_is_the_durable_mark_not_the_surviving_rows`:
+  retention purges every surviving row and the mark still reads the retired
+  sequences; an unknown stream is 0. Fails if the accessor reads
+  `MAX(sequence)` off surviving rows instead of the mark table.
+- `test_a_container_without_a_projection_keeps_the_bridge_only_tick`: the
+  `None` fallback completes the tick, cannot heal (the issue's window stays
+  closed on such a container), and still dispatches plain durable traffic.
+- `test_the_pg_failure_store_counts_attempts_and_dead_letters_terminally`:
+  ctor guards, attempt counting, terminal disposition (a later failed
+  attempt neither increments nor moves `failed_at`), `poisoned_records`,
+  `forget`, unknown-event `get`.
+
+`inventory-delta` above moves +23 -> +27 accordingly. The aiosqlite
+"Event loop is closed" lines in that CI job's log are the pre-existing
+teardown-warning noise `coverage (no services)` prints on green runs
+(documented in quality.yml); they are not the failure — the gate log itself
+(job 140852479077) shows the combine step and the 87% floor PASSING and the
+run dying in the final `check-diff-coverage.py` step on exactly the four
+files listed above (CI base `96849129a66e`).
+
+Executed local proof of the repair (2026-11-28, this working tree):
+
+- unit producer leg, no PG env, CI's exact argv:
+  `coverage run --branch --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests --timeout=30 -q` -> exit 0, 18050 passed /
+  1359 skipped;
+- coverage-postgres legs on a fresh pgvector/pg17 (docker, port 5599):
+  `tests/migrations` first on the unmigrated database (40 passed, 134
+  skipped), then `alembic upgrade head` (chain to 074), then CI's exact
+  producer suite list under `coverage run --append --branch` -> exit 0,
+  7931 passed / 99 skipped. This also closes the earlier repair round's
+  open question: `test_pg_audit.py::test_real_postgres_two_org_scope_and_schema`
+  passes in the CI-shaped arc (persistence collects before
+  `tests/events`, and `tests/events/test_container_pg_durable_events.py`
+  drops/re-bootstraps `audit_log` only after it) — the one failure that
+  round saw came from reusing a database polluted by a non-CI-shaped
+  full-suite run with PG env set;
+- `coverage xml` over the combined database, then CI's exact gate:
+  `python scripts/check-diff-coverage.py coverage.xml --base
+  96849129a66e9f7d98d01218f218bbc0f8c27217` -> exit 0, "ok: every measured
+  file this change touches is at or above 90% lines / 80% branch arcs"
+  (same 11-file scope, previously 4 FAILs);
+- `ruff check .` / `ruff format --check .` pass; `pytest
+  packages/maistro-core/tests/events/{test_canonical_projection,test_canonical_projection_pg,test_container_pg_durable_events,test_wiring}.py
+  -q -x` -> 28 passed / 20 skipped server-free, and the two PG-gated
+  suites are 22 passed against the server;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` -> ok at
+  19416 (collected == baseline + deltas including the +27 this note
+  records); `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` -> exit 0 (1217 identities unchanged, the
+  repair adds test code only).
