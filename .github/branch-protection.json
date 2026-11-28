@@ -62,7 +62,11 @@
           "coverage (no services)",
           "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
-          "coverage (PostgreSQL)"
+          "coverage (PostgreSQL)",
+          "coverage (scripts producer)",
+          "coverage (hive-conductor backend)",
+          "coverage (server + turing)",
+          "coverage (design + registry + extensions)"
         ]
       },
       "enforce_admins": false,
@@ -133,6 +137,10 @@
           "strike-ladder",
           "durable-events",
           "coverage (PostgreSQL)",
+          "coverage (scripts producer)",
+          "coverage (hive-conductor backend)",
+          "coverage (server + turing)",
+          "coverage (design + registry + extensions)",
           "object storage (MinIO)",
           "postgres (pg17)",
           "postgres (pg18)",
@@ -196,20 +204,20 @@
       "reason": "The live develop ruleset requires nine checks the policy lists as advisory, so they gate merges although the merge contract does not declare them. Stricter than declared is still drift: a check required by accident can be removed by accident, and the advisory reasons in this file then describe a contract GitHub is not enforcing. #564 owns reconciling the declared set with the live set; do not edit either side just to make this line vanish.",
       "owner": "BlakeMatthews-dev"
     },
-    "develop: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), cross-product-parity, gates-ran, integration-scope, sandbox-conformance": {
-      "reason": "ENFORCEMENT GAP: six checks the policy declares required (including the Ruleset-only gates-ran) are not required by the live develop ruleset, so they do not block a merge to develop today. This is the #564 declared-vs-live problem on one line. Making them live is a GitHub settings change that must not be applied blindly (it can freeze the autonomous queue), and downgrading the policy to match live would weaken the contract instead of closing the gap. Reconcile deliberately, under #564.",
-      "owner": "BlakeMatthews-dev"
-    },
     "main: required checks the live ruleset requires but the policy does not declare: autonomous-merge-admissibility": {
       "reason": "The live main ruleset requires the autonomous-merge admissibility check while the declared policy does not list it among main's required contexts: its producer is a pull_request_target workflow, outside the pull_request job graph this gate walks, so declaring it as an ordinary context would fail the offline audit that every required context has a job. It is recorded instead, together with the fact below that no producer currently exists.",
       "owner": "BlakeMatthews-dev"
     },
-    "main: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), cross-product-parity, docker-rebuild-compare, hive-conductor-compose-durability, sandbox-conformance": {
-      "reason": "ENFORCEMENT GAP on the release tier: six checks the policy declares required are not required by the live main ruleset, so they do not block a promotion PR to main. A release branch whose documented contract and enforced boundary disagree is the state issue #85 was filed about. Reconcile under #564; do not quietly re-declare the smaller set as the contract.",
-      "owner": "BlakeMatthews-dev"
-    },
     "main: the live ruleset requires 'autonomous-merge-admissibility', which no workflow in this repository produces": {
       "reason": "PERMANENT-EXPECTED RISK: the producer .github/workflows/autonomous-merge.yml was deleted in 14a67ddf5a ('ci: disable autonomous merge safety gate for now', 2026-08-28) and has not been restored, while the live main ruleset still requires its check name. Until a producer exists, a PR targeting main waits on a check that never reports - the failure this gate exists to prevent. Re-enabling the trusted gate or removing the requirement are both trusted-surface decisions (AUTONOMOUS-MERGES.md: the introducing PR requires a human merge), so it is recorded with an owner rather than resolved by a gate.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), coverage (design + registry + extensions), coverage (hive-conductor backend), coverage (scripts producer), coverage (server + turing), cross-product-parity, gates-ran, integration-scope, sandbox-conformance": {
+      "reason": "The live develop ruleset does not yet require these policy-declared checks. The four coverage producer jobs joined the develop merge contract on 2026-11-28 (parallel coverage producers, homie1/ci-speed-20261128) alongside six checks already drifting the same way. Recorded rather than reconciled: updating the live ruleset needs the ops/protection-sync flow and admin scope; until then the gates-ran evaluator still demands every leaf the summary names, so enforcement is unchanged.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "main: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), coverage (design + registry + extensions), coverage (hive-conductor backend), coverage (scripts producer), coverage (server + turing), cross-product-parity, docker-rebuild-compare, hive-conductor-compose-durability, sandbox-conformance": {
+      "reason": "Same class as the develop record: main's live ruleset lags the declared policy by these checks (the four new coverage producers plus six pre-existing). Recorded rather than reconciled; enforcement through the summaries and gates-ran is unchanged.",
       "owner": "BlakeMatthews-dev"
     }
   },

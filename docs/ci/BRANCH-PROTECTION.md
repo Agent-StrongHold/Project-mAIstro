@@ -39,8 +39,8 @@ are visible in the read-back region below and recorded in `known_live_drift`.
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **21** |
-| `main` | yes | **1** | no | no | no | **35** |
+| `develop` | yes | **0** | yes | no | no | **25** |
+| `main` | yes | **1** | no | no | no | **39** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -101,7 +101,11 @@ are visible in the read-back region below and recorded in `known_live_drift`.
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
+| `coverage (design + registry + extensions)` | ● | ● |
+| `coverage (hive-conductor backend)` | ● | ● |
 | `coverage (no services)` | ● | ● |
+| `coverage (scripts producer)` | ● | ● |
+| `coverage (server + turing)` | ● | ● |
 | `cross-product-parity` | ● | ● |
 | `docker-build` | adv | ● |
 | `docker-rebuild-compare` | adv | ● |
@@ -207,7 +211,11 @@ The divergences recorded today are not cosmetic: six checks the policy declares 
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
+| `coverage (design + registry + extensions)` | - | - |
+| `coverage (hive-conductor backend)` | - | - |
 | `coverage (no services)` | ● | ● |
+| `coverage (scripts producer)` | - | - |
+| `coverage (server + turing)` | - | - |
 | `cross-product-parity` | - | - |
 | `docker-build` | ● | ● |
 | `docker-rebuild-compare` | - | - |
