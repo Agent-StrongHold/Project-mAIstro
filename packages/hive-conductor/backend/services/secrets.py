@@ -111,18 +111,25 @@ def effective_llm_gateway_key(settings: Settings) -> str | None:
     intentionally named for its own model authority, while the aliases are
     compatibility fallbacks. Returns ``None`` (never ``""``) when nothing is
     configured, so callers can distinguish "unset" from a real empty value.
+
+    The four resolved legs are ordered by the one canonical matrix
+    (``maistro.config.gateway_key.effective_gateway_key``), which the
+    engine's ``_gateway_credential`` resolves through too (#2247): the
+    precedence decision lives in core, so the two compositions cannot
+    reassemble it differently and drift onto different credentials. The
+    settings-backed legs are handed over as resolvers, not values: leg
+    resolution opens vault names and reads settings attributes, so a
+    deployment whose operator key already answers must never read the
+    aliases beneath it — the matrix evaluates a leg only if reached.
     """
-    key = maistro_llm_api_key(settings)
-    if key:
-        return key
-    key = litellm_api_key(settings)
-    if key:
-        return key
-    for alias in ("LITELLM_PROXY_KEY", "LITELLM_MASTER_KEY"):
-        key = os.environ.get(alias)
-        if key:
-            return key
-    return None
+    from maistro.config.gateway_key import effective_gateway_key
+
+    return effective_gateway_key(
+        maistro_key=lambda: maistro_llm_api_key(settings),
+        litellm_key=lambda: litellm_api_key(settings),
+        proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
+        master_alias=os.environ.get("LITELLM_MASTER_KEY"),
+    )
 
 
 def maistro_llm_api_key(settings: Settings, *, required: bool = False) -> str | None:
