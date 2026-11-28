@@ -110,3 +110,40 @@ durable-table inventory ok (131 tables; the two new tables recorded as
 `undecided` bounded-state rows, same shape as `consumer_cursors`), ruff check
 + format clean, mypy clean on `events` and `container.py` (only the
 pre-existing optional-extra import notes remain).
+
+**Repair round (chain-tip pins, CI evidence).** The candidate head's first
+merge-queue evaluation failed `integration-scope`, whose required producer
+`postgres (pg18)` (and `pg17`, plus the `test` and `coverage (PostgreSQL)`
+jobs) concluded failure on exactly one root cause: three pre-existing
+migration suites pin the Alembic chain tip at `073`, and this branch appends
+`074` (CI: `assert {'074'} == {'073'}` /
+`assert ['074'] == ['073']` /
+`upgrade head left the base at '074', head is ['074']`). The pins are the
+established convention — each of `068`-`073` landed by moving them — so the
+repair is the same lockstep move, with no behaviour change:
+`test_legacy_principal_ownership_live.py` head pin `073` -> `074` (comment
+extended), `test_goal_installed_base_upgrade.py` `CHAIN_HEAD = "073"` ->
+`"074"` plus its head-parent assertion `072` -> `073` and both comments,
+`test_capability_invocation_effect_index_migration.py` `get_heads() == ["073"]`
+-> `["074"]` (the landed-revision identity assertions for `064`-`073` stay —
+they pin history, not the tip). No test added or removed anywhere, so the
+`inventory-delta` above is unchanged. Reproduced and re-proven first-hand on
+docker `pgvector/pgvector:pg18` (`MAISTRO_TEST_DATABASE_URL`, port 55432):
+the three live-PG failures reproduced at the unfixed head, then
+`tests/migrations` **174 passed** with the PG env (CI's coverage-PG leg was
+162 passed / 6 failed on the same suite set), `test_migration_chain.py` 18
+passed, `test_legacy_principal_ownership_live.py` 3 passed,
+`test_goal_installed_base_upgrade.py` + `test_capability_invocation_effect_index_migration.py`
+10 passed, `alembic downgrade base` + `upgrade head` ending at stamp `074`,
+`tests/` (CI `test` job's env: no database) **6474 passed / 141 skipped**
+(CI was 6472 passed / 2 failed), `packages/maistro-core/tests/events` 551
+passed / 4 skipped with `MAISTRO_REQUIRE_PG_LEGS=1` (all 20 projection tests
+green, 5 over real PG), `tests/migrations/test_event_schema_agreement.py` 5
+passed, ruff check + format clean repo-wide. The criterion-5 regression pin
+was exercised directly: with the container's projection pass mutated out
+("solely `if outcome.inserted: legacy_bus.emit(...)`"), both heal tests fail
+(`test_container_heals_a_failed_bridge_append_through_the_ordinary_tick`,
+`test_bridge_failure_after_canonical_commit_heals_across_two_containers`);
+restored byte-exact, both pass. `docker-build` concluded success on the same
+head, and `durable-events`/`wheel-imports`/`hive-conductor-e2e-ui` were
+already green — the stale pins were the only red evidence.
