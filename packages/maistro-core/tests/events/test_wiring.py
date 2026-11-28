@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from maistro.events.bus import EventBus
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore, SqliteEventStore
-from maistro.events.handlers import BUILTIN_HANDLERS
 from maistro.events.pg_envelope import PgEventStore
 from maistro.events.publisher import CANONICAL_EVENT_METADATA, CanonicalEventPublisher
-from maistro.events.recipes import BUILTIN_RECIPE_BUILDERS
-from maistro.events.wiring import wire_canonical_events, wire_legacy_trigger_surface
+from maistro.events.wiring import wire_canonical_events
 
 
 class _FakeTransaction:
@@ -34,6 +34,12 @@ class _FakeConnection:
     async def execute(self, sql: str, *args: Any) -> None:
         self._statements.append(sql)
 
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        self._statements.append(sql)
+        if "FROM pg_attribute a" in sql:
+            return [{"attname": "event_id", "data_type": "text", "can_insert": True}]
+        return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
@@ -50,7 +56,7 @@ class _Acquire:
 
 
 class _FakePgPool:
-    """Pool double for the wiring question only: was the schema ensured?"""
+    """Pool double for the wiring question only: was the migrated schema checked?"""
 
     def __init__(self) -> None:
         self.statements: list[str] = []
@@ -94,14 +100,14 @@ async def test_a_supplied_db_pool_selects_the_sqlite_store_after_its_schema() ->
         await connection.close()
 
 
-async def test_a_supplied_pg_pool_selects_the_postgres_store_after_its_schema() -> None:
+async def test_a_supplied_pg_pool_checks_the_schema_without_ddl() -> None:
     pool = _FakePgPool()
 
     publisher = await wire_canonical_events(pg_pool=pool)
 
     assert isinstance(publisher.store, PgEventStore)
-    assert any("pg_advisory_xact_lock" in sql for sql in pool.statements)
-    assert any("CREATE TABLE IF NOT EXISTS canonical_event_log" in sql for sql in pool.statements)
+    assert any("FROM canonical_event_log LIMIT 0" in sql for sql in pool.statements)
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
 
 
 async def test_a_pg_pool_takes_precedence_over_a_sqlite_connection() -> None:
@@ -127,21 +133,10 @@ async def test_the_wired_publisher_persists_before_notifying_legacy_consumers() 
     assert projected.timestamp == persisted.timestamp
 
 
-def test_wire_legacy_trigger_surface_subscribes_handlers_and_disabled_recipes() -> None:
-    """#2313: process wiring registers builtin actions and the recipe catalog.
+async def test_incompatible_pg_pool_fails_without_selecting_another_backend(monkeypatch) -> None:
+    async def incompatible(_self) -> None:
+        raise RuntimeError("unmigrated PostgreSQL")
 
-    Recipes stay disabled so localhost defaults cannot fire (#836 still holds:
-    disabled triggers never match, so they cannot manufacture success).
-    """
-    bus = EventBus()
-
-    wire_legacy_trigger_surface(bus)
-
-    for action_type in BUILTIN_HANDLERS:
-        assert action_type in bus._handlers
-    triggers = bus.list_triggers()
-    assert len(triggers) == len(BUILTIN_RECIPE_BUILDERS)
-    assert all(not row["enabled"] for row in triggers)
-    assert {row["name"] for row in triggers} == {
-        builder().name for builder in BUILTIN_RECIPE_BUILDERS
-    }
+    monkeypatch.setattr(PgEventStore, "ensure_schema", incompatible)
+    with pytest.raises(RuntimeError, match="unmigrated PostgreSQL"):
+        await wire_canonical_events(pg_pool=_FakePgPool(), db_pool=object())
