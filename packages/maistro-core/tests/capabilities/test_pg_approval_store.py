@@ -346,3 +346,108 @@ def test_approval_from_payload_parses_an_already_decoded_mapping() -> None:
     parsed = _approval_from_payload(approval.model_dump(mode="json"))
 
     assert parsed == approval
+
+
+# --------------------------------------------------------------------------
+# ensure_capability_schema() -- the Alembic-first order (a real deployment
+# migrates before the container boots) leaves revision 043's legacy constraint
+# in place, and the store's scope-keyed upsert then dies on
+# InvalidColumnReferenceError (#2405 real-PostgreSQL evidence). This needs a
+# real server: the failure is the constraint semantics, not the SQL text.
+# --------------------------------------------------------------------------
+
+
+async def test_ensure_capability_schema_reconciles_the_alembic_legacy_constraint(
+    pg_pool: Any,
+) -> None:
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.capabilities.durable_schema import ensure_capability_schema
+
+    # Revision 043's exact legacy shape: keyed on the physical visit, no
+    # effect_scope column at all.
+    await pg_pool.execute("DROP TABLE IF EXISTS capability_approvals")
+    await pg_pool.execute(
+        """
+        CREATE TABLE capability_approvals (
+            request_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            node_run_id TEXT NOT NULL,
+            binding_id TEXT NOT NULL,
+            effect_key TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            CONSTRAINT uq_capability_approval_effect
+              UNIQUE (run_id, node_run_id, binding_id, effect_key)
+        )
+        """
+    )
+    # Two physical visits of one (run_id, binding_id, effect_key): legal
+    # before effect scoping, a '' -scope collision after the swap unless the
+    # backfill runs first.
+    await pg_pool.execute(
+        """
+        INSERT INTO capability_approvals
+          (request_id, run_id, node_run_id, binding_id, effect_key, payload)
+        VALUES
+          ('req-legacy-a', 'run-legacy', 'visit-a', 'binding-1', 'write:1', '{}'),
+          ('req-legacy-b', 'run-legacy', 'visit-b', 'binding-1', 'write:1', '{}')
+        """
+    )
+
+    await ensure_capability_schema(pg_pool)
+
+    defn = await pg_pool.fetchval(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'uq_capability_approval_effect' "
+        "AND conrelid = 'capability_approvals'::regclass"
+    )
+    assert defn is not None
+    assert "effect_scope" in str(defn)
+
+    # Legacy rows sharing (run_id, binding_id, effect_key) under different
+    # NodeRuns were valid under the physical-visit constraint; the ADD COLUMN
+    # default stamps effect_scope='' on all of them, so the scope-keyed
+    # constraint only installs if the backfill assigns each row its physical
+    # NodeRun scope first (#2405 review P2).
+    rows = await pg_pool.fetch(
+        "SELECT node_run_id, effect_scope FROM capability_approvals "
+        "WHERE run_id = 'run-legacy' ORDER BY node_run_id"
+    )
+    assert [(r["node_run_id"], r["effect_scope"]) for r in rows] == [
+        ("visit-a", "visit-a"),
+        ("visit-b", "visit-b"),
+    ]
+
+    # And the store's own upsert works against the reconciled table: the
+    # same effect identity inserts once and dedups without raising.
+    store = PgApprovalStore(pg_pool)
+    approval = _approval(request_id="req-legacy-reconcile")
+    created = await store.create(approval)
+    assert created.request.request_id == "req-legacy-reconcile"
+    raced = await store.create(approval)
+    assert raced.request.request_id == "req-legacy-reconcile"
+
+
+async def test_ensure_capability_schema_leaves_a_scope_keyed_table_alone(
+    pg_pool: Any,
+) -> None:
+    """The reconciliation is guarded on the exact legacy definition."""
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.capabilities.durable_schema import ensure_capability_schema
+
+    await pg_pool.execute("DROP TABLE IF EXISTS capability_approvals")
+    await ensure_capability_schema(pg_pool)  # fresh: scope-keyed inline
+
+    # Idempotent re-run on the current shape must not raise and must not
+    # fork the key.
+    await ensure_capability_schema(pg_pool)
+
+    defn = await pg_pool.fetchval(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'uq_capability_approval_effect' "
+        "AND conrelid = 'capability_approvals'::regclass"
+    )
+    assert defn is not None
+    assert "effect_scope" in str(defn)

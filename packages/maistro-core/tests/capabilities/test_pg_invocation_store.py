@@ -494,6 +494,12 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
             executed.append(query)
             return "OK"
 
+        async def fetchval(self, query: str, *args: Any) -> Any:
+            # The approval schema reconciliation reads the live constraint
+            # catalog (#2405); this double answers "not the legacy shape" so
+            # the wiring test stays about wiring, not about DDL state.
+            return None
+
         def transaction(self) -> _Transaction:
             return _Transaction()
 

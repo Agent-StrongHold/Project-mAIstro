@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from config import Settings
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import SecretStr
 from services.capabilities_wiring import _register_self_repair, wire_capabilities
 
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.slots.infra import (
@@ -16,6 +20,7 @@ from maistro.capabilities.slots.infra import (
     ResourceHealth,
 )
 from maistro.capabilities.types import ProviderHealth
+from maistro.graph import Graph, Node
 
 
 class _FakeVault:
@@ -498,6 +503,72 @@ async def test_self_repair_invoker_refuses_a_redirected_binding() -> None:
     assert action.calls == []  # refused before any provider call
 
 
+async def test_self_repair_invoker_advances_effect_identity_after_settlement() -> None:
+    """A settled remediation is never replayed for a later incident (#2405).
+
+    The Invocation ledger returns a COMPLETED row without a provider call, and
+    a repair that reported ``ok=False`` is still COMPLETED — the reviewer's
+    P1: a second failure of the same resource under the caller's permanent
+    key would silently inherit the first result forever. The invoker must
+    keep the key stable within an incident (nothing settled yet) and derive
+    the next generation deterministically once it settles, so later
+    incidents — including retries after an ``ok=False`` result — dispatch.
+    """
+
+    class _ResultSwitchingAction(_WiringAction):
+        """Same operation every time; the outcome is the test's lever."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.ok = False
+
+        async def act(self, action: str, params: dict) -> ActionResult:
+            self.calls.append((action, params))
+            return ActionResult(ok=self.ok, detail="done")
+
+    from services.capabilities_wiring import (
+        _build_self_repair_effect_invoker,
+        _self_repair_binding,
+    )
+
+    reg = default_capability_registry(entry_points=[])
+    action = _ResultSwitchingAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+    reg.activate("infra_monitor", "host_health")
+    reg.activate("infra_action", "host_health")
+
+    binding = _self_repair_binding()
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await register_boot_binding(effects.bindings, binding)
+    invoke_action = _build_self_repair_effect_invoker(reg, effects, binding)
+    key = "self_repair:litellm:restart_container:640d0bd823a04f4e"
+
+    # Incident 1 settles COMPLETED with ok=False (a normal provider result,
+    # not a ledger FAILED) — a later incident must still dispatch.
+    first = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert first.ok is False
+    assert len(action.calls) == 1
+
+    second = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert second.ok is False, "the fresh dispatch must carry the provider's own result"
+    assert len(action.calls) == 2, "settled ok=False generation was replayed"
+
+    action.ok = True
+    third = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert third.ok is True
+    assert len(action.calls) == 3, "the second settled generation was replayed"
+
+    records = list(effects.invocation_store._items.values())
+    assert len(records) == 3
+    assert len({record.effect_key for record in records}) == 3, (
+        "each settled incident must carry a distinct effect identity"
+    )
+    assert all(
+        record.effect_key.startswith("self_repair:litellm:restart_container:") for record in records
+    )
+
+
 # --- #2405: durable HITL scope + approval admittor / run-status seams
 
 
@@ -771,3 +842,253 @@ async def test_self_repair_approval_admittor_resolve_provider_fail_closed(
     )
     bare = default_capability_registry(entry_points=[])
     await exercise(ok_effects, bare, "infra_action unavailable")
+
+
+# --- durable pending-wait hydration + effect-invoker fail-closed arms (#2405) ---
+
+
+class _FakeInfraHttp:
+    """HostHealthAction transport stand-in for admission-flow tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def get_json(self, path: str) -> dict:
+        return {}
+
+    async def post_json(self, path: str, body: dict) -> dict:
+        self.calls.append((path, body))
+        return {"status": "ok", "detail": "restarted"}
+
+
+async def test_pending_hydration_loader_maps_durable_self_repair_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped loader pages the durable HITL-paused scan and maps each
+    self-repair admission's resource to its Run id — restart hydration reads
+    durable truth, so a fresh process reconciles waits it did not admit."""
+    import services.engine as engine_module
+    from services.capabilities_wiring import _build_self_repair_pending_hydration
+
+    from maistro.capabilities.approval_store import InMemoryApprovalStore
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+    from maistro.capabilities.providers.host_health import HostHealthAction
+    from maistro.capabilities.slots.self_repair import RepairProposal
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+
+    loader = _build_self_repair_pending_hydration()
+
+    # No durable HITL surface wired in this composition: the truthful empty
+    # answer (the admittor refuses too, so no wait can be parked anywhere).
+    monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace(graph_run_store=None))
+    assert await loader() == {}
+
+    # The shipped composition: canonical durable Graph store over the RunStore.
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("default")
+    run_store = InMemoryRunStore(project_store=projects)
+    durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    built = SimpleNamespace(
+        graph_run_store=durable,
+        run_store=run_store,
+        _agent_port=SimpleNamespace(container=SimpleNamespace(project_scope_store=projects)),
+        project_id=root.project_id,
+    )
+    monkeypatch.setattr(engine_module, "get_engine", lambda: built)
+
+    reg = default_capability_registry(entry_points=[])
+    reg.register(_WiringMonitor())
+    reg.register(HostHealthAction(_FakeInfraHttp(), autonomy="approve_all"))
+    effects = new_effect_context(
+        policy_evaluator=binding_scope_policy,
+        approval_store=InMemoryApprovalStore(),
+    )
+    await _register_self_repair(reg, _cfg(), effects)
+    repair = reg.provider("self_repair", "rule_based_repair")
+    assert repair is not None
+    assert repair._pending_approvals_loader is not None
+
+    for resource, name in (("docker:litellm", "litellm"), ("docker:api", "api")):
+        result = await repair._admit_approval(
+            RepairProposal(
+                resource=resource,
+                symptom="container unhealthy",
+                action="restart_container",
+                params={"name": name},
+            )
+        )
+        assert result.decision.value == "pending_approval"
+
+    # Durable truth first: two paused self-repair admissions with resources.
+    page = await durable.list_hitl_paused(limit=100)
+    expected = {item.run.provenance["self_repair_resource"]: item.run.run_id for item in page.items}
+    assert set(expected) == {"docker:litellm", "docker:api"}
+
+    # The shipped loader reproduces exactly that map.
+    assert await loader() == expected
+
+
+class _HydrationRecord:
+    """DurableRunRecord stand-in: run_id, materializable graph, provenance."""
+
+    def __init__(self, run_id: str, metadata: dict, provenance: dict, *, broken: bool = False):
+        self.run_id = run_id
+        if broken:
+
+            class _BrokenGraph:
+                def materialize(self) -> Graph:
+                    raise RuntimeError("checkpoint unreadable")
+
+            self.run = SimpleNamespace(
+                run_id=run_id,
+                graph=_BrokenGraph(),
+                provenance=provenance,
+            )
+            return
+        graph = Graph(
+            graph_id=f"hydration:{run_id}",
+            workspace_id="ws-hyd",
+            project_id="proj-hyd",
+            name="hydration fixture",
+            nodes=[
+                Node(
+                    node_id="approve",
+                    node_type="infra.approval_gated_action",
+                    inputs={
+                        "action": "restart_container",
+                        "params": {},
+                        "effect_key": f"key:{run_id}",
+                    },
+                    parameters={},
+                    metadata={},
+                )
+            ],
+            edges=[],
+            metadata=dict(metadata),
+        )
+        self.run = SimpleNamespace(
+            run_id=run_id,
+            graph=SimpleNamespace(materialize=lambda: graph),
+            provenance=provenance,
+        )
+
+
+class _PagingHitlStore:
+    """list_hitl_paused answering a scripted page sequence (the loader's loop)."""
+
+    def __init__(self, pages: list[Any]) -> None:
+        self._pages = pages
+        self.calls: list[dict] = []
+
+    async def list_hitl_paused(self, *, limit: int, after=None, **_kwargs):
+        self.calls.append({"limit": limit, "after": after})
+        return self._pages.pop(0)
+
+
+class _ScanPage:
+    def __init__(self, items: list, resume_after: Any, exhausted: bool) -> None:
+        self.items = items
+        self.resume_after = resume_after
+        self.exhausted = exhausted
+
+
+async def test_pending_hydration_loader_filters_and_pages(monkeypatch) -> None:
+    """Only self-repair admissions with a named resource map; unreadable
+    checkpoints skip; paging continues past a non-exhausted page and stops."""
+    import services.engine as engine_module
+    from services.capabilities_wiring import _build_self_repair_pending_hydration
+
+    store = _PagingHitlStore(
+        [
+            _ScanPage(
+                items=[
+                    # mapped: a self-repair admission with a resource
+                    _HydrationRecord(
+                        "run-a",
+                        {"admission_source": "self_repair"},
+                        {"self_repair_resource": "docker:litellm"},
+                    ),
+                    # filtered: a foreign admission (its owner reconciles it)
+                    _HydrationRecord(
+                        "run-foreign",
+                        {"admission_source": "schedule"},
+                        {"self_repair_resource": "docker:other"},
+                    ),
+                    # skipped: an unreadable checkpoint never maps a wait
+                    _HydrationRecord(
+                        "run-broken",
+                        {"admission_source": "self_repair"},
+                        {"self_repair_resource": "docker:broken"},
+                        broken=True,
+                    ),
+                    # filtered: a self-repair admission without a resource name
+                    _HydrationRecord(
+                        "run-nores",
+                        {"admission_source": "self_repair"},
+                        {},
+                    ),
+                ],
+                resume_after=("cursor-1", "1"),
+                exhausted=False,
+            ),
+            _ScanPage(
+                items=[
+                    _HydrationRecord(
+                        "run-b",
+                        {"admission_source": "self_repair"},
+                        {"self_repair_resource": "docker:api"},
+                    )
+                ],
+                resume_after=None,
+                exhausted=True,
+            ),
+        ]
+    )
+    monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace(graph_run_store=store))
+    loader = _build_self_repair_pending_hydration()
+    assert await loader() == {"docker:litellm": "run-a", "docker:api": "run-b"}
+    assert [call["limit"] for call in store.calls] == [100, 100]
+    assert store.calls[0]["after"] is None
+    assert store.calls[1]["after"] == ("cursor-1", "1")
+
+
+async def test_auto_repair_effect_refuses_a_non_action_provider() -> None:
+    """A non-InfraAction behind the Invocation seam fails the effect closed."""
+    from services.capabilities_wiring import _execute_auto_repair_effect
+
+    with pytest.raises(TypeError, match="non-action provider"):
+        await _execute_auto_repair_effect(
+            object(), {"action": "restart_container", "params": {"name": "litellm"}}
+        )
+
+
+async def test_effect_invoker_refuses_to_derive_past_the_generation_cap() -> None:
+    """Sixteen settled generations under one incident key: the invoker refuses
+    to mint a seventeenth identity instead of silently repairing forever."""
+    from services.capabilities_wiring import (
+        _build_self_repair_effect_invoker,
+        _self_repair_binding,
+    )
+
+    reg = default_capability_registry(entry_points=[])
+    action = _WiringAction()
+    reg.register(action)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding = _self_repair_binding()
+    await register_boot_binding(effects.bindings, binding)
+    invoke_action = _build_self_repair_effect_invoker(reg, effects, binding)
+
+    key = "self_repair:docker:litellm:restart_container:capcheck"
+    for _ in range(16):
+        result = await invoke_action("restart_container", {"name": "litellm"}, key)
+        assert result.ok is True
+    assert len(action.calls) == 16  # every generation really dispatched
+
+    with pytest.raises(ValueError, match="16 settled"):
+        await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert len(action.calls) == 16  # the refusal adds no physical effect
