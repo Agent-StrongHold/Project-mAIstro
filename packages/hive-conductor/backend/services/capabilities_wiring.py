@@ -19,8 +19,13 @@ from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.durable_hitl_approval import admit_self_repair_approval
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
+from maistro.capabilities.self_repair_incident import (
+    chained_episode_token,
+    episode_effect_key,
+)
 from maistro.capabilities.slots.infra import ActionResult, InfraAction
 from maistro.capabilities.slots.self_repair import RepairProposal
 from maistro.capabilities.types import Unavailable
@@ -109,52 +114,119 @@ def _self_repair_binding() -> Binding:
     )
 
 
+async def _resolve_auto_repair_provider(
+    candidate: Binding,
+    *,
+    effect_context: CapabilityEffectContext,
+    registry: CapabilityRegistry,
+    binding: Binding,
+) -> InfraAction | Unavailable:
+    """Resolve the authorized infra_action provider for the auto-run path.
+
+    Same contract as the durable approval path's provider resolution: the
+    candidate must resolve to exactly the wired self-repair Binding and a
+    live InfraAction; anything else is Unavailable — the Invocation records
+    the refusal and no physical dispatch happens.
+    """
+
+    try:
+        authorized = await effect_context.bindings.resolve(
+            candidate.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=binding.capability,
+        )
+    except Exception:
+        return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
+    if authorized.binding_id != binding.binding_id:
+        return Unavailable(slot="infra_action", reason="invalid self_repair binding")
+    provider = await registry.resolve("infra_action")
+    if not isinstance(provider, InfraAction):
+        return Unavailable(slot="infra_action", reason="infra_action unavailable")
+    return provider
+
+
+async def _execute_auto_repair_effect(provider: Any, request: Any) -> dict[str, Any]:
+    """Physical auto-run effect: exactly one provider call, plain dict result."""
+
+    if not isinstance(provider, InfraAction):
+        raise TypeError("infra_action Invocation resolved a non-action provider")
+    payload = dict(request)
+    # Auto-run path only (reversible under auto_safe). Gated tiers are
+    # admitted as durable waiting-human Runs (#2405), not through here.
+    result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
+    return {
+        "ok": result.ok,
+        "detail": result.detail,
+        "blocked_pending_approval": result.blocked_pending_approval,
+    }
+
+
 def _build_self_repair_effect_invoker(
     registry: CapabilityRegistry,
     effect_context: CapabilityEffectContext,
     binding: Binding,
 ) -> Callable[[str, dict[str, Any], str], Any]:
+    # A settled remediation must never be replayed for a later incident
+    # (#2405 review): the Invocation ledger returns a COMPLETED row without a
+    # provider call, and a repair that reported ``ok=False`` is still
+    # COMPLETED — so the caller's permanent ``stable_effect_key`` would make
+    # the second failure of the same operation silently inherit the first
+    # result forever. Each settled generation therefore moves the identity,
+    # deterministically, off durable facts. Same bound as the durable
+    # approval path's episode chain (``MAX_EPISODE_CHAIN``).
+    _MAX_EFFECT_GENERATIONS = 16
+
+    async def _advance_past_settled(effect_key: str) -> str:
+        """The caller's key until it names a settled effect; then its heir.
+
+        Stable within an incident: nothing is settled under the key yet, so
+        the ledger's in-flight guard still converges concurrent re-entry onto
+        one physical effect. The heir chains from the settled row's
+        invocation id, so a restart or a second replica walking the same
+        canonical history derives the same next key. FAILED history stays
+        under the same key — the ledger's own contract admits a fresh
+        dispatch over a failed record; CREATED/RUNNING/UNKNOWN is refused by
+        the ledger at admission, never replayed.
+        """
+        base_token = effect_key.rsplit(":", 1)[-1]
+        key, token = effect_key, base_token
+        for _ in range(_MAX_EFFECT_GENERATIONS):
+            latest = await effect_context.invocations.latest_effect(
+                binding=binding,
+                run_id="self-repair",
+                node_run_id="self-repair",
+                effect_key=key,
+            )
+            if latest is None or latest.status is not InvocationStatus.COMPLETED:
+                return key
+            token = chained_episode_token(token, latest.invocation_id)
+            key = episode_effect_key(effect_key, token, base_token=base_token)
+        raise ValueError(
+            f"self-repair effect {effect_key!r} has {_MAX_EFFECT_GENERATIONS} settled "
+            "generations; refusing to derive a further incident identity"
+        )
+
     async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
         async def resolver(candidate: Binding) -> InfraAction | Unavailable:
-            try:
-                authorized = await effect_context.bindings.resolve(
-                    candidate.binding_id,
-                    workspace_id=binding.workspace_id,
-                    project_id=binding.project_id,
-                    node_id=binding.node_id,
-                    capability=binding.capability,
-                )
-            except Exception:
-                return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
-            if authorized.binding_id != binding.binding_id:
-                return Unavailable(slot="infra_action", reason="invalid self_repair binding")
-            provider = await registry.resolve("infra_action")
-            if not isinstance(provider, InfraAction):
-                return Unavailable(slot="infra_action", reason="infra_action unavailable")
-            return provider
+            return await _resolve_auto_repair_provider(
+                candidate,
+                effect_context=effect_context,
+                registry=registry,
+                binding=binding,
+            )
 
-        async def executor(provider: Any, request: Any) -> dict[str, Any]:
-            if not isinstance(provider, InfraAction):
-                raise TypeError("infra_action Invocation resolved a non-action provider")
-            payload = dict(request)
-            # Auto-run path only (reversible under auto_safe). Gated tiers are
-            # admitted as durable waiting-human Runs (#2405), not through here.
-            result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
-            return {
-                "ok": result.ok,
-                "detail": result.detail,
-                "blocked_pending_approval": result.blocked_pending_approval,
-            }
-
+        identity = await _advance_past_settled(effect_key)
         invocation = await effect_context.invocations.invoke(
             binding=binding,
             run_id="self-repair",
             node_run_id="self-repair",
-            attempt_id=effect_key,
-            effect_key=effect_key,
+            attempt_id=identity,
+            effect_key=identity,
             request={"action": action, "params": params},
             resolver=resolver,
-            executor=executor,
+            executor=_execute_auto_repair_effect,
         )
         if not isinstance(invocation.result, dict):
             return ActionResult(ok=False, detail="infra_action Invocation returned no result")
@@ -234,10 +306,53 @@ def _build_self_repair_approval_admittor(
             effect_key=effect_key,
             resolve_provider=resolve_provider,
             run_store=engine.run_store,
+            resource=proposal.resource,
         )
         return record.run.run_id
 
     return admit
+
+
+def _build_self_repair_pending_hydration() -> Callable[[], Any]:
+    """Durable index of pending self-repair approval waits (resource -> run_id).
+
+    Restart hydration for ``RuleBasedRepair`` (#2405): a fresh process — or a
+    second replica — must reconcile waits it did not admit itself before the
+    next degraded snapshot, or the in-memory pending dict's emptiness would
+    admit a second approval Run for one unresolved incident. The durable
+    HITL-paused scan is the truth; this loader owns no state.
+    """
+
+    async def load_pending() -> dict[str, str]:
+        from services.engine import get_engine
+
+        store = get_engine().graph_run_store
+        if store is None:
+            # No durable HITL surface exists in this composition: durable
+            # admission refuses up front (see the admittor), so no wait can
+            # be parked anywhere. Empty is the truthful answer here — unlike
+            # a store that exists but fails below, which stays fail-closed.
+            return {}
+        pending: dict[str, str] = {}
+        after: tuple[str, str] | None = None
+        while True:
+            page = await store.list_hitl_paused(limit=100, after=after)
+            for record in page.items:
+                try:
+                    graph = record.run.graph.materialize()
+                except Exception:
+                    continue
+                if graph.metadata.get("admission_source") != "self_repair":
+                    continue
+                resource = record.run.provenance.get("self_repair_resource")
+                if isinstance(resource, str) and resource:
+                    pending[resource] = record.run.run_id
+            if page.resume_after is None or page.exhausted:
+                break
+            after = page.resume_after
+        return pending
+
+    return load_pending
 
 
 def _build_self_repair_approval_run_status() -> Callable[[str], Any]:
@@ -291,6 +406,7 @@ async def _register_self_repair(
             effect_invoker=invoke_action,
             approval_admittor=admit_approval,
             approval_run_status=_build_self_repair_approval_run_status(),
+            pending_approvals_loader=_build_self_repair_pending_hydration(),
             autonomy=config.infra_autonomy,
         )
     )

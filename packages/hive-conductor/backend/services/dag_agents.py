@@ -117,6 +117,13 @@ def _resolve_nodes_with(*, container: Any = None) -> Callable[[str, Any], Any]:
         # Per-cycle discovery context (#1051): the Container-owned provider
         # the adapter wired at creation.
         discovery_context=container.discovery_context,
+        # The Container-owned capability slot registry (#2405): required by
+        # the reconstructible `infra.approval_gated_action` node, which
+        # re-resolves its infra_action provider live on resume. A container
+        # without one fails that kind's composition closed. Optional read:
+        # the authority is None-safe by contract (only the approval kind
+        # requires it), and partial test doubles predate the field.
+        capability_registry=getattr(container, "capabilities", None),
     )
 
 

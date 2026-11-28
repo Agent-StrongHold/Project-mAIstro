@@ -122,6 +122,14 @@ from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 #: firing.
 OCCURRENCE_INDEX = "ix_canonical_runs_occurrence"
 
+#: Migration 034's one-Run-per-logical-effect claim. A Run whose provenance
+#: carries BOTH an occurrence claim and an ``effect_key`` — the self-repair
+#: incident claim (#2405) — is refused by whichever index the insert checks
+#: first when it races the winner, and both mean "already admitted", not
+#: "storage fault". A schedule firing never carries an ``effect_key``, so
+#: this never widens the schedule-admission translation.
+EFFECT_CLAIM_INDEX = "ix_canonical_runs_effect"
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
@@ -2325,9 +2333,17 @@ def _occurrence_conflict(exc: Exception, run: Run) -> DuplicateOccurrence | None
     occurrence = occurrence_key(run.provenance)
     if occurrence is None:
         return None
-    if str(getattr(exc, "constraint_name", "") or "") != OCCURRENCE_INDEX:
-        return None
-    return DuplicateOccurrence(*occurrence)
+    constraint = str(getattr(exc, "constraint_name", "") or "")
+    if constraint == OCCURRENCE_INDEX:
+        return DuplicateOccurrence(*occurrence)
+    if constraint == EFFECT_CLAIM_INDEX and run.provenance.get("effect_key"):
+        # The effect claim refused a Run that also carries the incident claim:
+        # the race winner landed between the probe and the insert with either
+        # unique index firing first (#2405 two-replica evidence). The caller's
+        # correct response is the same — re-probe the claim and reconcile to
+        # the winner's Run.
+        return DuplicateOccurrence(*occurrence)
+    return None
 
 
 def _integrity_failure(exc: Exception, node_run_id: str) -> Exception:

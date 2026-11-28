@@ -21,6 +21,10 @@ from services.registered_dag_recovery import (
     recover_stranded_registered_dag_runs,
     wake_due_registered_dag_runs,
 )
+from services.self_repair_recovery import (
+    recover_stranded_self_repair_runs,
+    wake_due_self_repair_runs,
+)
 
 logger = logging.getLogger("hive.dag_recovery")
 _INTERVAL_S = 10.0
@@ -51,6 +55,12 @@ async def _run() -> None:
             "registered_dag_recovery", "recovered", recover_stranded_registered_dag_runs
         )
         await _tick_half("registered_dag_wakeup", "resumed", wake_due_registered_dag_runs)
+        # Self-repair approval Runs (#2405): the owned recovery category that
+        # resumes answered/stranded durable approval waits — without it an
+        # approved Run stayed QUEUED forever and its physical effect never
+        # dispatched.
+        await _tick_half("self_repair_recovery", "recovered", recover_stranded_self_repair_runs)
+        await _tick_half("self_repair_wakeup", "resumed", wake_due_self_repair_runs)
         await asyncio.sleep(_INTERVAL_S)
 
 

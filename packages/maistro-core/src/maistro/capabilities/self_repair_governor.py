@@ -104,6 +104,18 @@ class SafetyGovernor:
         st.last_dispatch = now
         st.in_flight = True
 
+    def mark_in_flight(self, resource: str) -> None:
+        """Restore the in-flight guard for a wait another process dispatched (#2405).
+
+        Restart hydration reconciles durable pending approval waits into a
+        fresh governor. Unlike ``record_dispatch`` this consumes no budget or
+        cooldown bookkeeping — the dispatch already happened, and the guard's
+        only job here is to hold the resource until the Run settles. Budget
+        and cooldown rules keep gating any *new* dispatch; hydration widens
+        nothing.
+        """
+        self._st(resource).in_flight = True
+
     def record_result(self, resource: str, *, recovered: bool) -> None:
         st = self._st(resource)
         st.in_flight = False
