@@ -701,7 +701,7 @@ jobs:
           cache-dependency-path: |
             packages/hive-conductor/frontend/package-lock.json
             packages/maistro-canvas/frontend/package-lock.json
-      - run: npm ci && npm run lint && npm run build
+      - run: npm config set audit-level=high && npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
       # Frontend entity types are generated from the backend's OpenAPI document
       # and committed (#1048). Regenerating both and diffing makes a backend
@@ -713,7 +713,7 @@ jobs:
           uv run python scripts/dump-hive-openapi.py
           npm --prefix packages/hive-conductor/frontend run gen:api
           git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
-      - run: npm ci && npm run test:ci
+      - run: npm config set audit-level=high && npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
         working-directory: packages/maistro-canvas/frontend
