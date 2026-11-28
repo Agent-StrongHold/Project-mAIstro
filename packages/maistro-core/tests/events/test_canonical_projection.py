@@ -550,6 +550,36 @@ async def test_sqlite_event_log_dedupe_returns_the_existing_row(sqlite_conn) -> 
     assert len(await log.query(event_type="agent.recovery")) == 3
 
 
+async def test_sqlite_poison_failure_persists_failed_at_for_repair(sqlite_conn) -> None:
+    """The terminal attempt stamps `failed_at` in the same write that reports
+    dead-lettering — otherwise the projector advances past the event while
+    `poisoned_records()` (filtered on `failed_at IS NOT NULL`) never exposes
+    it for repair."""
+    from maistro.events.processing import SqliteProjectionFailureStore
+
+    ticks = iter([100.0, 200.0, 300.0])
+    failures = SqliteProjectionFailureStore(
+        sqlite_conn, max_attempts=2, retry_backoff_seconds=0.0, clock=lambda: next(ticks)
+    )
+    await failures.ensure_schema()
+
+    assert await failures.record_failure("ev-1", "ws:1", "ValueError: first") is False
+    retryable = await failures.get("ev-1")
+    assert retryable is not None and retryable.poisoned_at is None
+
+    assert await failures.record_failure("ev-1", "ws:1", "ValueError: second") is True
+    dead = await failures.poisoned_records()
+    assert [record.event_id for record in dead] == ["ev-1"]
+    assert dead[0].attempts == 2
+    assert dead[0].poisoned_at == 200.0
+
+    # The disposition is terminal: a later failed attempt neither increments
+    # the attempt count nor moves the poison timestamp.
+    assert await failures.record_failure("ev-1", "ws:1", "ValueError: third") is True
+    still = (await failures.poisoned_records())[0]
+    assert (still.attempts, still.poisoned_at) == (2, 200.0)
+
+
 async def test_sqlite_projection_store_upgrades_a_preexisting_log(sqlite_conn) -> None:
     """A database created before #2506 gains the source column in place."""
     from maistro.sqlite_schema import serialized_schema_upgrade

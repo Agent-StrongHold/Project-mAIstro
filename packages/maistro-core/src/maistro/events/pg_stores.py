@@ -1019,6 +1019,7 @@ class PgProjectionFailureStore:
 
     async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
         """Persist one failed attempt; return whether the row is now dead-lettered."""
+        now = self._clock()
         row = await self._pool.fetchrow(
             """INSERT INTO canonical_projection_failures
                (event_id, stream_id, attempts, last_error, next_attempt_at, failed_at)
@@ -1026,13 +1027,19 @@ class PgProjectionFailureStore:
                ON CONFLICT (event_id) DO UPDATE SET
                  attempts = canonical_projection_failures.attempts + 1,
                  last_error = EXCLUDED.last_error,
-                 next_attempt_at = EXCLUDED.next_attempt_at
+                 next_attempt_at = EXCLUDED.next_attempt_at,
+                 failed_at = CASE
+                   WHEN canonical_projection_failures.attempts + 1 >= $5::int
+                   THEN $6::double precision
+                   ELSE canonical_projection_failures.failed_at END
                WHERE canonical_projection_failures.failed_at IS NULL
-               RETURNING attempts""",
+               RETURNING attempts, failed_at""",
             event_id,
             stream_id,
             error[:2048],
-            self._clock() + self._retry_backoff_seconds,
+            now + self._retry_backoff_seconds,
+            self._max_attempts,
+            now,
         )
         if row is None:
             # No RETURNING row: the row is already dead-lettered, and a

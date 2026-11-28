@@ -1076,10 +1076,20 @@ class SqliteProjectionFailureStore:
                ON CONFLICT(event_id) DO UPDATE SET
                  attempts = canonical_projection_failures.attempts + 1,
                  last_error = excluded.last_error,
-                 next_attempt_at = excluded.next_attempt_at
+                 next_attempt_at = excluded.next_attempt_at,
+                 failed_at = CASE
+                   WHEN canonical_projection_failures.attempts + 1 >= ?
+                   THEN ? ELSE canonical_projection_failures.failed_at END
                WHERE canonical_projection_failures.failed_at IS NULL
                RETURNING attempts""",
-            (event_id, stream_id, error[:2048], now + self._retry_backoff_seconds),
+            (
+                event_id,
+                stream_id,
+                error[:2048],
+                now + self._retry_backoff_seconds,
+                self._max_attempts,
+                now,
+            ),
         )
         row = await cursor.fetchone()
         await self._conn.commit()
