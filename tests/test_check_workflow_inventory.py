@@ -168,6 +168,50 @@ class TestDispositions:
         failures = gate.check(root)
         assert any("MANUAL_DIAGNOSTIC must be workflow_dispatch-only" in f for f in failures)
 
+    def test_manual_maintenance_requires_documented_write_controls(self, gate, repo):
+        root, _ = repo
+        manual = _active(
+            ".github/workflows/demo.yml",
+            disposition="MANUAL_MAINTENANCE",
+            triggers=["workflow_dispatch"],
+        )
+        workflow = "name: d\non: workflow_dispatch\njobs: {}\n"
+        _write(root, _inventory([manual]), {"demo.yml": workflow})
+        failures = gate.check(root)
+        assert any("requires `mutation_scope`" in f for f in failures)
+        assert any("requires `operator_control`" in f for f in failures)
+
+    def test_reviewed_manual_maintenance_can_be_dispatch_only(self, gate, repo):
+        root, _ = repo
+        manual = _active(
+            ".github/workflows/demo.yml",
+            disposition="MANUAL_MAINTENANCE",
+            triggers=["workflow_dispatch"],
+            mutation_scope="issues:write native sub-issue edges only",
+            operator_control="designated operator, explicit confirmation",
+        )
+        _write(
+            root,
+            _inventory([manual]),
+            {"demo.yml": "name: d\non: workflow_dispatch\njobs: {}\n"},
+        )
+        assert gate.check(root) == []
+
+    def test_manual_maintenance_cannot_be_event_triggered(self, gate, repo):
+        root, _ = repo
+        manual = _active(
+            ".github/workflows/demo.yml",
+            disposition="MANUAL_MAINTENANCE",
+            triggers=["push"],
+            mutation_scope="issues:write",
+            operator_control="operator-only",
+        )
+        _write(root, _inventory([manual]), {"demo.yml": BRANCH_WORKFLOW})
+        assert any(
+            "MANUAL_MAINTENANCE must be workflow_dispatch-only" in finding
+            for finding in gate.check(root)
+        )
+
     def test_active_dispatch_only_is_rejected(self, gate, repo):
         root, _ = repo
         active = _active(".github/workflows/demo.yml", triggers=["workflow_dispatch"])

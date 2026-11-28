@@ -1,0 +1,85 @@
+name: Native issue hierarchy reconciliation
+
+# Intentionally manual: metadata backfill can touch closed issues and broad
+# roadmap hierarchy. Never run write migration on an unreviewed PR head.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Write native parent/child links (default is read-only)"
+        type: boolean
+        required: true
+        default: false
+      confirm:
+        description: "For apply=true, type APPLY exactly"
+        type: string
+        required: false
+        default: ""
+      max_writes:
+        description: "Maximum newly linked children per invocation (1-50)"
+        type: number
+        required: true
+        default: 25
+      issue_number:
+        description: "Optional single issue number for scoped reconciliation"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: native-issue-hierarchy-reconciliation
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    # Only the canonical branch can hold a write-capable reconciliation runner.
+    if: github.repository == 'Agent-StrongHold/Project-mAIstro' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Reconcile declared and native issue hierarchy
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          APPLY: ${{ inputs.apply }}
+          ACTOR: ${{ github.actor }}
+          CONFIRM: ${{ inputs.confirm }}
+          MAX_WRITES: ${{ inputs.max_writes }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPORT_PATH: ${{ runner.temp }}/issue-hierarchy-reconciliation.json
+        run: |
+          set -euo pipefail
+          # This Issues-write maintenance action is restricted to the
+          # repository's designated operator; a collaborator cannot bypass
+          # review by simply choosing apply=true on a manual dispatch.
+          if [[ "$APPLY" == "true" && "$ACTOR" != "BlakeMatthews-dev" ]]; then
+            echo "::error::native hierarchy mutation requires the designated operator"
+            exit 1
+          fi
+          args=(--report "$REPORT_PATH")
+          if [[ "$APPLY" == "true" ]]; then
+            args+=(--apply --confirm "$CONFIRM" --max-writes "$MAX_WRITES")
+          fi
+          if [[ -n "$ISSUE_NUMBER" ]]; then
+            args+=(--issue-number "$ISSUE_NUMBER")
+          fi
+          python3 scripts/reconcile-issue-hierarchy.py "${args[@]}"
+      - name: Preserve reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-issue-hierarchy-report
+          path: ${{ runner.temp }}/issue-hierarchy-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 90
