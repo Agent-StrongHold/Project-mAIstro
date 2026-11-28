@@ -82,9 +82,9 @@
   "epic": "905",
   "failure_injection": {
     "benign": {
-      "accepted": 6,
-      "billed_usd": 0.000183,
-      "distinct_keys_completed": 6,
+      "accepted": 40,
+      "billed_usd": 0.006216,
+      "distinct_keys_completed": 40,
       "events": [],
       "idempotent_skips": 0,
       "mode": "benign",
@@ -94,7 +94,7 @@
     },
     "billing_cap": {
       "accepted": 3,
-      "billed_usd": 9.1e-05,
+      "billed_usd": 0.000466,
       "distinct_keys_completed": 3,
       "events": [
         "billing-cap-refusal:chat-0003"
@@ -103,14 +103,14 @@
       "mode": "billing_cap",
       "note": "each idempotency key completed at most once; cap refused the rest",
       "rejected_at_ingestion": [],
-      "route_failures": 3
+      "route_failures": 37
     },
     "host_unavailable": {
       "accepted": 0,
       "billed_usd": 0.0,
       "idempotent_skips": 0,
       "mode": "host_unavailable",
-      "note": "failover target after draining salad-4090-032: vast-4090-034",
+      "note": "failover target after draining vast-3090-021: prime-3090-023",
       "rejected_at_ingestion": [],
       "route_failures": 0
     },
@@ -133,25 +133,32 @@
       "mode": "model_mismatch",
       "note": "unregistered cell pre-flight: model_mismatch",
       "rejected_at_ingestion": [],
-      "route_failures": 6
+      "route_failures": 40
     },
     "oom": {
       "accepted": 0,
       "billed_usd": 0.0,
       "idempotent_skips": 0,
       "mode": "oom",
-      "note": "70B class on RTX_4090_24GB pre-flight: oom",
+      "note": "70B class on RTX_3090_24GB pre-flight: oom",
       "rejected_at_ingestion": [],
-      "route_failures": 6
+      "route_failures": 40
     },
     "preemption": {
-      "accepted": 6,
-      "billed_usd": 0.000229,
-      "distinct_keys_completed": 6,
+      "accepted": 40,
+      "billed_usd": 0.006993,
+      "distinct_keys_completed": 40,
       "events": [
         "checkpoint-requeue:chat-0002",
         "checkpoint-requeue:chat-0005",
-        "checkpoint-requeue:chat-0005"
+        "checkpoint-requeue:chat-0005",
+        "checkpoint-requeue:chat-0014",
+        "checkpoint-requeue:chat-0019",
+        "checkpoint-requeue:chat-0022",
+        "checkpoint-requeue:chat-0031",
+        "checkpoint-requeue:chat-0031",
+        "checkpoint-requeue:chat-0037",
+        "checkpoint-requeue:chat-0038"
       ],
       "idempotent_skips": 0,
       "mode": "preemption",
@@ -166,7 +173,7 @@
       "mode": "stale_offer",
       "note": "execution-time re-validation verdict: stale",
       "rejected_at_ingestion": [],
-      "route_failures": 6
+      "route_failures": 40
     }
   },
   "gpu_catalog": [
@@ -278,15 +285,15 @@
       "chat": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00030487,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00155401,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.5628
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 7.9663
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -302,7 +309,7 @@
         },
         "fixed-gpu": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": null,
+          "expected_cost_per_task_usd": 0.00155401,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -310,25 +317,25 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 1.9892
+          "usd_per_mtok_accepted": 7.9663
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00030487,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00155401,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.5628
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 7.9663
         }
       },
       "classification": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00010032,
+          "expected_cost_per_task_usd": 0.00152262,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -336,7 +343,7 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 8.7969
+          "usd_per_mtok_accepted": 133.516
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -352,7 +359,7 @@
         },
         "fixed-gpu": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": null,
+          "expected_cost_per_task_usd": 0.00152262,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -360,11 +367,11 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 8.7969
+          "usd_per_mtok_accepted": 133.516
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00010032,
+          "expected_cost_per_task_usd": 0.00152262,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -372,13 +379,13 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 8.7969
+          "usd_per_mtok_accepted": 133.516
         }
       },
       "code_repair": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00615842,
+          "expected_cost_per_task_usd": 0.00629839,
           "gpu": "A40_48GB",
           "host": "vast",
           "listed_usd_per_hour": 0.48,
@@ -386,7 +393,7 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.5442,
-          "usd_per_mtok_accepted": 14.7532
+          "usd_per_mtok_accepted": 15.0885
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -407,7 +414,7 @@
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00615842,
+          "expected_cost_per_task_usd": 0.00629839,
           "gpu": "A40_48GB",
           "host": "vast",
           "listed_usd_per_hour": 0.48,
@@ -415,21 +422,21 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.5442,
-          "usd_per_mtok_accepted": 14.7532
+          "usd_per_mtok_accepted": 15.0885
         }
       },
       "extraction": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00071203,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00162085,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.5082
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 3.4333
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -445,7 +452,7 @@
         },
         "fixed-gpu": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": null,
+          "expected_cost_per_task_usd": 0.00162085,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -453,25 +460,25 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 2.1524
+          "usd_per_mtok_accepted": 3.4333
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00071203,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00162085,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.5082
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 3.4333
         }
       },
       "planning": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.01599521,
+          "expected_cost_per_task_usd": 0.01635874,
           "gpu": "A40_48GB",
           "host": "vast",
           "listed_usd_per_hour": 0.48,
@@ -479,7 +486,7 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.5442,
-          "usd_per_mtok_accepted": 16.9907
+          "usd_per_mtok_accepted": 17.3768
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -500,7 +507,7 @@
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.01599521,
+          "expected_cost_per_task_usd": 0.01635874,
           "gpu": "A40_48GB",
           "host": "vast",
           "listed_usd_per_hour": 0.48,
@@ -508,21 +515,21 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.5442,
-          "usd_per_mtok_accepted": 16.9907
+          "usd_per_mtok_accepted": 17.3768
         }
       },
       "summarization": {
         "cheapest-eligible": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00111757,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00167521,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.648
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 2.4703
         },
         "cheapest-listed": {
           "availability_probability": 0.1,
@@ -538,7 +545,7 @@
         },
         "fixed-gpu": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": null,
+          "expected_cost_per_task_usd": 0.00167521,
           "gpu": "RTX_3090_24GB",
           "host": "vast",
           "listed_usd_per_hour": 0.21,
@@ -546,19 +553,19 @@
           "price_basis": "verified",
           "reason": "",
           "risk_adjusted_usd_per_gpu_hour": 0.2599,
-          "usd_per_mtok_accepted": 2.4154
+          "usd_per_mtok_accepted": 2.4703
         },
         "quality-adjusted": {
           "availability_probability": 0.95,
-          "expected_cost_per_task_usd": 0.00111757,
-          "gpu": "RTX_4090_24GB",
-          "host": "salad",
-          "listed_usd_per_hour": 0.32,
-          "offer": "salad-4090-032",
+          "expected_cost_per_task_usd": 0.00167521,
+          "gpu": "RTX_3090_24GB",
+          "host": "vast",
+          "listed_usd_per_hour": 0.21,
+          "offer": "vast-3090-021",
           "price_basis": "verified",
           "reason": "",
-          "risk_adjusted_usd_per_gpu_hour": 0.3757,
-          "usd_per_mtok_accepted": 1.648
+          "risk_adjusted_usd_per_gpu_hour": 0.2599,
+          "usd_per_mtok_accepted": 2.4703
         }
       }
     },

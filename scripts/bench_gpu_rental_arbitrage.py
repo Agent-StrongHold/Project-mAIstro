@@ -441,11 +441,15 @@ def redo_multiplier(offer: MarketplaceOffer) -> float:
     """Cost multiplier for preemption redo on checkpointed work.
 
     A preempted attempt resumes from its checkpoint, so only the post-
-    checkpoint work repeats: PREEMPTION_RATE of attempts repeat half a task.
+    checkpoint half of a task repeats. The replay executor retries until
+    completion with a fresh preemption draw per attempt, so the expected
+    number of preemptions before completion is p / (1 - p), each costing
+    half a task: multiplier = 1 + 0.5 * p / (1 - p).
     """
     if not offer.preemptible:
         return 1.0
-    return 1.0 + PREEMPTION_RATE * 0.5
+    p = PREEMPTION_RATE
+    return 1.0 + 0.5 * p / (1.0 - p)
 
 
 def risk_adjusted_hourly_cost(offer: MarketplaceOffer) -> float:
@@ -467,21 +471,23 @@ def expected_accepted_task_cost(
     """USD per ACCEPTED task on this offer, or math.inf when never viable.
 
     Decomposition (all authored model, documented here on purpose):
-    - per-attempt cost = risk-adjusted GPU-hour * (decode seconds + amortized
-      warmup + amortized provisioning queue) / 3600;
+    - per-attempt cost = risk-adjusted GPU-hour * max(modeled session
+      seconds, offer.min_duration_hours) amortized over SESSION_TASKS — the
+      rental minimum is honored at session level before amortization, so a
+      short session still pays for the whole minimum billable window;
     - acceptance = record.acceptance * offer.reliability — retries are priced
       as 1/acceptance (the expected number of attempts per accepted task);
     - preemption redo adds redo_multiplier on preemptible offers.
     """
     out_tokens = output_tokens_per_task(workload)
     gpu_seconds = out_tokens / record.decode_tokens_per_s
-    warmup_share = record.warmup_seconds / SESSION_TASKS
-    queue_share = offer.start_time_seconds / SESSION_TASKS
+    session_seconds = record.warmup_seconds + offer.start_time_seconds + SESSION_TASKS * gpu_seconds
+    billable_seconds = max(session_seconds, offer.min_duration_hours * 3600.0)
     acceptance = record.acceptance * offer.reliability
     if acceptance <= 0.0 or gpu_seconds <= 0.0:
         return math.inf
-    per_task = risk_adjusted_hourly_cost(offer) * (gpu_seconds + warmup_share + queue_share)
-    per_task = per_task / 3600.0 / acceptance
+    per_task = risk_adjusted_hourly_cost(offer) * billable_seconds / 3600.0 / SESSION_TASKS
+    per_task = per_task / acceptance
     return per_task * redo_multiplier(offer)
 
 
@@ -960,10 +966,17 @@ def run_replay(
 def _describe_route(
     pick: MarketplaceOffer | None, why: str, cost: float, workload: WorkloadClass
 ) -> dict[str, object]:
-    """One route's selection, priced on the expected-cost model."""
+    """One route's selection, priced on the expected-cost model.
+
+    Any serviceable pick (compatible capability record, VRAM fit) gets a
+    finite expected accepted-task cost; null is reserved for picks that
+    genuinely cannot serve the workload.
+    """
     if pick is None:
         return {"offer": None, "reason": why, "expected_cost_per_task_usd": None}
     record = capability_for(pick, workload)
+    if cost == math.inf and record is not None and record.compatible and vram_fit(pick, workload):
+        cost = expected_accepted_task_cost(pick, record, workload)
     mtok = math.inf if record is None else dollars_per_mtok_accepted(pick, record, workload)
     return {
         "offer": pick.offer_id,
@@ -1183,7 +1196,9 @@ def run_benchmark(
         "capability_registry": _registry_section(registry),
         "gpu_catalog": _gpu_catalog_section(),
         "routes": route_comparison(seed, tasks_per_class, now),
-        "failure_injection": {mode: run_replay(mode, seed, now) for mode in failure_modes},
+        "failure_injection": {
+            mode: run_replay(mode, seed, now, tasks_per_class) for mode in failure_modes
+        },
         "annual_sensitivity_usd": {str(h): annual_tco(h) for h in hours_values},
         "trust_controls": {
             "network_io": "none; the harness imports no network module (asserted by tests)",

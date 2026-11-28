@@ -307,16 +307,60 @@ class TestExpectedCost:
         assert worse_cost == pytest.approx(base * record.acceptance / 0.5, rel=1e-12)
 
     def test_preemption_redo_multiplier_only_on_preemptible(self) -> None:
+        """Expected redo = 1 + 0.5*p/(1-p): the executor retries with a fresh
+        preemption draw per attempt until completion, so the expected number
+        of preemptions before completion is the geometric mean p/(1-p), each
+        costing the post-checkpoint half."""
         fixed = _offer(preemptible=False)
         loose = _offer(preemptible=True)
         assert bench.redo_multiplier(fixed) == 1.0
-        assert bench.redo_multiplier(loose) == pytest.approx(1.0 + bench.PREEMPTION_RATE * 0.5)
+        p = bench.PREEMPTION_RATE
+        assert bench.redo_multiplier(loose) == pytest.approx(1.0 + 0.5 * p / (1.0 - p))
+        assert bench.redo_multiplier(loose) == pytest.approx(1.125)  # p = 0.2
 
     def test_zero_acceptance_is_never_viable(self) -> None:
         dead = bench.CapabilityRecord(True, 50.0, 0.0, 0.0)
         cost = bench.expected_accepted_task_cost(_offer(), dead, _workload())
         assert cost == math.inf
         assert bench.dollars_per_mtok_accepted(_offer(), dead, _workload()) == math.inf
+
+    def test_minimum_rental_duration_binds_on_short_sessions(self) -> None:
+        """A session shorter than the rental minimum still pays the minimum."""
+        offer = _offer(min_duration_hours=24.0)
+        workload = _workload()
+        record = bench.capability_for(offer, workload)
+        assert record is not None
+        cost = bench.expected_accepted_task_cost(offer, record, workload)
+        gpu_seconds = bench.output_tokens_per_task(workload) / record.decode_tokens_per_s
+        session_seconds = (
+            record.warmup_seconds + offer.start_time_seconds + bench.SESSION_TASKS * gpu_seconds
+        )
+        assert session_seconds < offer.min_duration_hours * 3600.0
+        expected = (
+            bench.risk_adjusted_hourly_cost(offer)
+            * offer.min_duration_hours
+            * 3600.0
+            / 3600.0
+            / bench.SESSION_TASKS
+            / (record.acceptance * offer.reliability)
+            * bench.redo_multiplier(offer)
+        )
+        assert cost == pytest.approx(expected, rel=1e-12)
+
+    def test_minimum_rental_duration_is_inert_when_session_is_longer(self) -> None:
+        """Raising the minimum below the session length leaves cost unchanged."""
+        # Slow decode stretches the session well past a 24h minimum.
+        workload = _workload()
+        tokens = bench.output_tokens_per_task(workload)
+        record = bench.CapabilityRecord(True, tokens / 600.0, 0.9, 60.0)
+        gpu_seconds = tokens / record.decode_tokens_per_s
+        session_seconds = 60.0 + 120.0 + bench.SESSION_TASKS * gpu_seconds
+        assert session_seconds > 24.0 * 3600.0
+        one_hour = bench.expected_accepted_task_cost(_offer(), record, workload)
+        raised = bench.expected_accepted_task_cost(
+            _offer(min_duration_hours=24.0), record, workload
+        )
+        assert raised == pytest.approx(one_hour, rel=1e-12)
 
     def test_per_mtok_diagnostic_is_cost_over_tokens(self) -> None:
         offer = _offer()
@@ -550,8 +594,12 @@ class TestFailureInjection:
         payload = bench.run_replay("host_unavailable", tasks_per_class=4)
         assert payload["route_failures"] == 0
         assert "failover target" in str(payload["note"])
-        assert "salad-4090-032" in str(payload["note"])
-        assert "vast-4090-034" in str(payload["note"])
+        # With minimum rental durations honored, a sub-hour chat session bills
+        # every offer a full hour, so the ranking is decided by risk-adjusted
+        # hourly cost: vast-3090-021 wins outright and prime-3090-023 (not
+        # salad-4090-032's premium hourly) takes the drained-host failover.
+        assert "vast-3090-021" in str(payload["note"])
+        assert "prime-3090-023" in str(payload["note"])
 
     def test_unknown_selection_failure_fails_closed(self) -> None:
         """An empty candidate set reports route failures, not fake success."""

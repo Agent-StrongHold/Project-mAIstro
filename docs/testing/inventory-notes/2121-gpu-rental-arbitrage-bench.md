@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +66
+  tests/: +68
 ---
 
 # 2121 opportunistic GPU-rental arbitrage research bench
@@ -30,8 +30,14 @@ All additions, no removals:
   Pure stdlib, offline: it imports no network module, reads no quality ledger,
   provisions nothing, spends nothing, and emits no wall-clock field — the
   report is byte-identical across reruns.
-- `tests/test_bench_gpu_rental_arbitrage.py` — **+66 tests** in the root
-  `tests/` suite: the versioned offer schema (valid offer eligible; wrong
+- `tests/test_bench_gpu_rental_arbitrage.py` — **+68 tests** in the root
+  `tests/` suite (+66 in the initial bench round; +2 in the salvage round
+  that priced the rental minimum into `expected_accepted_task_cost`: the
+  minimum binds on sessions shorter than the billable window, and is inert
+  once the session outgrows it; the redo-multiplier pin moved from the
+  single-preemption 1 + 0.5·p to the geometric 1 + 0.5·p/(1−p) that the
+  replay executor's retry-until-completion loop actually implies): the
+  versioned offer schema (valid offer eligible; wrong
   schema version, non-finite/negative/zero prices, negative CPU rate,
   expired TTL with the boundary pinned exclusive, unapproved host, sub-floor
   reliability, zero capacity, unknown GPU each rejected by a stable reason;

@@ -83,11 +83,17 @@ including no wall-clock field):
   path) reject before any registry guess could.
 - **Ranking on expected accepted-task cost** — risk-adjusted GPU-hour (full
   hourly cost incl. amortized storage/egress ÷ modeled availability) ×
-  (decode seconds + amortized warmup + amortized provisioning queue) ÷ 3600 ÷
-  acceptance (retries priced as attempts-per-accepted-task) × preemption redo
-  multiplier (preemptible attempts repeat their post-checkpoint half at
-  `PREEMPTION_RATE`). Secondary diagnostics: risk-adjusted $/GPU-hour and
-  $/million accepted output tokens.
+  max(modeled session seconds — warmup + provisioning start + decode —,
+  minimum-rental window) ÷ 3600 ÷ `SESSION_TASKS` ÷ acceptance (retries
+  priced as attempts-per-accepted-task) × preemption redo multiplier. The
+  rental minimum is honored at session level, before amortization: a session
+  shorter than the minimum still pays the whole minimum billable window. The
+  redo multiplier is geometric, `1 + 0.5·p/(1−p)` at `PREEMPTION_RATE = p`:
+  the replay executor retries a preempted task until completion with a fresh
+  preemption draw per attempt, so the expected number of preemptions before
+  completion is p/(1−p), each repeating the post-checkpoint half. Secondary
+  diagnostics: risk-adjusted $/GPU-hour and $/million accepted output
+  tokens.
 - **Routes** — `fixed-gpu` (pinned RTX 3090, cheapest eligible listing for it),
   `cheapest-listed` (the naive price sort), `cheapest-eligible` (full
   eligibility + expected-cost minimum), `quality-adjusted` (cheapest-eligible
@@ -114,22 +120,32 @@ authored model):
 
 | workload        | fixed-gpu (3090)  | cheapest-listed        | cheapest-eligible | exp. ¢/task | $/M-acc-tok |
 |-----------------|-------------------|------------------------|-------------------|------------:|------------:|
-| chat            | vast-3090-021     | lead-3060-002 (trap)   | salad-4090-032    | 0.0305      | 1.56        |
-| classification  | vast-3090-021     | lead-3060-002 (trap)   | vast-3090-021     | 0.0100      | 8.80        |
-| extraction      | vast-3090-021     | lead-3060-002 (trap)   | salad-4090-032    | 0.0712      | 1.51        |
-| summarization   | vast-3090-021     | lead-3060-002 (trap)   | salad-4090-032    | 0.1118      | 1.65        |
-| code_repair     | FAILS (mismatch)  | lead-3060-002 (trap)   | vast-a40-048      | 0.6158      | 14.75       |
-| planning        | FAILS (mismatch)  | lead-3060-002 (trap)   | vast-a40-048      | 1.5995      | 16.99       |
+| chat            | vast-3090-021     | lead-3060-002 (trap)   | vast-3090-021     | 0.1554      | 7.97        |
+| classification  | vast-3090-021     | lead-3060-002 (trap)   | vast-3090-021     | 0.1523      | 133.52      |
+| extraction      | vast-3090-021     | lead-3060-002 (trap)   | vast-3090-021     | 0.1621      | 3.43        |
+| summarization   | vast-3090-021     | lead-3060-002 (trap)   | vast-3090-021     | 0.1675      | 2.47        |
+| code_repair     | FAILS (mismatch)  | lead-3060-002 (trap)   | vast-a40-048      | 0.6298      | 15.09       |
+| planning        | FAILS (mismatch)  | lead-3060-002 (trap)   | vast-a40-048      | 1.6359      | 17.38       |
 
 - **The naive route loses everywhere.** `cheapest-listed` selects the
   $0.02/h lead for every class; priced at its availability it is the most
   expensive option in the feed per reliable GPU-hour ($0.5694 risk-adjusted,
-  vs $0.3579 for the verified salad 4090 it loses to on chat). Even the
-  advertised 4090 lead — which has a capability cell and passes VRAM — loses
-  on expected cost to a verified offer with a *higher sticker price*. That is
-  the arbitrage question's actual answer at the mechanism level: **arbitrage
+  vs $0.2599 for the verified vast 3090 that wins chat). Even the advertised
+  4090 lead — which has a capability cell and passes VRAM — loses on expected
+  cost to a verified offer with a *higher sticker price*. That is the
+  arbitrage question's actual answer at the mechanism level: **arbitrage
   is real only after verification; before it, the cheap listing is the most
   expensive route.**
+- **The rental minimum is priced, not ignored.** Every feed offer carries a
+  1-hour minimum; honoring it at session level means a chat task decoding in
+  seconds still bills the full minimum window amortized over `SESSION_TASKS`,
+  so expected ¢/task tracks the risk-adjusted hourly rate and the cheapest
+  verified 3090 wins every light class (the premium salad 4090 loses on its
+  hourly once both pay the same window). The same amortization is why the
+  tiny classification workload shows the highest $/M-acc-tok (133.5): its
+  few output tokens spread over a fixed billable window. Fixed-gpu and
+  cheapest-listed rows carry finite expected costs wherever the pick can
+  serve the workload; null is reserved for picks that cannot serve it at all.
 - **Capability beats price, and fixed hardware under-covers.** The heavy
   classes (70B) have verified cells only on the A40 48 GB — every 24 GB route
   fails closed for them regardless of price. The fixed-3090 operator saves
@@ -138,14 +154,14 @@ authored model):
   verified cells all clear the 0.85 acceptance floor, so the route's cost is
   the constraint expression, exercised by tests rather than by the record.
 
-Failure injection (20-task chat batch, authored billing model; "keys" =
+Failure injection (40-task chat batch, authored billing model; "keys" =
 distinct completed idempotency keys):
 
 | mode             | accepted | billed (model $) | keys | behavior pinned |
 |------------------|---------:|-----------------:|-----:|-----------------|
-| benign           | 20       | 0.000610         | 20   | baseline spend |
-| preemption       | 20       | > benign         | 20   | checkpoint/requeue; redo tail billed; **no key completes twice, no accepted task billed twice** |
-| billing_cap      | 3        | ≤ benign         | 3    | cap refuses the rest, fail-closed |
+| benign           | 40       | 0.006216         | 40   | baseline spend |
+| preemption       | 40       | 0.006993         | 40   | checkpoint/requeue; redo tail billed; **no key completes twice, no accepted task billed twice** |
+| billing_cap      | 3        | 0.000466         | 3    | cap refuses the rest, fail-closed |
 | stale_offer      | 0        | 0                | —    | execution-time re-validation refuses the fresh-at-ranking offer |
 | host_unavailable | 0        | 0                | —    | drained offer dropped; SAME selection path re-ranks the rest (failover target found) |
 | oom              | 0        | 0                | —    | 70B on a verified 24 GB cell rejected at pre-flight, before any rental |
