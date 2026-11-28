@@ -143,7 +143,15 @@ async def test_stalled_ownership_probe_does_not_block_the_loop(
     await beat
 
     assert [e["status"] for e in events] == ["completed"]
-    assert max_gap < 0.25, f"event loop stalled for {max_gap:.2f}s"
+    # The bound must sit between the runner's scheduling noise floor and the
+    # stall it exists to catch (_STALL_S = 2.0). 0.25s sat below the noise
+    # floor: hosted CI measured a 0.38s heartbeat gap on a green tree (#2538
+    # lane, run 46136926512) and failed this assertion with no loop-blocking
+    # regression — a GC pause or CFS throttle on the shared runner registers
+    # directly on this same loop's wall clock. 1.0s clears the observed noise
+    # by >2.5x and keeps a 2x margin below the stall, so an on-loop probe
+    # (~2s gap) still fails hard.
+    assert max_gap < 1.0, f"event loop stalled for {max_gap:.2f}s"
 
 
 async def test_cancelling_the_stream_mid_stall_returns_promptly(

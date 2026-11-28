@@ -156,3 +156,20 @@ version); all scans `--redact`.
 - Repo gates re-run on the merged head: `check-release-consistency.py` and
   `check-security-inventory.py` pass; `ruff check .` clean (no Python
   changed).
+
+## Third round: the hosted `test` gate flake
+
+After the hosted SAST turned green at the merged head, the only remaining red
+was the `test` job (run 46136926512, job 140954186898): a single timing
+assertion in the Hive Conductor suite,
+`test_stalled_ownership_probe_does_not_block_the_loop`, failed with
+`event loop stalled for 0.38s` against a 0.25s heartbeat bound. The lane's
+diff contains no Python (three non-Python files only), the test passed 5/5
+locally in isolation, and the full backend suite passed locally twice
+(4655 passed, 121 skipped) — the gap is runner scheduling noise (GC pause /
+CFS throttle on a shared runner), and 0.25s sat below that noise floor.
+The bound is re-calibrated to 1.0s — >2.5x the observed noise, still half the
+2s stall the test exists to catch — with a red-check proving a genuinely
+pinned loop registers a ≥1.9s gap and still fails the assertion. Details and
+inventory impact (+0): `docs/testing/inventory-notes/2538-lane-task-stream-
+heartbeat-bound-recalibration.md`.

@@ -150,6 +150,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Task-stream heartbeat bound re-calibrated to the runner noise floor (#2538 lane).**
+  The stalled-ownership-probe event-loop test asserted a 0.25s heartbeat gap —
+  below the scheduling noise a loaded CI runner registers on the same wall
+  clock (a green tree measured 0.38s, failing the job with no loop-blocking
+  regression). The bound moves to 1.0s: >2.5x the observed noise floor and
+  still half the 2s stall the test exists to catch, so an on-loop probe fails
+  the assertion just as hard. Red-checked both ways: a loop genuinely pinned
+  for 2s registers a ≥1.9s gap; the off-loop probe keeps gaps well under the
+  new bound.
+
 - **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
   Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
   `_maistro_replayed` marker) instead of collapsing to a text-only
