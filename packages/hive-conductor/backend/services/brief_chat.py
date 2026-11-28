@@ -20,8 +20,10 @@ live in `maistro.agents.brief_interview`.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from maistro.agents.brief_interview import (
@@ -64,6 +66,8 @@ _CHANGE_WHAT = re.compile(r"^\s*(change|something|no\b|wrong|different)", re.I)
 _SCRIPT: BriefScript = VIDEO_BRIEF_SCRIPT
 _ALIASES = VIDEO_BRIEF_ALIASES
 
+logger = logging.getLogger(__name__)
+
 _INTRO = (
     "Good. That's new work, so it becomes a Goal I'm accountable for, with a brief "
     "and a run you can watch. Before I commit anything I want to understand it, so a "
@@ -82,6 +86,17 @@ class BriefTurn:
     draft: dict[str, Any] | None = None
     commit: dict[str, Any] | None = None
     citations: list[str] = field(default_factory=list)
+    #: Relevant durable user-model facts, recalled through the ONE shared
+    #: :class:`UserModelService` (issue #7 row 18 / #777 / #1047) when the
+    #: interview opened. ``None`` — the key is omitted, never an empty list
+    #: dressed up as a read model — when the shared surface is unavailable,
+    #: so the payload cannot confuse "recalled nothing" with "could not read".
+    user_context: list[dict[str, Any]] | None = None
+    #: The Workspace's Attention projection (the shared ``services.attention``
+    #: read model, #1049), attached when the interview opened so the surface
+    #: shows what is waiting the moment new work starts. ``None`` when the
+    #: caller is somehow not a member or the projection is unavailable.
+    attention: dict[str, Any] | None = None
 
     @property
     def _written(self) -> list[dict[str, Any]]:
@@ -119,6 +134,14 @@ class BriefTurn:
         out["written"] = self._written
         if self.commit is not None:
             out["commit"] = self.commit
+        # Shared-surface context rides the payload only when it was actually
+        # recalled: an unavailable user model or Attention projection omits
+        # the key rather than shipping a lookalike empty value (row 18).
+        if self.user_context is not None:
+            out["user_context"] = self.user_context
+        if self.attention is not None:
+            out["attention"] = self.attention
+        out["citations"] = list(self.citations)
         return out
 
 
@@ -209,7 +232,37 @@ def _reflect(reply: BriefReply) -> str:
             return ""
 
 
-def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
+async def _shared_surface_context(
+    user_id: str, workspace_id: str, text: str
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """What the one shared user model and Attention projection say (row 18).
+
+    The interview is Design Studio's work-opening flow (#777): the turn that
+    opens work is where the same persistent surfaces join, so the reply can
+    carry them without the interview growing a private variant of either.
+    User-model recall goes through ``services.user_model`` (which composes
+    the one ``UserModelService``) and Attention through the shared
+    ``services.attention`` projection — never a local store. Both answers
+    degrade to ``None`` on unavailability: the interview keeps its
+    deterministic phrasing either way, because this context is data in the
+    payload, never prose interpolated into the reply.
+    """
+    from services.attention import list_attention
+    from services.user_model import recall_for_design_task
+
+    recalled = await recall_for_design_task(user_id, text, workspace_id=workspace_id)
+    try:
+        attention = await list_attention(user_id, workspace_id, now=datetime.now(UTC))
+    except Exception:
+        # The Attention projection is a read-time aggregation over the run
+        # store, messages and proposals; its outage must not fail the work
+        # opening either. Loud, then omitted.
+        logger.exception("design_attention_projection_failed")
+        attention = None
+    return recalled, attention
+
+
+async def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     state = start_brief_interview(_SCRIPT, text)
     brief_store.save_interview(user_id, workspace_id, state)
     pre = [
@@ -220,11 +273,23 @@ def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     intro = _INTRO + (
         " From what you just said I already have " + "; ".join(pre) + "." if pre else ""
     )
+    # Row 18 (#777/#773): the work opening consumes the same persistent
+    # Workspace Agent surfaces — the one user model and the shared Attention
+    # projection — instead of product-private variants. Both are payload
+    # data; the deterministic phrasing above is unchanged either way.
+    recalled, attention = await _shared_surface_context(user_id, workspace_id, text)
+    citations = ["interview: video_brief", "no write"]
+    if recalled:
+        citations.append(f"user-model: recalled {len(recalled)} fact(s)")
+    if attention and attention.get("items"):
+        citations.append(f"attention: {len(attention['items'])} waiting item(s)")
     return BriefTurn(
         text=f"{intro} {_next_text(state)}",
         event="started",
         brief=_view(state),
-        citations=["interview: video_brief", "no write"],
+        citations=citations,
+        user_context=recalled,
+        attention=attention,
     )
 
 
@@ -364,7 +429,9 @@ async def brief_turn(user_id: str, workspace_id: str | None, text: str) -> Brief
         brief_store.clear_interview(user_id, workspace_id)
         state = None
     if state is None:
-        return _start(user_id, workspace_id, text) if _WORK_REQUEST.search(text) else None
+        if _WORK_REQUEST.search(text):
+            return await _start(user_id, workspace_id, text)
+        return None
     if brief_ready(_SCRIPT, state) and _COMMIT.match(text):
         return await _drafted(user_id, workspace_id, state)
     return _answered(user_id, workspace_id, state, text)

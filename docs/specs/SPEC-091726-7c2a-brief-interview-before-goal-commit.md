@@ -33,6 +33,7 @@ tests:
   - packages/hive-conductor/backend/tests/test_program_brief_routes.py
   - packages/hive-conductor/backend/tests/test_chat_brief_interview.py
   - packages/hive-conductor/backend/tests/test_brief_commit.py
+  - packages/hive-conductor/backend/tests/test_design_shared_surfaces.py
 source:
   - packages/maistro-core/src/maistro/agents/brief_interview.py
   - packages/hive-conductor/backend/routes/program.py
@@ -54,6 +55,7 @@ ac-modules:
   AC-12: '@flat/hive-conductor/services.brief_commit'
   AC-13: '@flat/hive-conductor/services.brief_commit'
   AC-14: '@flat/hive-conductor/services.brief_commit'
+  AC-15: '@flat/hive-conductor/services.brief_chat'
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -350,6 +352,17 @@ Feature: A requirements interview precedes every Goal and CreativeBrief commit
     Then the reply names the limitation as unavailable and writes nothing
     And the interview stays open with its recoverable draft
     And the same confirmation can be retried once the prerequisite is wired
+
+  @AC-15
+  Scenario: The work opening carries shared persistent context, never a private lookalike
+    Given the owner's durable user-model facts recallable under the PERSONAL cap
+    And the Workspace's shared Attention projection carries a waiting item
+    When the interview is started from a work-request turn
+    Then the opening turn names the owner's topically relevant facts with their provenance
+    And a foreign owner's fact and an irrelevant fact never appear
+    And a SENSITIVE fact is omitted at this surface even when topically relevant
+    And the waiting Attention item reaches the opening turn as the projection classified it
+    And a shared surface that is unavailable omits its payload key without failing the turn
 ```
 
 ## Rollout

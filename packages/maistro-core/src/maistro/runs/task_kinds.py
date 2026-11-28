@@ -38,6 +38,10 @@ DELEGATE_NODE_KIND = "agent.delegate_remote"
 #: target refusal rather than an authorized system submission.
 DIRECT_SUBMISSION_AGENT = "__maistro_direct__"
 
+#: Sender on the in-process delegation node of a Goal pursuit Run. Keep this
+#: stable: queued Graph snapshots carry the literal, including after restart.
+GOAL_RECONCILIATION_AGENT = "__maistro_goal_reconciliation__"
+
 #: Node name used when a task carries no better label.
 DEFAULT_WORK_NAME = "task"
 
@@ -98,6 +102,7 @@ __all__ = [
     "DEFAULT_WORK_NAME",
     "DELEGATE_NODE_KIND",
     "DIRECT_SUBMISSION_AGENT",
+    "GOAL_RECONCILIATION_AGENT",
     "DirectWork",
     "resolve_direct_work",
 ]

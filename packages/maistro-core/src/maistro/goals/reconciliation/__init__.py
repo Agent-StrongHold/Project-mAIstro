@@ -1,13 +1,14 @@
-"""Goal reconciliation control-loop mechanics (M3 #806).
+"""Goal reconciliation control loop (M3 #806/#805).
 
-This subpackage owns the *mechanics* of the Workspace Agent reconciliation
-loop: durable wakeups, one claim/lease/fence per Goal, idempotent decisions,
-bounded sweeps, and restart-safe convergence. It does not own what a
-reconciliation *decision* means (#805) and it is not a second scheduler,
+This subpackage owns the Workspace Agent reconciliation loop: durable
+wakeups, one claim/lease/fence per Goal, idempotent decisions, bounded
+sweeps, and restart-safe convergence (the *mechanics*, #806) plus the
+production decision semantics composed onto them (``production.py``, the
+#805 decide-half and its physical admitter). It is not a second scheduler,
 execution authority, or execution queue: physical work stays canonical
-``Goal -> Graph -> Run -> NodeRun -> Attempt`` (SPEC-177), and this module
-only records derived control metadata about which reconciler may act for a
-Goal and when.
+``Goal -> Graph -> Run -> NodeRun -> Attempt`` (SPEC-177), and every control
+record here is derived metadata about which reconciler may act for a Goal
+and when.
 
 The Goal *ontology* itself lives one level up in ``maistro.goals`` (#1572,
 the canonical durable Goal store); this control plane composes over Goal
@@ -22,6 +23,14 @@ from maistro.goals.reconciliation.model import (
     GoalStatus,
     WakeFact,
     WakeReason,
+)
+from maistro.goals.reconciliation.production import (
+    DISCOVERY_CORRELATION,
+    GOAL_RECONCILIATION_AGENT,
+    FactDrivenReconciliationPolicy,
+    GoalDelegationUnsupported,
+    GoalPursuitUnresolvable,
+    GoalRunAdmitter,
 )
 from maistro.goals.reconciliation.reconciler import (
     GoalReconciler,
@@ -45,16 +54,22 @@ from maistro.goals.reconciliation.wiring import (
 )
 
 __all__ = [
+    "DISCOVERY_CORRELATION",
+    "GOAL_RECONCILIATION_AGENT",
     "GOAL_WAKE_PATTERNS",
+    "FactDrivenReconciliationPolicy",
     "Goal",
     "GoalAdmission",
     "GoalBudgetExhausted",
     "GoalCancelled",
     "GoalClaim",
     "GoalDeadlinePassed",
+    "GoalDelegationUnsupported",
     "GoalFacts",
+    "GoalPursuitUnresolvable",
     "GoalReconciler",
     "GoalReconciliationStore",
+    "GoalRunAdmitter",
     "GoalStatus",
     "InMemoryGoalStore",
     "PlannedAdmission",
