@@ -820,6 +820,98 @@ def ledger_only_mode(
     return None
 
 
+# Production tooling with pytest-like names, not executable test files.
+# Keep exceptions exact and reviewed; never exempt an entire source tree.
+NON_TEST_MODULES = frozenset({
+    "packages/maistro-registry/src/maistro_registry/test_paths.py",
+    "packages/maistro-rsi/src/maistro_rsi/test_inventory.py",
+})
+
+
+def unowned_python_tests(paths: list[str], suite_roots: list[str]) -> list[str]:
+    """Find pytest-named tracked files with no declared collection recipe.
+
+    This is the ownership check, not evidence that an owned file collected or
+    executed. Those independent obligations belong to the runner evidence.
+    """
+    prefixes = tuple(root.rstrip("/") + "/" for root in suite_roots)
+    return sorted(
+        path
+        for path in paths
+        if re.fullmatch(r"(?:test_.*|.*_test)\.py", path.rsplit("/", 1)[-1])
+        and path not in NON_TEST_MODULES
+        and not path.startswith(prefixes)
+    )
+
+
+def missing_collected_test_files(
+    paths: list[str], suite: str, node_ids: list[str]
+) -> list[str]:
+    """Compare tracked candidates to runner-reported file identities.
+
+    Pytest may report paths relative to its own root (formal is one example)
+    or to the repository root. Accept only paths belonging to this suite.
+    """
+    prefix = suite.rstrip("/") + "/"
+    expected = {
+        path
+        for path in paths
+        if path.startswith(prefix)
+        and re.fullmatch(r"(?:test_.*|.*_test)\.py", path.rsplit("/", 1)[-1])
+        and path not in NON_TEST_MODULES
+    }
+    actual: set[str] = set()
+    for node_id in node_ids:
+        path = node_id.split("::", 1)[0]
+        if path in expected:
+            actual.add(path)
+        elif prefix + path in expected:
+            actual.add(prefix + path)
+    return sorted(expected - actual)
+
+
+def check_python_discovery(paths: list[str]) -> int:
+    """Require actual collection evidence for every Python recipe."""
+    failed = False
+    for suite, recipe in RECIPES.items():
+        try:
+            count, _command, ids = collect(suite, recipe)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if not ids or len(ids) != count:
+            print(f"error: incomplete collection evidence for {suite}", file=sys.stderr)
+            failed = True
+            continue
+        for path in missing_collected_test_files(paths, suite, ids):
+            print(f"error: tracked test not collected by {suite}: {path}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+def check_python_test_ownership(*, discovery: bool = False) -> int:
+    """Enumerate tracked files, failing closed if Git cannot read the index."""
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"error: cannot enumerate tracked Python files: {exc}", file=sys.stderr)
+        return 2
+    paths = [path for path in proc.stdout.split("\0") if path]
+    missing = unowned_python_tests(paths, list(RECIPES))
+    for path in missing:
+        print(f"error: tracked test has no collection recipe: {path}", file=sys.stderr)
+    if missing:
+        return 1
+    return check_python_discovery(paths) if discovery else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--suite", action="append", help="check only this suite path (repeatable)")
@@ -838,8 +930,18 @@ def main() -> int:
         action="store_true",
         help="fold outstanding deltas into baseline.json (deliberate maintenance)",
     )
+    ap.add_argument("--check-ownership", action="store_true", help="check tracked Python test ownership only")
+    ap.add_argument("--check-discovery", action="store_true", help="verify Python ownership and actual collection")
     args = ap.parse_args()
 
+    if args.check_ownership or args.check_discovery:
+        return check_python_test_ownership(discovery=args.check_discovery)
+
+    return run_inventory(args)
+
+
+def run_inventory(args: argparse.Namespace) -> int:
+    """Run the existing inventory ledger and collection contract."""
     if problems := notes_problems() + table_problems():
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)

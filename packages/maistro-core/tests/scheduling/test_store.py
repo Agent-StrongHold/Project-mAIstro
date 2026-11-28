@@ -101,6 +101,28 @@ async def test_list_is_scoped_to_one_project(store: ScheduleStore) -> None:
     assert [s.name for s in listed] == ["mine"]
 
 
+async def test_list_and_tombstone_follow_canonical_definition(store: ScheduleStore) -> None:
+    """A deleted schedule disappears from the list; re-creation clears its tombstone."""
+    first = await store.put(_schedule(name="first"))
+    second = await store.put(_schedule(name="second"))
+    assert {row.schedule_id for row in await store.list_all()} == {
+        first.schedule_id,
+        second.schedule_id,
+    }
+
+    assert await store.delete(first.schedule_id) is True
+    assert first.schedule_id in await store.tombstoned_ids()
+    assert {row.schedule_id for row in await store.list_all()} == {second.schedule_id}
+
+    restored = await store.put(first)
+    assert restored.schedule_id == first.schedule_id
+    assert first.schedule_id not in await store.tombstoned_ids()
+    assert {row.schedule_id for row in await store.list_all()} == {
+        first.schedule_id,
+        second.schedule_id,
+    }
+
+
 # --- due-ness ---------------------------------------------------------------
 
 
