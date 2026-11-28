@@ -8,6 +8,7 @@ from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import SecretStr
 from services.capabilities_wiring import _register_self_repair, wire_capabilities
 
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.slots.infra import (
@@ -496,6 +497,69 @@ async def test_self_repair_invoker_refuses_a_redirected_binding() -> None:
         await invoke_action("restart_container", {"name": "litellm"}, "effect-k")
 
     assert action.calls == []  # refused before any provider call
+
+
+async def test_self_repair_invoker_advances_effect_identity_after_settlement() -> None:
+    """A settled remediation is never replayed for a later incident (#2405).
+
+    The Invocation ledger returns a COMPLETED row without a provider call, and
+    a repair that reported ``ok=False`` is still COMPLETED — the reviewer's
+    P1: a second failure of the same resource under the caller's permanent
+    key would silently inherit the first result forever. The invoker must
+    keep the key stable within an incident (nothing settled yet) and derive
+    the next generation deterministically once it settles, so later
+    incidents — including retries after an ``ok=False`` result — dispatch.
+    """
+
+    class _ResultSwitchingAction(_WiringAction):
+        """Same operation every time; the outcome is the test's lever."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.ok = False
+
+        async def act(self, action: str, params: dict) -> ActionResult:
+            self.calls.append((action, params))
+            return ActionResult(ok=self.ok, detail="done")
+
+    from services.capabilities_wiring import (
+        _build_self_repair_effect_invoker,
+        _self_repair_binding,
+    )
+
+    reg = default_capability_registry(entry_points=[])
+    action = _ResultSwitchingAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+    reg.activate("infra_monitor", "host_health")
+    reg.activate("infra_action", "host_health")
+
+    binding = _self_repair_binding()
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await register_boot_binding(effects.bindings, binding)
+    invoke_action = _build_self_repair_effect_invoker(reg, effects, binding)
+    key = "self_repair:litellm:restart_container:640d0bd823a04f4e"
+
+    # Incident 1 settles COMPLETED with ok=False (a normal provider result,
+    # not a ledger FAILED) — a later incident must still dispatch.
+    first = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert first.ok is False
+    assert len(action.calls) == 1
+
+    second = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert len(action.calls) == 2, "settled ok=False generation was replayed"
+
+    action.ok = True
+    third = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert third.ok is True
+    assert len(action.calls) == 3, "the second settled generation was replayed"
+
+    records = list(effects.invocation_store._items.values())
+    assert len(records) == 3
+    assert len({record.effect_key for record in records}) == 3, (
+        "each settled incident must carry a distinct effect identity"
+    )
+    assert all(record.effect_key.startswith("self_repair:litellm:restart_container:") for record in records)
 
 
 # --- #2405: durable HITL scope + approval admittor / run-status seams

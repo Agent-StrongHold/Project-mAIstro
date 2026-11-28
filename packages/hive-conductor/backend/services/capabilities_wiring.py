@@ -19,8 +19,13 @@ from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.durable_hitl_approval import admit_self_repair_approval
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
+from maistro.capabilities.self_repair_incident import (
+    chained_episode_token,
+    episode_effect_key,
+)
 from maistro.capabilities.slots.infra import ActionResult, InfraAction
 from maistro.capabilities.slots.self_repair import RepairProposal
 from maistro.capabilities.types import Unavailable
@@ -114,6 +119,46 @@ def _build_self_repair_effect_invoker(
     effect_context: CapabilityEffectContext,
     binding: Binding,
 ) -> Callable[[str, dict[str, Any], str], Any]:
+    # A settled remediation must never be replayed for a later incident
+    # (#2405 review): the Invocation ledger returns a COMPLETED row without a
+    # provider call, and a repair that reported ``ok=False`` is still
+    # COMPLETED — so the caller's permanent ``stable_effect_key`` would make
+    # the second failure of the same operation silently inherit the first
+    # result forever. Each settled generation therefore moves the identity,
+    # deterministically, off durable facts. Same bound as the durable
+    # approval path's episode chain (``MAX_EPISODE_CHAIN``).
+    _MAX_EFFECT_GENERATIONS = 16
+
+    async def _advance_past_settled(effect_key: str) -> str:
+        """The caller's key until it names a settled effect; then its heir.
+
+        Stable within an incident: nothing is settled under the key yet, so
+        the ledger's in-flight guard still converges concurrent re-entry onto
+        one physical effect. The heir chains from the settled row's
+        invocation id, so a restart or a second replica walking the same
+        canonical history derives the same next key. FAILED history stays
+        under the same key — the ledger's own contract admits a fresh
+        dispatch over a failed record; CREATED/RUNNING/UNKNOWN is refused by
+        the ledger at admission, never replayed.
+        """
+        base_token = effect_key.rsplit(":", 1)[-1]
+        key, token = effect_key, base_token
+        for _ in range(_MAX_EFFECT_GENERATIONS):
+            latest = await effect_context.invocations.latest_effect(
+                binding=binding,
+                run_id="self-repair",
+                node_run_id="self-repair",
+                effect_key=key,
+            )
+            if latest is None or latest.status is not InvocationStatus.COMPLETED:
+                return key
+            token = chained_episode_token(token, latest.invocation_id)
+            key = episode_effect_key(effect_key, token, base_token=base_token)
+        raise ValueError(
+            f"self-repair effect {effect_key!r} has {_MAX_EFFECT_GENERATIONS} settled "
+            "generations; refusing to derive a further incident identity"
+        )
+
     async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
         async def resolver(candidate: Binding) -> InfraAction | Unavailable:
             try:
@@ -146,12 +191,13 @@ def _build_self_repair_effect_invoker(
                 "blocked_pending_approval": result.blocked_pending_approval,
             }
 
+        identity = await _advance_past_settled(effect_key)
         invocation = await effect_context.invocations.invoke(
             binding=binding,
             run_id="self-repair",
             node_run_id="self-repair",
-            attempt_id=effect_key,
-            effect_key=effect_key,
+            attempt_id=identity,
+            effect_key=identity,
             request={"action": action, "params": params},
             resolver=resolver,
             executor=executor,

@@ -312,7 +312,14 @@ class RuleBasedRepair:
         return RepairResult(proposal, decision, detail)
 
     async def _invoke_action(self, proposal: RepairProposal) -> ActionResult:
-        """Admit one action through the canonical effect boundary."""
+        """Admit one action through the canonical effect boundary.
+
+        The key is stable within the incident (concurrent re-entry converges
+        on one physical effect); the wired invoker advances its generation
+        past any settled invocation, so a later incident of the same
+        operation dispatches afresh instead of replaying the first result
+        (#2405 review).
+        """
         if self._effect_invoker is None:
             return ActionResult(ok=False, detail="no governed infra_action")
         action = proposal.action or ""
