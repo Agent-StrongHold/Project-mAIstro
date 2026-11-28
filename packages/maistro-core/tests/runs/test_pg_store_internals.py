@@ -22,7 +22,12 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
-from maistro.runs.pg_store import OCCURRENCE_INDEX, PgRunStore, _integrity_failure
+from maistro.runs.pg_store import (
+    EFFECT_CLAIM_INDEX,
+    OCCURRENCE_INDEX,
+    PgRunStore,
+    _integrity_failure,
+)
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_ID_KEY,
@@ -210,6 +215,42 @@ class TestTheOccurrenceClaimIsMatchedByName:
             await store.create_run(
                 graph,
                 provenance={ADMISSION_SOURCE: "task_queue"},
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+
+    async def test_the_effect_claim_index_maps_for_a_run_carrying_both_identities(
+        self,
+    ) -> None:
+        """A self-repair incident claim (#2405) carries BOTH identities, so the
+        insert races the winner on either unique index and PostgreSQL fires
+        whichever it checks first. Both mean "already admitted": the caller
+        re-probes the claim and reconciles, never mints a second Run."""
+        store, graph = await _store_raising(_violation(EFFECT_CLAIM_INDEX))
+
+        with pytest.raises(DuplicateOccurrence) as caught:
+            await store.create_run(
+                graph,
+                provenance={
+                    **_occurrence_provenance(),
+                    "effect_key": "self_repair:r:a:digest16",
+                },
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+
+        assert caught.value.schedule_id == "sched-1"
+
+    async def test_the_effect_claim_index_re_raises_for_a_schedule_firing(
+        self,
+    ) -> None:
+        """A cron firing carries no ``effect_key`` — the effect claim cannot be
+        what refused it, so reporting a duplicate firing would let the
+        admitter carry its cursor past a firing that never happened."""
+        store, graph = await _store_raising(_violation(EFFECT_CLAIM_INDEX))
+
+        with pytest.raises(_AsyncpgViolation):
+            await store.create_run(
+                graph,
+                provenance=_occurrence_provenance(),
                 actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
 

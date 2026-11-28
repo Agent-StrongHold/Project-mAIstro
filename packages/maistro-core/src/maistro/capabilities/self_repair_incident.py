@@ -76,6 +76,27 @@ def stable_effect_key(resource: str, action: str, params: Mapping[str, Any]) -> 
     return f"self_repair:{resource}:{action}:{incident_operation_digest(resource, action, params)[:16]}"
 
 
+def incident_run_effect_key(workspace_id: str, project_id: str, base_effect_key: str) -> str:
+    """The Run-store effect identity: the provider key, scoped canonically.
+
+    ``stable_effect_key`` is deliberately workspace-independent — it names one
+    logical remediation for the Invocation ledger, whose active-effect
+    uniqueness is Run-scoped. Migration 034's ``ix_canonical_runs_effect`` is
+    not: it makes ``provenance.effect_key`` globally unique across every
+    Workspace, so two tenants remediating a like-named resource would refuse
+    each other's admission forever (#2405 real-PostgreSQL evidence — a fresh
+    Workspace's first admission died on the previous Workspace's settled Run).
+    The canonical Run's effect identity therefore re-digests the provider key
+    under the admission scope; the readable provider family prefix survives
+    for observability, and the digest keeps episodes chainable.
+    """
+    digest = hashlib.sha256(
+        f"{workspace_id}\x00{project_id}\x00{base_effect_key}".encode()
+    ).hexdigest()
+    family = base_effect_key.rsplit(":", 1)[0]
+    return f"{family}:{digest[:16]}"
+
+
 def incident_claim_scope(workspace_id: str, project_id: str, resource: str) -> str:
     """The occurrence-claim namespace for one scoped incident."""
     return f"{INCIDENT_CLAIM_PREFIX}:{workspace_id}:{project_id}:{resource}"
@@ -96,6 +117,26 @@ def chained_episode_token(token: str, previous_run_id: str) -> str:
     """
     digest = hashlib.sha256(f"{token}:{previous_run_id}".encode()).hexdigest()
     return digest
+
+
+def episode_effect_key(base_effect_key: str, token: str, *, base_token: str) -> str:
+    """The effect identity of one incident *generation*.
+
+    Migration 034's partial unique index makes ``effect_key`` a one-Run-forever
+    claim: terminal Runs keep their rows, so a settled incident whose next
+    episode reused the episode-0 key could never admit again on PostgreSQL
+    (#2405 real-PostgreSQL evidence — the raw ``ix_canonical_runs_effect``
+    violation). The issue's own contract names the identity a
+    "workspace/resource/**incident-generation** + action/request digest": the
+    key therefore moves with the chained claim token. Episode 0 keeps the
+    plain ``stable_effect_key``; a chained episode derives deterministically
+    from the previous key plus the chained token, so every process computes
+    the same key and the unique index still decides any race.
+    """
+    if token == base_token:
+        return base_effect_key
+    digest = hashlib.sha256(f"{base_effect_key}:{token}".encode()).hexdigest()
+    return f"{base_effect_key.rsplit(':', 1)[0]}:{digest[:16]}"
 
 
 def incident_claim(
@@ -148,10 +189,12 @@ __all__ = [
     "SELF_REPAIR_ADMISSION_SOURCE",
     "chain_incident_claim",
     "chained_episode_token",
+    "episode_effect_key",
     "incident_claim",
     "incident_claim_scope",
     "incident_episode_token",
     "incident_operation_digest",
+    "incident_run_effect_key",
     "is_incident_claim",
     "stable_effect_key",
 ]

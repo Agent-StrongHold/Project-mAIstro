@@ -36,7 +36,11 @@ from maistro.capabilities.self_repair_incident import (
     INCIDENT_RESOURCE_KEY,
     SELF_REPAIR_ADMISSION_SOURCE,
     chain_incident_claim,
+    chained_episode_token,
+    episode_effect_key,
     incident_claim,
+    incident_episode_token,
+    incident_run_effect_key,
     is_incident_claim,
     stable_effect_key,
 )
@@ -250,7 +254,105 @@ def test_chained_claim_is_deterministic_from_durable_facts() -> None:
         chain_incident_claim(claim, "")
 
 
+def test_episode_effect_key_is_stable_for_episode_zero_and_moves_after() -> None:
+    """The key rides the generation: episode 0 keeps the caller's key;
+    a chained token derives a different, still-deterministic key."""
+    base = stable_effect_key("docker:litellm", "restart_container", {"name": "litellm"})
+    base_token = incident_episode_token("docker:litellm", "restart_container", {"name": "litellm"})
+
+    # Episode 0: the identity the caller (RuleBasedRepair) computed.
+    assert episode_effect_key(base, base_token, base_token=base_token) == base
+
+    # A settled successor derives from durable facts alone — the previous key
+    # and the chained token — so a restart and a second replica agree.
+    chained_token = chained_episode_token(base_token, "settled-run")
+    next_key = episode_effect_key(base, chained_token, base_token=base_token)
+    assert next_key != base
+    assert episode_effect_key(base, chained_token, base_token=base_token) == next_key
+    # Same prefix family, so ledger/observability grouping survives.
+    assert next_key.startswith("self_repair:docker:litellm:restart_container:")
+    # A different settled Run chains to a different key: incidents never alias.
+    other = episode_effect_key(
+        base, chained_episode_token(base_token, "other-run"), base_token=base_token
+    )
+    assert other != next_key
+
+
+def test_incident_run_effect_key_scopes_the_provider_key_per_workspace() -> None:
+    """Migration 034's effect index is global across Workspaces; the admitted
+    Run's identity therefore re-digests the workspace-independent provider key
+    under the admission scope."""
+    provider_key = stable_effect_key("docker:litellm", "restart_container", {"name": "litellm"})
+
+    scoped_a = incident_run_effect_key("ws-a", "proj-a", provider_key)
+    scoped_b = incident_run_effect_key("ws-b", "proj-b", provider_key)
+
+    # Distinct tenants never collide on the global index.
+    assert scoped_a != scoped_b
+    assert scoped_a != provider_key
+    # Deterministic for the same scope.
+    assert incident_run_effect_key("ws-a", "proj-a", provider_key) == scoped_a
+    # The readable provider family survives for observability.
+    assert scoped_a.startswith("self_repair:docker:litellm:restart_container:")
+
+
 # --- one incident, one Run ---------------------------------------------------
+
+
+async def test_continuation_collision_converges_to_the_winner_s_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two replicas re-enter the same claimed Run before the winner publishes
+    its first checkpoint: the continuation store's uniqueness is the fence and
+    the loser returns the winner's parked wait — one Run, one approval, zero
+    duplicate effects (#2405 two-replica race)."""
+    from types import SimpleNamespace
+
+    import maistro.capabilities.durable_hitl_approval as dha
+
+    winner_record = SimpleNamespace(
+        run=SimpleNamespace(status=RunStatus.PAUSED, run_id="winner-run")
+    )
+
+    async def colliding_launch(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("run_id collision: 'winner-run'")
+
+    async def get_published(run_id: str) -> Any:
+        # The winner publishes between the loser's refusal and this read.
+        return winner_record if run_id == "winner-run" else None
+
+    monkeypatch.setattr(dha, "run_durable_graph", colliding_launch)
+    record = await dha._launch_admitted_wait(
+        store=SimpleNamespace(get=get_published),
+        run_store=object(),
+        resolver=lambda node_id, graph: None,
+        graph_for=lambda key: None,
+        inputs_for=lambda key: {},
+        base_provenance={},
+        actor="loser",
+        run_id="winner-run",
+        resolved_effect_key="self_repair:x:1",
+    )
+    assert record is winner_record
+
+    # With no published wait the truth surfaces: the claim's winner died
+    # before publishing, and guessing at a replacer is refused.
+    async def never_published(run_id: str) -> Any:
+        return None
+
+    monkeypatch.setattr(dha, "run_durable_graph", colliding_launch)
+    with pytest.raises(ValueError, match="run_id collision"):
+        await dha._launch_admitted_wait(
+            store=SimpleNamespace(get=never_published),
+            run_store=object(),
+            resolver=lambda node_id, graph: None,
+            graph_for=lambda key: None,
+            inputs_for=lambda key: {},
+            base_provenance={},
+            actor="loser",
+            run_id="winner-run",
+            resolved_effect_key="self_repair:x:1",
+        )
 
 
 async def test_concurrent_admission_of_same_incident_converges_on_one_run() -> None:
@@ -310,7 +412,11 @@ async def test_duplicate_occurrence_loser_reconciles_to_winner() -> None:
     resource = "docker:litellm"
     action = "restart_container"
     params = {"name": "litellm"}
-    effect_key = stable_effect_key(resource, action, params)
+    effect_key = incident_run_effect_key(
+        "ws-2405",
+        "project-2405",
+        stable_effect_key(resource, action, params),
+    )
     workspace_id = "ws-2405"
     project_id = "project-2405"
     graph = Graph(
@@ -370,16 +476,23 @@ async def test_duplicate_occurrence_loser_reconciles_to_winner() -> None:
     claim_scope = claim[SCHEDULE_ID_KEY]
     store = _WinnerCommitsBetweenProbeAndInsert()
 
-    run_id, created = await _resolve_incident_claim(
+    run_id, created, resolved_key = await _resolve_incident_claim(
         run_store=store,
-        graph=graph,
-        base_provenance={"effect_key": effect_key},
+        graph_for=lambda key: graph,
+        inputs_for=lambda key: {"effect_key": key},
+        base_provenance={},
+        base_effect_key=effect_key,
+        base_token=episode_token,
         claim=claim,
         actor="loser",
     )
 
     assert created is False
     assert run_id == winner.run_id
+    assert resolved_key == effect_key
+    # The loser's refused insert carried the episode-0 identity: the key does
+    # not move for a live winner, only past a terminal one.
+    assert store.inserts[0]["effect_key"] == effect_key
     # The loser never minted a replacement Run for the live claim.
     assert len(store.inserts) == 1
     # The loser never chained the episode: the winner's claim is still live.
@@ -504,7 +617,11 @@ async def test_crash_window_reenters_the_claimed_run() -> None:
 
     resource = "docker:litellm"
     params = {"name": "litellm"}
-    effect_key = stable_effect_key(resource, "restart_container", params)
+    # The seeded Run mirrors what production admission stamps: the Run-store
+    # identity is the scope-digested key, not the workspace-independent
+    # provider key (migration 034's index is global across Workspaces).
+    provider_key = stable_effect_key(resource, "restart_container", params)
+    effect_key = incident_run_effect_key(workspace_id, project_id, provider_key)
     claim = incident_claim(
         workspace_id=workspace_id,
         project_id=project_id,
@@ -699,6 +816,27 @@ async def test_terminal_settlement_chains_a_new_episode() -> None:
     )
     chained = chain_incident_claim(first_claim, first.run.run_id)
     assert second_canonical.provenance.get(SCHEDULE_FIRE_ID_KEY) == chained[SCHEDULE_FIRE_ID_KEY]
+    # The effect identity moves with the generation: one logical effect is one
+    # Run forever (migration 034), so a settled episode's successor must not
+    # reuse its key — on PostgreSQL the settled row's key would refuse the
+    # insert outright (raw ``ix_canonical_runs_effect`` violation). The
+    # episode-0 identity is the scope-digested run key, not the raw provider
+    # key (034's index is global across Workspaces).
+    base_key = incident_run_effect_key(
+        workspace_id,
+        project_id,
+        stable_effect_key("docker:litellm", "restart_container", {"name": "litellm"}),
+    )
+    first_canonical = await run_store.get_run(first.run.run_id)
+    assert first_canonical is not None
+    assert first_canonical.provenance.get("effect_key") == base_key
+    chained_key = episode_effect_key(
+        base_key,
+        chained[SCHEDULE_FIRE_ID_KEY],
+        base_token=first_claim[SCHEDULE_FIRE_ID_KEY],
+    )
+    assert chained_key != base_key
+    assert second_canonical.provenance.get("effect_key") == chained_key
     assert http.calls == []
 
 

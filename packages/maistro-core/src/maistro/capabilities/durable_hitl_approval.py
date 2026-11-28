@@ -35,7 +35,10 @@ from maistro.capabilities.self_repair_incident import (
     MAX_EPISODE_CHAIN,
     SELF_REPAIR_ADMISSION_SOURCE,
     chain_incident_claim,
+    episode_effect_key,
     incident_claim,
+    incident_episode_token,
+    incident_run_effect_key,
 )
 from maistro.capabilities.slots.infra import ActionResult, InfraAction
 from maistro.graph.definitions import Graph, Node
@@ -108,17 +111,18 @@ def _approval_graph(
 
 
 def _ensure_claim_matches_effect(
-    *, claim: dict[str, str], base_provenance: dict[str, Any], existing: Any
+    *, claim: dict[str, str], expected_effect_key: str, existing: Any
 ) -> None:
     """Refuse a live claim held for a different effect.
 
-    The claim namespace scopes one incident, so a different ``effect_key``
-    under the same claim would alias unrelated work — never reconcile, fail
-    closed instead.
+    The claim namespace scopes one incident *generation*, so a different
+    ``effect_key`` under the same claim would alias unrelated work — never
+    reconcile, fail closed instead. ``expected_effect_key`` is the candidate
+    generation's key: episode 0's base key, or the generation moved with the
+    chained token (``episode_effect_key``).
     """
-    expected_key = str(base_provenance.get("effect_key") or "")
     claimed_key = str(existing.provenance.get("effect_key") or "")
-    if expected_key and claimed_key and expected_key != claimed_key:
+    if expected_effect_key and claimed_key and expected_effect_key != claimed_key:
         raise RunIntegrityError(
             f"incident claim {claim} is held by Run {existing.run_id!r} "
             "for a different effect; refusing to alias unrelated work"
@@ -128,18 +132,27 @@ def _ensure_claim_matches_effect(
 async def _resolve_incident_claim(
     *,
     run_store: RunStore,
-    graph: Graph,
+    graph_for: Callable[[str], Graph],
+    inputs_for: Callable[[str], dict[str, Any]],
     base_provenance: dict[str, Any],
+    base_effect_key: str,
+    base_token: str,
     claim: dict[str, str],
     actor: str,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, str]:
     """Atomically claim the incident episode; reuse a live claim's Run.
 
-    Returns ``(run_id, created)``. ``created=False`` means the canonical Run
-    already carries this episode's live claim — the caller must reconcile to
-    it (reuse the parked durable wait if it exists, or re-enter
+    Returns ``(run_id, created, effect_key)``. ``created=False`` means the
+    canonical Run already carries this episode's live claim — the caller must
+    reconcile to it (reuse the parked durable wait if it exists, or re-enter
     ``run_durable_graph`` under the same Run id when the crash between
     ``create_run`` and the first checkpoint left only the canonical Run).
+
+    The effect key moves with the generation (``episode_effect_key``): one
+    logical effect is one Run forever (migration 034), and a settled
+    incident's next admission is a new logical operation. The claim's token
+    already chains; the key follows it so a post-settlement episode does not
+    collide with the settled Run's row on ``ix_canonical_runs_effect``.
 
     A terminal claim is superseded by chaining the episode token, so a
     genuinely new incident after settlement admits while the claim stays
@@ -148,16 +161,23 @@ async def _resolve_incident_claim(
     """
     current_claim = dict(claim)
     for _ in range(MAX_EPISODE_CHAIN):
+        token = str(current_claim.get("schedule_fire_id") or "")
+        effect_key = episode_effect_key(base_effect_key, token, base_token=base_token)
         existing = await run_store.find_occurrence_run(current_claim)
         if existing is None:
             try:
                 admitted = await run_store.create_run(
-                    graph,
+                    graph_for(effect_key),
                     initial_status=RunStatus.QUEUED,
                     actor_principal_id=actor,
-                    provenance={**base_provenance, **current_claim},
+                    provenance={
+                        **base_provenance,
+                        "effect_key": effect_key,
+                        **durable_graph_launch_provenance(inputs=inputs_for(effect_key)),
+                        **current_claim,
+                    },
                 )
-                return admitted.run_id, True
+                return admitted.run_id, True, effect_key
             except DuplicateOccurrence:
                 # The claim's winner committed between the probe and the
                 # insert; resolve it and reconcile instead of retrying blind.
@@ -167,10 +187,13 @@ async def _resolve_incident_claim(
                         "self-repair incident claim was lost after DuplicateOccurrence"
                     ) from None
         _ensure_claim_matches_effect(
-            claim=current_claim, base_provenance=base_provenance, existing=existing
+            claim=current_claim,
+            expected_effect_key=effect_key,
+            existing=existing,
         )
         if existing.status not in TERMINAL_RUN_STATUSES:
-            return existing.run_id, False
+            claimed_key = str(existing.provenance.get("effect_key") or "")
+            return existing.run_id, False, claimed_key or effect_key
         current_claim = chain_incident_claim(current_claim, existing.run_id)
     raise RuntimeError(CHAIN_LIMIT_ERROR)
 
@@ -179,31 +202,38 @@ async def _claim_incident_run(
     *,
     store: DurableRunStore,
     run_store: RunStore,
-    graph: Graph,
-    inputs: dict[str, Any],
-    provenance: dict[str, Any],
+    graph_for: Callable[[str], Graph],
+    inputs_for: Callable[[str], dict[str, Any]],
+    base_provenance: dict[str, Any],
+    base_effect_key: str,
+    base_token: str,
     claim: dict[str, str],
     actor: str,
-) -> tuple[str | None, DurableRunRecord | None]:
+) -> tuple[str | None, DurableRunRecord | None, str]:
     """Claim the incident episode, or reconcile to the live claim's wait.
 
-    Returns ``(run_id, existing_wait)``. A non-None ``existing_wait`` is the
-    durable record the episode's live claim already parked: the caller returns
-    it untouched. ``existing_wait`` is None both for a freshly claimed Run and
-    for the crash between ``create_run`` and the first checkpoint — the caller
-    launches (or re-enters) ``run_durable_graph`` under ``run_id`` either way;
-    the admitted launch snapshot in Run provenance rebuilds checkpoint 1.
+    Returns ``(run_id, existing_wait, effect_key)``. A non-None
+    ``existing_wait`` is the durable record the episode's live claim already
+    parked: the caller returns it untouched. ``existing_wait`` is None both
+    for a freshly claimed Run and for the crash between ``create_run`` and
+    the first checkpoint — the caller launches (or re-enters)
+    ``run_durable_graph`` under ``run_id`` either way; the admitted launch
+    snapshot in Run provenance rebuilds checkpoint 1, and ``effect_key`` is
+    the resolved generation's key the launched graph and inputs must carry.
     """
-    run_id, created = await _resolve_incident_claim(
+    run_id, created, effect_key = await _resolve_incident_claim(
         run_store=run_store,
-        graph=graph,
-        base_provenance={**provenance, **durable_graph_launch_provenance(inputs=inputs)},
+        graph_for=graph_for,
+        inputs_for=inputs_for,
+        base_provenance=base_provenance,
+        base_effect_key=base_effect_key,
+        base_token=base_token,
         claim=claim,
         actor=actor,
     )
     if created:
-        return run_id, None
-    return run_id, await store.get(run_id)
+        return run_id, None, effect_key
+    return run_id, await store.get(run_id), effect_key
 
 
 def _admission_node(
@@ -246,30 +276,95 @@ async def _claim_or_reuse_wait(
     *,
     store: DurableRunStore,
     run_store: Any,
-    graph: Graph,
-    inputs: dict[str, Any],
-    provenance: dict[str, Any],
+    graph_for: Callable[[str], Graph],
+    inputs_for: Callable[[str], dict[str, Any]],
+    base_provenance: dict[str, Any],
+    base_effect_key: str,
+    base_token: str,
     claim: dict[str, str],
     actor: str,
-) -> tuple[str | None, DurableRunRecord | None]:
+) -> tuple[str | None, DurableRunRecord | None, str]:
     """Claim the incident episode when a canonical Run store exists.
 
-    Returns ``(run_id, existing_wait)``; both ``None`` when no ``run_store``
-    is configured (single-process admission claims nothing). A non-None
+    Returns ``(run_id, existing_wait, effect_key)``; the first two ``None``
+    when no ``run_store`` is configured (single-process admission claims
+    nothing) and the key is the caller's episode-0 base. A non-None
     ``existing_wait`` is the durable record the episode's live claim already
     parked — the caller returns it untouched instead of re-executing it.
     """
     if run_store is None:
-        return None, None
+        return None, None, base_effect_key
     return await _claim_incident_run(
         store=store,
         run_store=run_store,
-        graph=graph,
-        inputs=inputs,
-        provenance=provenance,
+        graph_for=graph_for,
+        inputs_for=inputs_for,
+        base_provenance=base_provenance,
+        base_effect_key=base_effect_key,
+        base_token=base_token,
         claim=claim,
         actor=actor,
     )
+
+
+async def _launch_admitted_wait(
+    *,
+    store: DurableRunStore,
+    run_store: Any,
+    resolver: Callable[[str, Graph], BaseNode[Any, Any]],
+    graph_for: Callable[[str], Graph],
+    inputs_for: Callable[[str], dict[str, Any]],
+    base_provenance: dict[str, Any],
+    actor: str,
+    run_id: str | None,
+    resolved_effect_key: str,
+) -> DurableRunRecord:
+    """Launch (or re-enter) the claimed Run's durable Graph.
+
+    The generation is resolved (episode 0, or the token chained past terminal
+    settlements): the launched graph and inputs carry the generation's effect
+    key, matching the launch snapshot the claim stamped so a crash-window
+    re-entry validates.
+
+    Two replicas can re-enter the same claimed Run while the winner of the
+    claim is still publishing its first checkpoint — the crash window is a
+    race, not just a restart. The continuation store's uniqueness is the
+    fence: the loser's ``create`` refuses, and the loser converges to the
+    winner's parked wait instead of crashing admission or minting anything
+    (#2405 two-replica evidence). At most one physical effect dispatches,
+    because the refusal precedes any node execution.
+    """
+    inputs = inputs_for(resolved_effect_key)
+    graph = graph_for(resolved_effect_key)
+    provenance = {**base_provenance, "effect_key": resolved_effect_key}
+    if run_store is not None:
+        provenance = {**provenance, **durable_graph_launch_provenance(inputs=inputs)}
+    try:
+        record = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=resolver,
+            inputs=inputs,
+            actor_principal_id=actor,
+            run_id=run_id,
+            run_store=run_store,
+            provenance=provenance,
+        )
+    except ValueError as exc:
+        if not str(exc).startswith("run_id collision:"):
+            raise
+        converged = await store.get(run_id) if run_id is not None else None
+        if converged is None:
+            # No wait appeared: the claim's winner died before publishing.
+            # Surface the truth — the next hydration cycle reconciles the
+            # stranded canonical Run — rather than guessing at a replacer.
+            raise
+        return converged
+    if record.run.status is not RunStatus.PAUSED:
+        raise RuntimeError(
+            f"self-repair approval admission expected PAUSED, got {record.run.status.value}"
+        )
+    return record
 
 
 async def admit_self_repair_approval(
@@ -316,48 +411,59 @@ async def admit_self_repair_approval(
         binding=binding,
         resolve_provider=resolve_provider,
     )
-    graph = _approval_graph(
-        workspace_id=workspace_id,
-        project_id=project_id,
-        action=action,
-        params=params,
-        effect_key=effect_key,
-        binding=binding,
-    )
 
     def resolver(node_id: str, _graph: Graph) -> BaseNode[Any, Any]:
         if node_id != SELF_REPAIR_APPROVAL_NODE_ID:
             raise KeyError(node_id)
         return node
 
-    inputs = {
-        "action": action,
-        "params": dict(params),
-        "effect_key": effect_key,
-        # The durable Binding reference the reconstructible kind re-resolves
-        # on resume (non-secret; revocation fails closed at the live store).
-        "binding_reference": binding_reference_of(binding),
-    }
-    provenance: dict[str, Any] = {
+    def inputs_for(resolved_effect_key: str) -> dict[str, Any]:
+        return {
+            "action": action,
+            "params": dict(params),
+            "effect_key": resolved_effect_key,
+            # The durable Binding reference the reconstructible kind re-resolves
+            # on resume (non-secret; revocation fails closed at the live store).
+            "binding_reference": binding_reference_of(binding),
+        }
+
+    def graph_for(resolved_effect_key: str) -> Graph:
+        return _approval_graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            action=action,
+            params=params,
+            effect_key=resolved_effect_key,
+            binding=binding,
+        )
+
+    base_provenance: dict[str, Any] = {
         "admission_source": SELF_REPAIR_ADMISSION_SOURCE,
         "executor": "durable_graph",
-        "effect_key": effect_key,
         "action": action,
     }
+    base_resource = resource or effect_key
     if resource:
-        provenance[INCIDENT_RESOURCE_KEY] = resource
+        base_provenance[INCIDENT_RESOURCE_KEY] = resource
     actor = actor_principal_id or "self-repair"
+    # The Run-store effect identity is scope-digested (see
+    # ``incident_run_effect_key``): migration 034's unique index on
+    # ``provenance.effect_key`` is global across Workspaces, and the provider
+    # key is deliberately workspace-independent.
+    base_effect_key = incident_run_effect_key(workspace_id, project_id, effect_key)
 
-    run_id, existing_wait = await _claim_or_reuse_wait(
+    run_id, existing_wait, resolved_effect_key = await _claim_or_reuse_wait(
         store=store,
         run_store=run_store,
-        graph=graph,
-        inputs=inputs,
-        provenance=provenance,
+        graph_for=graph_for,
+        inputs_for=inputs_for,
+        base_provenance=base_provenance,
+        base_effect_key=base_effect_key,
+        base_token=incident_episode_token(base_resource, action, params),
         claim=incident_claim(
             workspace_id=workspace_id,
             project_id=project_id,
-            resource=resource or effect_key,
+            resource=base_resource,
             action=action,
             params=params,
         ),
@@ -371,21 +477,17 @@ async def admit_self_repair_approval(
         # mint a second DurableApproval.
         return existing_wait
 
-    record = await run_durable_graph(
-        graph,
+    return await _launch_admitted_wait(
         store=store,
-        node_resolver=resolver,
-        inputs=inputs,
-        actor_principal_id=actor,
-        run_id=run_id,
         run_store=run_store,
-        provenance=provenance,
+        resolver=resolver,
+        graph_for=graph_for,
+        inputs_for=inputs_for,
+        base_provenance=base_provenance,
+        actor=actor,
+        run_id=run_id,
+        resolved_effect_key=resolved_effect_key,
     )
-    if record.run.status is not RunStatus.PAUSED:
-        raise RuntimeError(
-            f"self-repair approval admission expected PAUSED, got {record.run.status.value}"
-        )
-    return record
 
 
 __all__ = [

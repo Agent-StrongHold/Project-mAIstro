@@ -35,6 +35,17 @@ async def ensure_capability_schema(pool: Any) -> None:
     upgraded in place with ``ADD COLUMN IF NOT EXISTS`` — one idempotent
     statement, the same compatibility half the SQLite store gives its legacy
     tables; new tables get the scope-keyed constraint inline.
+
+    The column alone is not enough for a table Alembic revision 043 created:
+    it predates effect scoping too, so its
+    ``uq_capability_approval_effect`` is keyed on ``(run_id, node_run_id,
+    binding_id, effect_key)`` while the store upserts on the scope key —
+    every DurableApproval insert then died on
+    ``InvalidColumnReferenceError`` on exactly the managed deployments that
+    migrate first and boot second (#2405 real-PostgreSQL evidence). The
+    legacy constraint is reconciled to the scope-keyed identity the store
+    actually writes, guarded on the exact legacy definition so a fresh
+    table's constraint is never rebuilt.
     """
 
     async with pool.acquire() as conn, conn.transaction():
@@ -43,6 +54,24 @@ async def ensure_capability_schema(pool: Any) -> None:
             "ALTER TABLE capability_approvals "
             "ADD COLUMN IF NOT EXISTS effect_scope TEXT NOT NULL DEFAULT ''"
         )
+        legacy_shape = await conn.fetchval(
+            """
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'uq_capability_approval_effect'
+              AND conrelid = 'capability_approvals'::regclass
+              AND pg_get_constraintdef(oid) =
+                  'UNIQUE (run_id, node_run_id, binding_id, effect_key)'
+            """
+        )
+        if legacy_shape:
+            await conn.execute(
+                "ALTER TABLE capability_approvals DROP CONSTRAINT uq_capability_approval_effect"
+            )
+            await conn.execute(
+                "ALTER TABLE capability_approvals "
+                "ADD CONSTRAINT uq_capability_approval_effect "
+                "UNIQUE (run_id, effect_scope, binding_id, effect_key)"
+            )
 
 
 __all__ = ["POSTGRES_APPROVAL_SCHEMA", "ensure_capability_schema"]
