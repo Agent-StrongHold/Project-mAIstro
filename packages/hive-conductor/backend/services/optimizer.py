@@ -95,6 +95,7 @@ from services.optimizer_candidates import (
     record_escalation,
     snapshot_hash,
 )
+from services.validation_gate import ScoredRun
 
 logger = logging.getLogger(__name__)
 
@@ -697,16 +698,17 @@ async def evaluate_staged_proposals(
     )
 
     baseline = await measure_baseline(dag_data, scope=scope)
+    baseline_score = baseline.score
     summary: dict[str, Any] = {
         "validated": baseline.available,
-        "baseline_score": baseline.score,
+        "baseline_score": baseline_score,
         "baseline_status": baseline.status,
         "baseline_detail": baseline.reason,
         "baseline_evidence": baseline.lineage(),
         "proposals_tested": 0,
         "hill_climb": [],
     }
-    if not baseline.available:
+    if baseline_score is None:  # the typed-absent case: available ⇒ scored
         # Typed unavailable incumbent: nothing can be compared, so nothing is.
         for payload in proposals:
             _annotate(payload, validation=_verdict_without_baseline(payload, baseline.reason))
@@ -724,7 +726,11 @@ async def evaluate_staged_proposals(
                 # Staged for promotion, or proposed without apply_auto: either
                 # way the exact candidate snapshot is what gets measured.
                 await _evaluate_staged_candidate(
-                    payload, baseline=baseline, scope=scope, dag_id=dag_id
+                    payload,
+                    baseline=baseline,
+                    baseline_score=baseline_score,
+                    scope=scope,
+                    dag_id=dag_id,
                 )
                 tested += 1
             else:
@@ -735,7 +741,7 @@ async def evaluate_staged_proposals(
             # Propose-only kinds are never auto-applied; their measurement is
             # advisory and says so on the row rather than disappearing.
             (annotated,) = await validate_proposals(
-                dag_data, [payload], baseline.score, scope=scope
+                dag_data, [payload], baseline_score, scope=scope
             )
             verdict = {
                 key: annotated[key]
@@ -765,8 +771,8 @@ async def evaluate_staged_proposals(
     # a failed baseline it used to judge every positive variant a winner over
     # a synthetic 0.0.
     summary["hill_climb"] = [
-        *await hill_climb_models(dict(dag_data), baseline.score, scope=scope),
-        *await hill_climb_params(dict(dag_data), baseline.score, scope=scope),
+        *await hill_climb_models(dict(dag_data), baseline_score, scope=scope),
+        *await hill_climb_params(dict(dag_data), baseline_score, scope=scope),
     ]
     return summary
 
@@ -795,7 +801,8 @@ def _bound_proposal(payload: dict[str, Any]) -> dict[str, Any]:
 async def _evaluate_staged_candidate(
     payload: dict[str, Any],
     *,
-    baseline: Any,
+    baseline: ScoredRun,
+    baseline_score: float,
     scope: DagExecutionScope,
     dag_id: str,
 ) -> None:
@@ -852,14 +859,20 @@ async def _evaluate_staged_candidate(
             },
         )
         return
-    assert measured.score is not None and baseline.score is not None  # available ⇒ scored
-    improved = measured.score > baseline.score
+    candidate_score = measured.score
+    if candidate_score is None:  # available ⇒ scored; the narrow is for the type checker
+        _annotate(
+            payload,
+            validation={"status": UNEVALUATED, "reason": "candidate measurement carried no score"},
+        )
+        return
+    improved = candidate_score > baseline_score
     logger.info(
         "optimizer_validation dag=%s proposal=%s baseline=%.1f candidate=%.1f improved=%s",
         dag_id,
         payload.get("id"),
-        baseline.score,
-        measured.score,
+        baseline_score,
+        candidate_score,
         improved,
     )
     _annotate(
@@ -867,21 +880,21 @@ async def _evaluate_staged_candidate(
         validation={
             "status": "improved" if improved else NOT_IMPROVING,
             "reason": (
-                f"independent validation: candidate {measured.score} vs incumbent "
-                f"{baseline.score} ({candidate_version})"
+                f"independent validation: candidate {candidate_score} vs incumbent "
+                f"{baseline_score} ({candidate_version})"
             ),
-            "baseline_score": baseline.score,
-            "variant_b_score": measured.score,
-            "improvement": measured.score - baseline.score,
+            "baseline_score": baseline_score,
+            "variant_b_score": candidate_score,
+            "improvement": candidate_score - baseline_score,
             "evaluator_version": candidate_version,
             "baseline": baseline.lineage(),
             "candidate": measured.lineage(),
             "candidate_hash": candidate_hash,
         },
         validated=improved,
-        baseline_score=baseline.score,
-        variant_b_score=measured.score,
-        improvement=measured.score - baseline.score,
+        baseline_score=baseline_score,
+        variant_b_score=candidate_score,
+        improvement=candidate_score - baseline_score,
     )
 
 

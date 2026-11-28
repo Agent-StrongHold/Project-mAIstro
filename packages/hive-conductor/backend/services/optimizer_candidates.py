@@ -63,6 +63,7 @@ import copy
 import hashlib
 import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -334,7 +335,7 @@ _promotion_holders: dict[str, int] = {}
 
 
 @contextlib.asynccontextmanager
-async def _serial_promotion(dag_id: str):
+async def _serial_promotion(dag_id: str) -> AsyncIterator[None]:
     """Make compare-and-swap atomic against other promotions of the same DAG.
 
     Held from the CAS-1 read through the descriptor sync, so two passes that

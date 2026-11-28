@@ -71,8 +71,10 @@ async def trigger_optimizer(
     project_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Run optimizer. When validate=True (default), the incumbent and every
-    staged candidate are measured against the actual DAG before anything is
-    promoted; only strictly-improving mutations are proposed."""
+    candidate are measured against the actual DAG and each proposal is
+    returned with its verdict; with apply_auto=true nothing is promoted
+    unless its own evaluation completed and strictly improved on the
+    incumbent."""
     actor = _user_id(request)
     org_id = str(getattr(request.state, "org_id", "") or "")
     # An explicit Project selection only ever narrows within the authorized
