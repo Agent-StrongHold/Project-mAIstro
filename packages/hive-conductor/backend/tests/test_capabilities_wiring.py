@@ -547,6 +547,7 @@ async def test_self_repair_invoker_advances_effect_identity_after_settlement() -
     assert len(action.calls) == 1
 
     second = await invoke_action("restart_container", {"name": "litellm"}, key)
+    assert second.ok is False, "the fresh dispatch must carry the provider's own result"
     assert len(action.calls) == 2, "settled ok=False generation was replayed"
 
     action.ok = True
@@ -559,7 +560,9 @@ async def test_self_repair_invoker_advances_effect_identity_after_settlement() -
     assert len({record.effect_key for record in records}) == 3, (
         "each settled incident must carry a distinct effect identity"
     )
-    assert all(record.effect_key.startswith("self_repair:litellm:restart_container:") for record in records)
+    assert all(
+        record.effect_key.startswith("self_repair:litellm:restart_container:") for record in records
+    )
 
 
 # --- #2405: durable HITL scope + approval admittor / run-status seams

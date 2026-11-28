@@ -114,6 +114,55 @@ def _self_repair_binding() -> Binding:
     )
 
 
+async def _resolve_auto_repair_provider(
+    candidate: Binding,
+    *,
+    effect_context: CapabilityEffectContext,
+    registry: CapabilityRegistry,
+    binding: Binding,
+) -> InfraAction | Unavailable:
+    """Resolve the authorized infra_action provider for the auto-run path.
+
+    Same contract as the durable approval path's provider resolution: the
+    candidate must resolve to exactly the wired self-repair Binding and a
+    live InfraAction; anything else is Unavailable — the Invocation records
+    the refusal and no physical dispatch happens.
+    """
+
+    try:
+        authorized = await effect_context.bindings.resolve(
+            candidate.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=binding.capability,
+        )
+    except Exception:
+        return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
+    if authorized.binding_id != binding.binding_id:
+        return Unavailable(slot="infra_action", reason="invalid self_repair binding")
+    provider = await registry.resolve("infra_action")
+    if not isinstance(provider, InfraAction):
+        return Unavailable(slot="infra_action", reason="infra_action unavailable")
+    return provider
+
+
+async def _execute_auto_repair_effect(provider: Any, request: Any) -> dict[str, Any]:
+    """Physical auto-run effect: exactly one provider call, plain dict result."""
+
+    if not isinstance(provider, InfraAction):
+        raise TypeError("infra_action Invocation resolved a non-action provider")
+    payload = dict(request)
+    # Auto-run path only (reversible under auto_safe). Gated tiers are
+    # admitted as durable waiting-human Runs (#2405), not through here.
+    result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
+    return {
+        "ok": result.ok,
+        "detail": result.detail,
+        "blocked_pending_approval": result.blocked_pending_approval,
+    }
+
+
 def _build_self_repair_effect_invoker(
     registry: CapabilityRegistry,
     effect_context: CapabilityEffectContext,
@@ -161,35 +210,12 @@ def _build_self_repair_effect_invoker(
 
     async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
         async def resolver(candidate: Binding) -> InfraAction | Unavailable:
-            try:
-                authorized = await effect_context.bindings.resolve(
-                    candidate.binding_id,
-                    workspace_id=binding.workspace_id,
-                    project_id=binding.project_id,
-                    node_id=binding.node_id,
-                    capability=binding.capability,
-                )
-            except Exception:
-                return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
-            if authorized.binding_id != binding.binding_id:
-                return Unavailable(slot="infra_action", reason="invalid self_repair binding")
-            provider = await registry.resolve("infra_action")
-            if not isinstance(provider, InfraAction):
-                return Unavailable(slot="infra_action", reason="infra_action unavailable")
-            return provider
-
-        async def executor(provider: Any, request: Any) -> dict[str, Any]:
-            if not isinstance(provider, InfraAction):
-                raise TypeError("infra_action Invocation resolved a non-action provider")
-            payload = dict(request)
-            # Auto-run path only (reversible under auto_safe). Gated tiers are
-            # admitted as durable waiting-human Runs (#2405), not through here.
-            result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
-            return {
-                "ok": result.ok,
-                "detail": result.detail,
-                "blocked_pending_approval": result.blocked_pending_approval,
-            }
+            return await _resolve_auto_repair_provider(
+                candidate,
+                effect_context=effect_context,
+                registry=registry,
+                binding=binding,
+            )
 
         identity = await _advance_past_settled(effect_key)
         invocation = await effect_context.invocations.invoke(
@@ -200,7 +226,7 @@ def _build_self_repair_effect_invoker(
             effect_key=identity,
             request={"action": action, "params": params},
             resolver=resolver,
-            executor=executor,
+            executor=_execute_auto_repair_effect,
         )
         if not isinstance(invocation.result, dict):
             return ActionResult(ok=False, detail="infra_action Invocation returned no result")
