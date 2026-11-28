@@ -17,3 +17,19 @@ the successor, and the successor swaps like any other.
   resolve → swap to `delivery` → delete workspace (row gone) → new Workspace
   resolves a fresh row (`program_manager`, different id) → swap again holds.
   Red-checked: mutating the fresh-materialization default makes the test fail.
+
+## Local re-validation evidence (2026-11-28, head 8432a338f2ac)
+
+- `uv run pytest test_workspace_agent_identity.py test_workspace_agent_persona_routes.py -q`
+  → 26 passed.
+- Red-check reproduced: swapping the materialization default
+  (`DEFAULT_PERSONA_TEMPLATE_ID` → `pm_fleet` at the insert site) fails exactly
+  this test; revert restored a 0-diff tree.
+- `uv run pytest packages/hive-conductor/backend/tests -q` → 4657 passed,
+  120 skipped (service-backed), 0 failed.
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run python scripts/check-suite-inventory.py` → ok (this note's +1 delta
+  reconciles the suite).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1217 = 1217).
+- `uv run python scripts/check-shipped-surface-truth.py` → exit 0.
