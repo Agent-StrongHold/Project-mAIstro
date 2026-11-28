@@ -23,7 +23,11 @@ from maistro.observability.metrics import (
     sqlite_table_sample,
 )
 from maistro.security.redact import redact_structure
-from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import (
+    connection_transaction_lock,
+    execute_schema_script,
+    serialized_schema_upgrade,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -433,7 +437,13 @@ class SqliteEventStore:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
-        self._lock = asyncio.Lock()
+        # Not a store-private lock: the canonical projection registry shares
+        # this connection and must serialize its writes with ours — a bare
+        # register/claim/advance commit landing between this append's
+        # BEGIN IMMEDIATE and its watermark write would commit the canonical
+        # row and leave the append's rollback nothing to discard (see
+        # connection_transaction_lock, #2506 review).
+        self._lock = connection_transaction_lock(conn)
 
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):

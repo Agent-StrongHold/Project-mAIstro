@@ -55,7 +55,7 @@ from maistro.events.invocations import (
     validated_outcome,
 )
 from maistro.http import shared_client
-from maistro.sqlite_schema import execute_schema_script
+from maistro.sqlite_schema import connection_transaction_lock, execute_schema_script
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -974,26 +974,41 @@ class SqliteCanonicalProjectionStore:
     watermark subquery below reads `canonical_event_stream_watermarks` from
     that store's schema, so a new registration and its positioning position
     are one statement on one database.
+
+    Every write commits on that shared connection, so each one holds the
+    connection-level transaction guard (the same lock
+    `SqliteEventStore.append_with_disposition` holds): without it, this
+    store's commit could land between an in-flight append's BEGIN IMMEDIATE
+    and its watermark write — committing the canonical row and leaving the
+    append's rollback nothing to discard, so a failed append would still
+    persist (and its retry would come back `inserted=False`, suppressing
+    live delivery) (#2506 review).
     """
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        self._write_lock = connection_transaction_lock(conn)
 
     async def ensure_schema(self) -> None:
-        await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
-        await self._conn.commit()
+        async with self._write_lock:
+            await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
+            await self._conn.commit()
 
     async def register_stream(self, stream_id: str) -> None:
-        await self._conn.execute(
-            """INSERT INTO canonical_event_projection_streams
-               (stream_id, position, holder, fencing_token, lease_expires_at)
-               SELECT ?, COALESCE((SELECT last_sequence
-                                   FROM canonical_event_stream_watermarks
-                                   WHERE stream_id = ?), 0), '', '', 0
-               ON CONFLICT(stream_id) DO NOTHING""",
-            (stream_id, stream_id),
-        )
-        await self._conn.commit()
+        # The publisher calls this before every emit, on the shared canonical
+        # connection: the guard makes the INSERT and its commit one serialized
+        # unit so it can never commit another emission's in-flight append.
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT INTO canonical_event_projection_streams
+                   (stream_id, position, holder, fencing_token, lease_expires_at)
+                   SELECT ?, COALESCE((SELECT last_sequence
+                                       FROM canonical_event_stream_watermarks
+                                       WHERE stream_id = ?), 0), '', '', 0
+                   ON CONFLICT(stream_id) DO NOTHING""",
+                (stream_id, stream_id),
+            )
+            await self._conn.commit()
 
     async def registered_streams(self) -> tuple[str, ...]:
         cursor = await self._conn.execute(
@@ -1010,36 +1025,42 @@ class SqliteCanonicalProjectionStore:
     ) -> ProjectionLease | None:
         now = time.time()
         new_token = uuid.uuid4().hex
-        cursor = await self._conn.execute(
-            """INSERT INTO canonical_event_projection_streams
-               (stream_id, position, holder, fencing_token, lease_expires_at)
-               VALUES (?, 0, ?, ?, ?)
-               ON CONFLICT(stream_id) DO UPDATE SET
-                 holder = excluded.holder,
-                 fencing_token = CASE WHEN canonical_event_projection_streams.holder
-                                       = excluded.holder
-                                       THEN canonical_event_projection_streams.fencing_token
-                                       ELSE excluded.fencing_token END,
-                 lease_expires_at = excluded.lease_expires_at
-               WHERE canonical_event_projection_streams.lease_expires_at <= ?
-                  OR canonical_event_projection_streams.holder = ?
-               RETURNING stream_id, position, fencing_token, lease_expires_at""",
-            (stream_id, holder, new_token, now + lease_seconds, now, holder),
-        )
-        row = await cursor.fetchone()
-        await self._conn.commit()
+        # Same guard as register_stream: this write commits on the shared
+        # canonical connection and must not land inside an in-flight append.
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO canonical_event_projection_streams
+                   (stream_id, position, holder, fencing_token, lease_expires_at)
+                   VALUES (?, 0, ?, ?, ?)
+                   ON CONFLICT(stream_id) DO UPDATE SET
+                     holder = excluded.holder,
+                     fencing_token = CASE WHEN canonical_event_projection_streams.holder
+                                           = excluded.holder
+                                           THEN canonical_event_projection_streams.fencing_token
+                                           ELSE excluded.fencing_token END,
+                     lease_expires_at = excluded.lease_expires_at
+                   WHERE canonical_event_projection_streams.lease_expires_at <= ?
+                      OR canonical_event_projection_streams.holder = ?
+                   RETURNING stream_id, position, fencing_token, lease_expires_at""",
+                (stream_id, holder, new_token, now + lease_seconds, now, holder),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
         return _sqlite_row_to_lease(tuple(row)) if row is not None else None
 
     async def advance(self, stream_id: str, *, fencing_token: str, position: int) -> bool:
-        cursor = await self._conn.execute(
-            """UPDATE canonical_event_projection_streams
-               SET position = MAX(position, ?)
-               WHERE stream_id = ? AND fencing_token = ?
-               RETURNING stream_id""",
-            (position, stream_id, fencing_token),
-        )
-        row = await cursor.fetchone()
-        await self._conn.commit()
+        # Same guard as register_stream: this write commits on the shared
+        # canonical connection and must not land inside an in-flight append.
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """UPDATE canonical_event_projection_streams
+                   SET position = MAX(position, ?)
+                   WHERE stream_id = ? AND fencing_token = ?
+                   RETURNING stream_id""",
+                (position, stream_id, fencing_token),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
         return row is not None
 
 
@@ -1062,47 +1083,53 @@ class SqliteProjectionFailureStore:
         self._max_attempts = max_attempts
         self._retry_backoff_seconds = retry_backoff_seconds
         self._clock = clock
+        self._write_lock = connection_transaction_lock(conn)
 
     async def ensure_schema(self) -> None:
-        await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
-        await self._conn.commit()
+        async with self._write_lock:
+            await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
+            await self._conn.commit()
 
     async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
         now = self._clock()
-        cursor = await self._conn.execute(
-            """INSERT INTO canonical_projection_failures
-               (event_id, stream_id, attempts, last_error, next_attempt_at, failed_at)
-               VALUES (?, ?, 1, ?, ?, NULL)
-               ON CONFLICT(event_id) DO UPDATE SET
-                 attempts = canonical_projection_failures.attempts + 1,
-                 last_error = excluded.last_error,
-                 next_attempt_at = excluded.next_attempt_at,
-                 failed_at = CASE
-                   WHEN canonical_projection_failures.attempts + 1 >= ?
-                   THEN ? ELSE canonical_projection_failures.failed_at END
-               WHERE canonical_projection_failures.failed_at IS NULL
-               RETURNING attempts""",
-            (
-                event_id,
-                stream_id,
-                error[:2048],
-                now + self._retry_backoff_seconds,
-                self._max_attempts,
-                now,
-            ),
-        )
-        row = await cursor.fetchone()
-        await self._conn.commit()
+        # Same guard as the projection store's writes: this commit lands on
+        # the shared canonical connection (#2506 review).
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO canonical_projection_failures
+                   (event_id, stream_id, attempts, last_error, next_attempt_at, failed_at)
+                   VALUES (?, ?, 1, ?, ?, NULL)
+                   ON CONFLICT(event_id) DO UPDATE SET
+                     attempts = canonical_projection_failures.attempts + 1,
+                     last_error = excluded.last_error,
+                     next_attempt_at = excluded.next_attempt_at,
+                     failed_at = CASE
+                       WHEN canonical_projection_failures.attempts + 1 >= ?
+                       THEN ? ELSE canonical_projection_failures.failed_at END
+                   WHERE canonical_projection_failures.failed_at IS NULL
+                   RETURNING attempts""",
+                (
+                    event_id,
+                    stream_id,
+                    error[:2048],
+                    now + self._retry_backoff_seconds,
+                    self._max_attempts,
+                    now,
+                ),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
         if row is None:
             # Already dead-lettered; the disposition is terminal.
             return True
         return int(row[0]) >= self._max_attempts
 
     async def forget(self, event_id: str) -> None:
-        await self._conn.execute(
-            "DELETE FROM canonical_projection_failures WHERE event_id = ?", (event_id,)
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                "DELETE FROM canonical_projection_failures WHERE event_id = ?", (event_id,)
+            )
+            await self._conn.commit()
 
     async def get(self, event_id: str) -> ProjectionFailure | None:
         cursor = await self._conn.execute(
