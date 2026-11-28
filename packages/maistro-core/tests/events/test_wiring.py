@@ -127,6 +127,59 @@ async def test_the_wired_publisher_persists_before_notifying_legacy_consumers() 
     assert projected.timestamp == persisted.timestamp
 
 
+async def test_the_projection_composes_beside_the_sqlite_store_it_is_given() -> None:
+    """#2506 review: the canonical store decides the projection's database.
+
+    A container can be handed a composed ``effect_context`` whose event
+    authority lives on a connection the container's own stores never opened.
+    The projection registry must follow that store — its registration reads
+    the canonical watermark table, so a registry composed from separately
+    supplied pools would read a watermark (or find no watermark table at all)
+    in the wrong database.
+    """
+    import aiosqlite
+
+    from maistro.events.processing import SqliteCanonicalProjectionStore
+    from maistro.events.wiring import wire_canonical_projection
+
+    connection = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(connection)
+        await store.ensure_schema()
+        projection = await wire_canonical_projection(event_store=store)
+
+        assert isinstance(projection.projection_store, SqliteCanonicalProjectionStore)
+        assert projection.projection_store._conn is connection
+        await store.append(
+            EventEnvelope(event_id="wire-proj-1", type="run.started", workspace_id="ws-wire")
+        )
+        await projection.projection_store.register_stream("workspace:ws-wire")
+        assert await projection.projection_store.registered_streams() == ("workspace:ws-wire",)
+    finally:
+        await connection.close()
+
+
+async def test_a_store_without_a_durable_backend_projects_in_memory_beside_itself() -> None:
+    """An injected in-memory authority gets an in-memory registry beside it.
+
+    Anything that is not a Pg/SqliteEventStore — a host-composed store of its
+    own class included — registers against the store's own `stream_watermark`,
+    never against a database the store does not write.
+    """
+    from maistro.events.processing import InMemoryCanonicalProjectionStore
+    from maistro.events.wiring import wire_canonical_projection
+
+    store = InMemoryEventStore()
+    projection = await wire_canonical_projection(event_store=store)
+
+    assert isinstance(projection.projection_store, InMemoryCanonicalProjectionStore)
+    await store.append(
+        EventEnvelope(event_id="wire-proj-mem-1", type="run.started", workspace_id="ws-wire")
+    )
+    await projection.projection_store.register_stream("workspace:ws-wire")
+    assert await projection.projection_store.registered_streams() == ("workspace:ws-wire",)
+
+
 def test_wire_legacy_trigger_surface_subscribes_handlers_and_disabled_recipes() -> None:
     """#2313: process wiring registers builtin actions and the recipe catalog.
 
