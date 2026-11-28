@@ -131,3 +131,76 @@ none, and the +17 understated the registry-derived remainder) is why the
 inventory gate drifted by the full +23 on the first validation round; rounds
 2 (+2/+2 race-fence and recovery-ownership mutation oracles) and 3 (+7
 real-PostgreSQL closure oracles) are recorded in the same ledger.
+
+## Local CI-gate reproduction at head 262a0653c4 (2026-11-28 validation round)
+
+Executed with CI's exact arguments against the lane's pgvector/pg17
+(auto2405-pg17, migrated to head): `ruff check .` and `ruff format --check .`
+clean; `mypy --strict packages/maistro-core/src` clean (after
+`uv sync --locked --all-extras` — the `--extra dev` venv cannot resolve
+`maistro_bootstrap.cli`, an environment artifact CI never sees);
+`check-suite-inventory.py`, `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`, `check-radon-baseline.py`,
+`check-execution-lifecycles.py` and the interrogate floors for
+maistro/graph/nodes + durable_runs + maistro all pass. Full batteries:
+`packages/maistro-core/tests` 19135 passed / 302 skipped / 7 xfailed and
+`packages/hive-conductor/backend/tests` 4740 passed / 39 skipped, both under
+`coverage run --branch` with `MAISTRO_TEST_PG_DSN`; `tests/migrations` 174
+passed on real PostgreSQL. `test_pg_approval_store.py` +
+`test_pg_invocation_store.py` 27 passed and `test_pg_store_internals.py` 22
+passed on the migrated server.
+
+**The Coverage gate (diff half) is RED at this head — real, not a measurement
+gap.** `scripts/check-diff-coverage.py coverage.xml --base 547eb70a` fails
+three files whose changed lines the combined suite data never executes (the
+core producer data here is a superset of CI's coverage-unit +
+coverage-postgres producers; the hive producer data is a superset of CI's
+server-less backend run + its PG legs):
+
+- `packages/hive-conductor/backend/services/capabilities_wiring.py` — 64.9%
+  of 57 changed lines. Uncovered: line 154 (the `_execute_auto_repair_effect`
+  `TypeError` fail-closed guard for a non-action provider), lines 206–209
+  (the `_MAX_EFFECT_GENERATIONS` cap refusing a further incident identity),
+  lines 336–353 (the entire `load_pending` body — the durable pending-waits
+  hydration that pages `list_hitl_paused`, filters `admission_source ==
+  "self_repair"`, and maps resource → run_id). No hive test drives the wired
+  hydration loader at all.
+- `packages/maistro-core/src/maistro/capabilities/providers/self_repair.py`
+  — 86.8% of 38 changed lines. Uncovered: 189 (`continue` skip in the
+  hydration loop), 217 (`return None`), 220–221 (the `except Exception →
+  logger.warning` fail-closed arm), 227 (`return None`). The dedup suite
+  pins hydration gating in-memory but not these arms, and CI's
+  coverage-postgres producer does not run `tests/capabilities/` beyond
+  `test_backend_effect_context.py`, so these lines cannot join CI's
+  coverage.xml through the current producer list.
+- `packages/maistro-core/src/maistro/graph/nodes/infra_approval_action.py` —
+  75.0% of 20 changed branch arcs (need 80%). Partial arcs at 174
+  (`_effect_context is None`), 191 (empty `binding_id`), 203 (`authorized
+  .binding_id != binding_id` mismatch), 209 (`registry is None`), 215
+  (non-`InfraAction` provider) — each guard has one untaken outcome; the
+  composition tests exercise the happy path plus revoked-Binding, not every
+  fail-closed arm.
+
+A repair round should add tests whose *execution* covers exactly these lines
+(a hydration-loader test over seeded paused Runs; non-action-provider and
+cap-exceeded invoker arms; the node's five guard arms) — no production change
+is implied; the production seams themselves are verified live above.
+
+**Environment traps that cost this round time, recorded to save the next one:**
+running the whole `packages/maistro-core/tests` battery with BOTH
+`MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` set against a long-lived
+shared database fails three tests that are green in CI's fresh service DB:
+`persistence/test_pg_audit.py::test_real_postgres_two_org_scope_and_schema`
+(asserts the alembic-036 nullable `audit_log.org_id`; the shipped
+`pg_audit.py:49,122` store bootstrap creates the column `NOT NULL` when it
+races the chain) and
+`test_container_postgres.py::test_an_unmigrated_database_names_the_command_that_fixes_it`.
+`persistence/test_schedule_winner_crash.py` subprocess workers also exit
+silently on the drifted DB while passing on a fresh one. None is a branch
+defect: this branch's only alembic change deletes
+`074_canonical_event_projection.py`, and the same three files pass 50/50 on a
+fresh chain-shaped database created for this round (`maistro_test2` on the
+same server, alembic-upgraded, all previously-failing tests green). Repair
+the shared DB with `ALTER TABLE audit_log ALTER COLUMN org_id DROP NOT NULL;`
+and run audit/container_postgres suites before any suite that bootstraps the
+store schema, or use the fresh `maistro_test2`.
