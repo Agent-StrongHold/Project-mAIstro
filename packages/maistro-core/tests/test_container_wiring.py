@@ -576,6 +576,245 @@ class TestReplayAcknowledgementOnTheLog:
         assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
 
 
+class TestFencedReplayAcknowledgement:
+    """#2511: the log's `event_replay_cursors` row has no fencing token of
+    its own, so `process_durable_events` must fence it through the
+    primary cursor: a rejected `advance` (the tick's lease was taken
+    over mid-flight) acknowledges nothing and claims no progress, and an
+    accepted advance acknowledges the authoritative cursor re-read from
+    the store — never the tick's own possibly-stale view.
+    """
+
+    async def test_a_rejected_advance_acknowledges_nothing_and_reports_the_authoritative_cursor(
+        self,
+    ) -> None:
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        container = await _container()
+        delivered: list[int] = []
+        state = {"taken_over": False}
+
+        async def caller(trigger: object, event: Any) -> None:
+            delivered.append(event.id)
+            if event.id == 1 and not state["taken_over"]:
+                # Mid-batch, this holder's lease lapses and "worker-b"
+                # takes the cursor over — the exact window in which a
+                # paused replica resumes and still tries to advance.
+                await container.consumer_cursor_store.claim(
+                    LEGACY_BRIDGE_CONSUMER_ID,
+                    holder=container._durable_events_holder,
+                    lease_seconds=-1.0,
+                )
+                assert (
+                    await container.consumer_cursor_store.claim(
+                        LEGACY_BRIDGE_CONSUMER_ID, holder="worker-b"
+                    )
+                    is not None
+                )
+                state["taken_over"] = True
+
+        container.handler_caller = caller  # type: ignore[assignment]
+        await container.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+        for _ in range(3):
+            await container.durable_event_log.append("agent.created")
+
+        cursor = await container.process_durable_events()
+
+        # The tick settled all three events — the InvocationStore claims
+        # are untouched — but its cursor write was refused: it must not
+        # acknowledge the rejected position on the log, report it, or
+        # mirror it, even though it processed further than the new
+        # holder has.
+        assert delivered == [1, 2, 3]
+        assert state["taken_over"]
+        assert cursor == container.durable_event_cursor == 0
+        assert (
+            await container.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID) == 0
+        )
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
+
+        # Once worker-b's lease lapses, this container takes the cursor
+        # back and re-derives the same settlement idempotently: the
+        # already-settled receipts dedupe, the accepted advance carries
+        # the acknowledgement, and primary cursor, log acknowledgement
+        # and local mirror agree.
+        await container.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder="worker-b", lease_seconds=-1.0
+        )
+        cursor = await container.process_durable_events()
+
+        assert delivered == [1, 2, 3]
+        assert cursor == container.durable_event_cursor == 3
+        assert (
+            await container.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID) == 3
+        )
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+
+    async def test_a_takeover_between_the_advance_and_the_acknowledgement_publishes_the_authoritative_position(
+        self,
+    ) -> None:
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        container = await _container()
+        delivered: list[int] = []
+        store = container.consumer_cursor_store
+        holder = container._durable_events_holder
+
+        async def handover() -> None:
+            """Run after an accepted advance, before the tick's next
+            statement: worker-b takes the lease over and advances the
+            authoritative cursor further (its own settled tick)."""
+            await store.claim(LEGACY_BRIDGE_CONSUMER_ID, holder=holder, lease_seconds=-1.0)
+            lease = await store.claim(LEGACY_BRIDGE_CONSUMER_ID, holder="worker-b")
+            assert lease is not None
+            assert await store.advance(
+                LEGACY_BRIDGE_CONSUMER_ID, fencing_token=lease.fencing_token, position=9
+            )
+
+        container.consumer_cursor_store = _HandoverAfterAdvance(store, handover)  # type: ignore[assignment]
+        container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+        await container.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+        await container.durable_event_log.append("agent.created")
+        await container.durable_event_log.append("agent.created")
+
+        cursor = await container.process_durable_events()
+
+        # This tick's advance to 2 was accepted, but worker-b has since
+        # moved the authoritative cursor to 9. The acknowledgement on the
+        # log is derived from the authoritative cursor — 9, which the
+        # primary explicitly accepted — not from this tick's own stale
+        # view, and the tick reports the same truthful position.
+        assert delivered == [1, 2]
+        assert cursor == container.durable_event_cursor == 9
+        assert await store.current_position(LEGACY_BRIDGE_CONSUMER_ID) == 9
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 9
+
+    async def test_a_kill_between_the_cursor_write_and_the_acknowledgement_leaves_no_contradiction(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        db_url = f"sqlite:///{tmp_path / 'events.db'}"
+        container1 = await _container(database_url=db_url)
+        try:
+            delivered: list[int] = []
+            container1.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+            await container1.trigger_store.add(
+                TriggerDefinition(
+                    trigger_id="t1",
+                    event_pattern="agent.*",
+                    handler_url="http://handlers.invalid/agent",
+                    replay_safety=ReplaySafety.IDEMPOTENT,
+                    contract_ref="contract-v1",
+                )
+            )
+            for _ in range(3):
+                await container1.durable_event_log.append("agent.created")
+
+            async def die_before_ack(consumer_id: str, event_id: int) -> int:
+                raise OSError("killed between the cursor write and the acknowledgement")
+
+            container1.durable_event_log.acknowledge_replay = die_before_ack  # type: ignore[method-assign]
+            with pytest.raises(OSError):
+                await container1.process_durable_events()
+            assert delivered == [1, 2, 3]
+            # Simulate the old process being gone: its lease is renewed to
+            # an already-expired one rather than left at the normal 300 s,
+            # standing in for however long a real restart takes to notice
+            # and wait out.
+            await container1.consumer_cursor_store.claim(
+                LEGACY_BRIDGE_CONSUMER_ID,
+                holder=container1._durable_events_holder,
+                lease_seconds=-1.0,
+            )
+        finally:
+            if container1.db_pool is not None:
+                await container1.db_pool.close()
+
+        # "Restart": a fresh Container, same durable database. The primary
+        # cursor write survived the kill; the log acknowledgement never
+        # happened. The checkpoint is conservative, not contradictory:
+        # the authoritative cursor leads and the log's view lags behind —
+        # never ahead of what the primary accepted.
+        container2 = await _container(database_url=db_url)
+        try:
+            lease = await container2.consumer_cursor_store.claim(
+                LEGACY_BRIDGE_CONSUMER_ID, holder=container2._durable_events_holder
+            )
+            assert lease is not None
+            assert lease.position == 3
+            assert (
+                await container2.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
+            )
+
+            # A later tick reconciles using only the existing authority:
+            # the next settled advance carries the acknowledgement with
+            # it, and primary cursor, acknowledgement and local mirror
+            # agree again — replayed nothing, skipped nothing.
+            await container2.durable_event_log.append("agent.created")  # id 4
+            delivered2: list[int] = []
+            container2.handler_caller = _record_ids_caller(delivered2)  # type: ignore[assignment]
+            cursor = await container2.process_durable_events()
+
+            assert delivered2 == [4]
+            assert cursor == container2.durable_event_cursor == 4
+            assert (
+                await container2.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID)
+                == 4
+            )
+            assert (
+                await container2.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 4
+            )
+        finally:
+            if container2.db_pool is not None:
+                await container2.db_pool.close()
+
+
+class _HandoverAfterAdvance:
+    """A cursor store that runs a test-controlled handover right after an
+    accepted `advance` returns — the window between the primary cursor write
+    and the log acknowledgement the tick performs next. Everything else
+    forwards to `inner`."""
+
+    def __init__(self, inner: Any, handover: Any) -> None:
+        self._inner = inner
+        self._handover = handover
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def advance(self, consumer_id: str, *, fencing_token: str, position: int) -> bool:
+        accepted = await self._inner.advance(
+            consumer_id, fencing_token=fencing_token, position=position
+        )
+        if accepted:
+            await self._handover()
+        return accepted
+
+
 class _HidingLog:
     """A durable log whose reads skip chosen ids -- PostgreSQL between a
     `BIGSERIAL` allocation and that append's commit."""
