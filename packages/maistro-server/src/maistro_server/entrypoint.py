@@ -15,6 +15,60 @@ from maistro.config.database import resolve_migration_target_url
 
 _MIGRATION_LOCK_ID = 0x4D41495354524F  # ASCII-ish "MAISTRO", within signed bigint.
 
+#: Default seconds Uvicorn may spend closing open connections and cancelling
+#: remaining request tasks before it starts the lifespan shutdown (#2249).
+DEFAULT_CONNECTION_GRACE_S = 10.0
+
+
+def _connection_grace_s() -> float:
+    """`MAISTRO_SHUTDOWN_CONNECTION_GRACE` in seconds, defaulting to 10.
+
+    The deadline must sit strictly below the deployment's container stop grace
+    (`stop_grace_period: 30s` in the shipped compose file): what follows the
+    deadline — the lifespan teardown, task drain included — still needs time
+    to run inside the same grace window. A deployment whose grace period
+    differs overrides here rather than in code. A non-numeric or negative
+    value falls back to the default rather than poisoning the exec.
+    """
+    raw = os.environ.get("MAISTRO_SHUTDOWN_CONNECTION_GRACE", "").strip()
+    if not raw:
+        return DEFAULT_CONNECTION_GRACE_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_CONNECTION_GRACE_S
+    return max(value, 0.0)
+
+
+def _uvicorn_args() -> list[str]:
+    """The exact argv this entrypoint execs, as data.
+
+    `--timeout-graceful-shutdown` is the #2249 fix. Without it Uvicorn's
+    shutdown waits **forever** for in-flight requests to finish:
+    `Server._wait_tasks_to_complete` spins while any connection exists, and
+    the `wait_for` around it uses `timeout_graceful_shutdown=None`. The
+    lifespan shutdown — where the task drain, sandbox cleanup, shared-client
+    close and engine disposal live — runs only after that wait, so it never
+    ran at all. One wedged in-flight request or an open streaming response
+    during a drain window (a load generator's pooled clients across the
+    soak's kill/drain phase) is that hang: the process never exits, the drain
+    window fills with 5xx, and the container's grace deadline ends in SIGKILL.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "maistro_server.main:app",
+        "--host",
+        "0.0.0.0",  # nosec B104 - container must accept traffic from its network.
+        "--port",
+        "8000",
+        "--timeout-graceful-shutdown",
+        # Uvicorn's CLI declares this flag INTEGER; a float literal such as
+        # "10.0" aborts the exec with "is not a valid integer".
+        str(int(_connection_grace_s())),
+    ]
+
 
 def _psycopg_dsn(database_url: str) -> str:
     """Return a libpq DSN from any PostgreSQL spelling accepted by MAIstro."""
@@ -68,19 +122,7 @@ def run_migrations() -> None:
 
 def main() -> None:
     run_migrations()
-    os.execvp(
-        sys.executable,
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "maistro_server.main:app",
-            "--host",
-            "0.0.0.0",  # nosec B104 - container must accept traffic from its network.
-            "--port",
-            "8000",
-        ],
-    )
+    os.execvp(sys.executable, _uvicorn_args())
 
 
 if __name__ == "__main__":
