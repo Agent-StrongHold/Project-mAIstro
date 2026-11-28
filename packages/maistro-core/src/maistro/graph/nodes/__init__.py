@@ -55,6 +55,11 @@ AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
         "node_resolver",
         "provider_registry",
         "llm_router",
+        # Container-owned capability slot registry (#2405): the reconstructible
+        # infra.approval_gated_action node resolves its infra_action provider
+        # through the live registry on resume instead of a serialized object.
+        # Optional for every existing kind; the approval node requires it.
+        "capability_registry",
         # Inbound A2A content policy and its audit trail (#1137): the delegate
         # node scans peer-controlled payloads at the canonical boundary and
         # records verdicts beside the canonical security audit log. Optional
@@ -258,6 +263,7 @@ def _import_node_modules() -> None:
         "human_delegate_to_role",  # registers "human.delegate_to_role"
         "human_fence",  # registers "human.fence_decision"
         "human_review_and_edit",  # registers "human.review_and_edit"
+        "infra_approval_action",  # registers "infra.approval_gated_action" (#2405)
         "jira_poll",  # registers "jira.poll"
         "jira_wait_for_subtasks",  # registers "jira.wait_for_subtasks"
         "llm_summarize",  # registers "llm.summarize"

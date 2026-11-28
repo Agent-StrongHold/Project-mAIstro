@@ -46,6 +46,10 @@ _CONTAINER_ATTRIBUTE = {
     # Per-cycle bounded-discovery context (#1051): a Container-owned provider
     # the host wires at creation; the composition root passes it through.
     "discovery_context": "discovery_context",
+    # Capability slot registry (#2405): the Container-owned registry the
+    # reconstructible infra.approval_gated_action node resolves its provider
+    # from on resume.
+    "capability_registry": "capabilities",
 }
 
 

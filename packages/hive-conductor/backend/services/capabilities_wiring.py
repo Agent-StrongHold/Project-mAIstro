@@ -234,10 +234,53 @@ def _build_self_repair_approval_admittor(
             effect_key=effect_key,
             resolve_provider=resolve_provider,
             run_store=engine.run_store,
+            resource=proposal.resource,
         )
         return record.run.run_id
 
     return admit
+
+
+def _build_self_repair_pending_hydration() -> Callable[[], Any]:
+    """Durable index of pending self-repair approval waits (resource -> run_id).
+
+    Restart hydration for ``RuleBasedRepair`` (#2405): a fresh process — or a
+    second replica — must reconcile waits it did not admit itself before the
+    next degraded snapshot, or the in-memory pending dict's emptiness would
+    admit a second approval Run for one unresolved incident. The durable
+    HITL-paused scan is the truth; this loader owns no state.
+    """
+
+    async def load_pending() -> dict[str, str]:
+        from services.engine import get_engine
+
+        store = get_engine().graph_run_store
+        if store is None:
+            # No durable HITL surface exists in this composition: durable
+            # admission refuses up front (see the admittor), so no wait can
+            # be parked anywhere. Empty is the truthful answer here — unlike
+            # a store that exists but fails below, which stays fail-closed.
+            return {}
+        pending: dict[str, str] = {}
+        after: tuple[str, str] | None = None
+        while True:
+            page = await store.list_hitl_paused(limit=100, after=after)
+            for record in page.items:
+                try:
+                    graph = record.run.graph.materialize()
+                except Exception:
+                    continue
+                if graph.metadata.get("admission_source") != "self_repair":
+                    continue
+                resource = record.run.provenance.get("self_repair_resource")
+                if isinstance(resource, str) and resource:
+                    pending[resource] = record.run.run_id
+            if page.resume_after is None or page.exhausted:
+                break
+            after = page.resume_after
+        return pending
+
+    return load_pending
 
 
 def _build_self_repair_approval_run_status() -> Callable[[str], Any]:
@@ -291,6 +334,7 @@ async def _register_self_repair(
             effect_invoker=invoke_action,
             approval_admittor=admit_approval,
             approval_run_status=_build_self_repair_approval_run_status(),
+            pending_approvals_loader=_build_self_repair_pending_hydration(),
             autonomy=config.infra_autonomy,
         )
     )

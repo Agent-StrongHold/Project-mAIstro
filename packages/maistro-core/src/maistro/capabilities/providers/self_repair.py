@@ -14,10 +14,11 @@ The in-flight guard keeps a pending resource from being re-dispatched next cycle
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from maistro.capabilities.self_repair_governor import SafetyGovernor
+from maistro.capabilities.self_repair_incident import stable_effect_key
 from maistro.capabilities.self_repair_rules import diagnose
 from maistro.capabilities.slots.infra import (
     ActionResult,
@@ -44,6 +45,10 @@ InfraEffectInvoker = Callable[[str, dict[str, Any], str], Awaitable[ActionResult
 ApprovalAdmittor = Callable[[RepairProposal, str], Awaitable[str]]
 #: Look up a parked approval Run's status value (e.g. ``cancelled``); ``None`` if unknown.
 ApprovalRunStatus = Callable[[str], Awaitable[str | None]]
+#: Durable index of pending approval waits (resource -> run_id), read fresh at
+#: each cycle so a restart or a second replica reconciles waits it did not
+#: admit itself (#2405). An empty mapping is a normal answer, not an error.
+PendingApprovalsLoader = Callable[[], Awaitable[Mapping[str, str]]]
 
 #: Durable Run statuses that settle an approval wait and release the governor.
 _TERMINAL_APPROVAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
@@ -64,6 +69,7 @@ class RuleBasedRepair:
         effect_invoker: InfraEffectInvoker | None = None,
         approval_admittor: ApprovalAdmittor | None = None,
         approval_run_status: ApprovalRunStatus | None = None,
+        pending_approvals_loader: PendingApprovalsLoader | None = None,
         governor: SafetyGovernor | None = None,
         autonomy: Autonomy = "auto_safe",
         max_actions_per_cycle: int = 2,
@@ -72,6 +78,7 @@ class RuleBasedRepair:
         self._effect_invoker = effect_invoker
         self._approval_admittor = approval_admittor
         self._approval_run_status = approval_run_status
+        self._pending_approvals_loader = pending_approvals_loader
         self._governor = governor or SafetyGovernor()
         self._autonomy = autonomy
         self._max_actions = max_actions_per_cycle
@@ -121,8 +128,14 @@ class RuleBasedRepair:
 
         # Release in_flight for waits that settled out-of-band (cancel_hitl,
         # timeout, resume-to-completion) so later faults on that resource are
-        # not permanently suppressed (#2405 Codex P2).
-        await self._reconcile_pending_approvals()
+        # not permanently suppressed (#2405 Codex P2), and reconcile waits this
+        # process never admitted (a restart or a second replica) before the
+        # degraded snapshot can admit a duplicate (#2405 restart audit). A
+        # failed hydration refuses the cycle: without durable evidence of what
+        # is already parked, admitting anything would guess.
+        if not await self._reconcile_pending_approvals():
+            self._last_cycle = RepairCycleResult(ts="", results=[])
+            return self._last_cycle
 
         try:
             health = await self._monitor.snapshot()
@@ -143,9 +156,34 @@ class RuleBasedRepair:
         self._last_cycle = RepairCycleResult(ts=health.ts, results=results)
         return self._last_cycle
 
-    async def _reconcile_pending_approvals(self) -> None:
+    async def _reconcile_pending_approvals(self) -> bool:
+        """Hydrate durable pending waits, then release settled ones.
+
+        Returns False when the cycle must be refused (hydration failed): a
+        process that cannot see durable pending waits must not admit new work
+        on top of that blindness. Hydration runs whenever the process-local
+        pending dict is empty — a fresh process, a restart, or a second
+        replica's first cycle — and restores the governor's in-flight guard
+        from durable truth, not local bookkeeping.
+        """
+        if self._pending_approvals_loader is not None and not self._pending_approval_runs:
+            try:
+                hydrated = await self._pending_approvals_loader()
+            except Exception as exc:
+                logger.warning("self_repair: pending approval hydration failed: %s", exc)
+                return False
+            for resource, run_id in hydrated.items():
+                if resource in self._pending_approval_runs:
+                    continue
+                self._pending_approval_runs[resource] = run_id
+                # Restore the in-flight guard without consuming budget or
+                # cooldown bookkeeping: the wait was dispatched (possibly by
+                # another process), and the governor must hold the resource
+                # until the Run settles. Cooldowns and budgets still gate any
+                # *new* dispatch — hydration removes neither.
+                self._governor.mark_in_flight(resource)
         if not self._pending_approval_runs or self._approval_run_status is None:
-            return
+            return True
         settled: list[str] = []
         for resource, run_id in self._pending_approval_runs.items():
             try:
@@ -164,6 +202,7 @@ class RuleBasedRepair:
             settled.append(resource)
         for resource in settled:
             del self._pending_approval_runs[resource]
+        return True
 
     # --- per-proposal handling ---
     async def _handle(self, proposal: RepairProposal, dispatched: int) -> tuple[RepairResult, bool]:
@@ -205,9 +244,13 @@ class RuleBasedRepair:
 
         Never awaits an in-process approval Event. Without an admittor the
         proposal is suppressed rather than spawning a process-local waiter.
+        The effect key is derived from durable facts (workspace-independent
+        resource/action/request digest), not ``id(proposal)``: a restart or a
+        second replica observing the same incident computes the same key, so
+        the canonical claim in the admittor converges on one Run.
         """
         action = proposal.action or ""
-        effect_key = f"self_repair:{proposal.resource}:{action}:{id(proposal)}"
+        effect_key = stable_effect_key(proposal.resource, action, proposal.params)
         if self._approval_admittor is None:
             self._governor.record_result(proposal.resource, recovered=False)
             return RepairResult(
@@ -254,5 +297,5 @@ class RuleBasedRepair:
         return await self._effect_invoker(
             action,
             proposal.params,
-            f"self_repair:{proposal.resource}:{action}:{id(proposal)}",
+            stable_effect_key(proposal.resource, action, proposal.params),
         )

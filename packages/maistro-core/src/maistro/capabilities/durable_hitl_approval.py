@@ -1,30 +1,43 @@
 """Admit approval-gated infra effects as durable waiting-human NodeRuns (#2405).
 
-``InboxApproval`` waits on an in-process ``asyncio.Event``. That wait dies with
-the process and never appears in ``/v1/hitl`` discovery. Self-repair instead
-admits a one-node Graph that pauses on ``awaiting_human_approval`` through the
-existing governed Invocation + ``invoke_capability_effect`` seam (#1898).
+Self-repair approval admission parks one governed infra effect on a durable
+one-node Graph so the wait survives restart and appears in ``/v1/hitl``
+discovery. The node itself is the registered, restart-reconstructible
+``infra.approval_gated_action`` kind; this module owns *admission*:
 
-The returned Run is ``PAUSED`` with a persisted ``DurableApproval``. Answering
-and resuming remain the HITL / ApprovalStore doors (#55 owns HITL→store
-resolve linkage); this module only admits the wait so it survives restart.
+- the canonical Run is claimed under the incident's stable occurrence claim
+  (``self_repair_incident``), so a restart or a second replica racing the
+  same unresolved incident reconciles to one Run instead of minting a
+  second approval (``DuplicateOccurrence`` losers reuse the winner);
+- a crash between ``create_run`` and the durable continuation's first
+  checkpoint is recovered by re-entering ``run_durable_graph`` against the
+  claimed Run — the launch snapshot in Run provenance rebuilds checkpoint 1
+  exactly as admitted;
+- an incident whose previous claim has terminally settled chains to the
+  next episode token, so genuinely new incidents still admit while the
+  unique claim still decides any race.
+
+Answering and resuming remain the HITL / ApprovalStore doors (#55 owns
+HITL→store resolve linkage); recovery of an answered Run is the owned
+``self_repair`` recovery category over the canonical Graph seams.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, ClassVar
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from maistro.capabilities.approval_store import approval_request_digest
-from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import CapabilityEffectContext
-from maistro.capabilities.governed_invocation import (
-    GovernedInvocationExecutionService,
-    InvocationPolicyContext,
+from maistro.capabilities.self_repair_incident import (
+    CHAIN_LIMIT_ERROR,
+    INCIDENT_RESOURCE_KEY,
+    MAX_EPISODE_CHAIN,
+    SELF_REPAIR_ADMISSION_SOURCE,
+    chain_incident_claim,
+    incident_claim,
 )
-from maistro.capabilities.slots.infra import ActionResult, ActionTier, InfraAction, tier_for
+from maistro.capabilities.slots.infra import ActionResult, InfraAction
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import (
     DurableRunRecord,
@@ -33,111 +46,26 @@ from maistro.graph.durable_runs import (
     durable_graph_launch_provenance,
     run_durable_graph,
 )
-from maistro.graph.nodes.base import BaseNode, NodeContext
-from maistro.graph.nodes.capability_effect import invoke_capability_effect
-from maistro.policy.types import Decision, PolicyVerdict
+from maistro.graph.nodes.base import BaseNode
+from maistro.graph.nodes.infra_approval_action import (
+    BINDING_REFERENCE_KEY,
+    InfraApprovalActionIn,
+    InfraApprovalActionNode,
+    _require_approval_policy,
+    binding_reference_of,
+    execute_approved_infra_action,
+    requires_durable_approval,
+)
+from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.store import DuplicateOccurrence, RunIntegrityError, RunStore
 
 #: Stable node id for the single-effect self-repair approval Graph.
 SELF_REPAIR_APPROVAL_NODE_ID = "self_repair_action"
 
-
-class _InfraActionIn(BaseModel):
-    action: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    effect_key: str
-
-
-class _InfraActionOut(BaseModel):
-    ok: bool
-    detail: str = ""
-    blocked_pending_approval: bool = False
-
-
-class _InfraApprovalNode(BaseNode[_InfraActionIn, _InfraActionOut]):
-    """Governed infra_action that parks on human approval before the host call."""
-
-    kind: ClassVar[str] = "infra.approval_gated_action"
-    kind_category: ClassVar = "sync.tool"
-    input_schema: ClassVar[type[BaseModel]] = _InfraActionIn
-    output_schema: ClassVar[type[BaseModel]] = _InfraActionOut
-    external_io: ClassVar[bool] = True
-
-    def __init__(
-        self,
-        *,
-        service: GovernedInvocationExecutionService,
-        binding: Binding,
-        resolve_provider: Callable[[Binding], Awaitable[InfraAction]],
-        execute_approved: Callable[[InfraAction, str, dict[str, Any]], Awaitable[ActionResult]],
-    ) -> None:
-        self._service = service
-        self._binding = binding
-        self._resolve_provider = resolve_provider
-        self._execute_approved = execute_approved
-
-    async def _execute(self, inputs: _InfraActionIn, ctx: NodeContext) -> _InfraActionOut:
-        request: dict[str, Any] = {
-            "action": inputs.action,
-            "params": dict(inputs.params),
-        }
-
-        async def resolver(candidate: Binding) -> InfraAction:
-            return await self._resolve_provider(candidate)
-
-        async def executor(provider: ResolvedCapabilityProvider, payload: Any) -> dict[str, Any]:
-            if not isinstance(provider, InfraAction):
-                raise TypeError("infra approval Invocation resolved a non-infra provider")
-            body = dict(payload) if isinstance(payload, Mapping) else {}
-            result = await self._execute_approved(
-                provider,
-                str(body.get("action") or ""),
-                dict(body.get("params") or {}),
-            )
-            return {
-                "ok": result.ok,
-                "detail": result.detail,
-                "blocked_pending_approval": result.blocked_pending_approval,
-            }
-
-        invocation = await invoke_capability_effect(
-            lambda: self._service.invoke(
-                binding=self._binding,
-                run_id=ctx.run_id,
-                node_run_id=ctx.node_run_id,
-                attempt_id=ctx.attempt_id,
-                effect_key=inputs.effect_key,
-                request=request,
-                resolver=resolver,
-                executor=executor,
-            ),
-            effect_key=inputs.effect_key,
-            continuation_metadata={
-                "action": inputs.action,
-                "params": dict(inputs.params),
-                "requester": "self_repair",
-            },
-            request_digest=approval_request_digest(request),
-        )
-        result = invocation.result if isinstance(invocation.result, Mapping) else {}
-        return _InfraActionOut(
-            ok=bool(result.get("ok")),
-            detail=str(result.get("detail") or ""),
-            blocked_pending_approval=bool(result.get("blocked_pending_approval")),
-        )
-
-
-async def _require_approval_policy(
-    _binding: Binding,
-    _request: Any,
-    context: InvocationPolicyContext,
-) -> PolicyVerdict:
-    if context.approved:
-        return PolicyVerdict(Decision.ALLOW, reason="approved", rule="self-repair-hitl")
-    return PolicyVerdict(
-        Decision.REQUIRE_APPROVAL,
-        reason="self-repair action requires human approval",
-        rule="self-repair-hitl",
-    )
+#: Backwards-compatible aliases: the node implementation moved to the
+#: registered kind so recovery can reconstruct it from durable facts.
+_InfraApprovalNode = InfraApprovalActionNode
+_InfraActionIn = InfraApprovalActionIn
 
 
 def _approval_graph(
@@ -147,6 +75,7 @@ def _approval_graph(
     action: str,
     params: Mapping[str, Any],
     effect_key: str,
+    binding: Binding,
 ) -> Graph:
     return Graph(
         graph_id=f"self-repair-approval:{effect_key}",
@@ -167,7 +96,129 @@ def _approval_graph(
             )
         ],
         edges=[],
-        metadata={"entry_node": SELF_REPAIR_APPROVAL_NODE_ID, "admission_source": "self_repair"},
+        metadata={
+            "entry_node": SELF_REPAIR_APPROVAL_NODE_ID,
+            "admission_source": SELF_REPAIR_ADMISSION_SOURCE,
+            # Non-secret Binding reference: recovery re-resolves it live
+            # through the Container-owned Binding authority instead of
+            # trusting a serialized object (revocation fails closed).
+            BINDING_REFERENCE_KEY: binding_reference_of(binding),
+        },
+    )
+
+
+async def _resolve_incident_claim(
+    *,
+    run_store: RunStore,
+    graph: Graph,
+    base_provenance: dict[str, Any],
+    claim: dict[str, str],
+    actor: str,
+) -> tuple[str, bool]:
+    """Atomically claim the incident episode; reuse a live claim's Run.
+
+    Returns ``(run_id, created)``. ``created=False`` means the canonical Run
+    already carries this episode's live claim — the caller must reconcile to
+    it (reuse the parked durable wait if it exists, or re-enter
+    ``run_durable_graph`` under the same Run id when the crash between
+    ``create_run`` and the first checkpoint left only the canonical Run).
+
+    A terminal claim is superseded by chaining the episode token, so a
+    genuinely new incident after settlement admits while the claim stays
+    race-safe. ``DuplicateOccurrence`` losers re-probe instead of inserting a
+    second Run; check-then-insert alone is never the authority.
+    """
+    current_claim = dict(claim)
+    for _ in range(MAX_EPISODE_CHAIN):
+        existing = await run_store.find_occurrence_run(current_claim)
+        if existing is None:
+            try:
+                admitted = await run_store.create_run(
+                    graph,
+                    initial_status=RunStatus.QUEUED,
+                    actor_principal_id=actor,
+                    provenance={**base_provenance, **current_claim},
+                )
+                return admitted.run_id, True
+            except DuplicateOccurrence:
+                # The claim's winner committed between the probe and the
+                # insert; resolve it and reconcile instead of retrying blind.
+                existing = await run_store.find_occurrence_run(current_claim)
+                if existing is None:
+                    raise RunIntegrityError(
+                        "self-repair incident claim was lost after DuplicateOccurrence"
+                    ) from None
+        expected_key = str(base_provenance.get("effect_key") or "")
+        claimed_key = str(existing.provenance.get("effect_key") or "")
+        if expected_key and claimed_key and expected_key != claimed_key:
+            raise RunIntegrityError(
+                f"incident claim {current_claim} is held by Run {existing.run_id!r} "
+                "for a different effect; refusing to alias unrelated work"
+            )
+        if existing.status not in TERMINAL_RUN_STATUSES:
+            return existing.run_id, False
+        current_claim = chain_incident_claim(current_claim, existing.run_id)
+    raise RuntimeError(CHAIN_LIMIT_ERROR)
+
+
+async def _claim_incident_run(
+    *,
+    store: DurableRunStore,
+    run_store: RunStore,
+    graph: Graph,
+    inputs: dict[str, Any],
+    provenance: dict[str, Any],
+    claim: dict[str, str],
+    actor: str,
+) -> tuple[str | None, DurableRunRecord | None]:
+    """Claim the incident episode, or reconcile to the live claim's wait.
+
+    Returns ``(run_id, existing_wait)``. A non-None ``existing_wait`` is the
+    durable record the episode's live claim already parked: the caller returns
+    it untouched. ``existing_wait`` is None both for a freshly claimed Run and
+    for the crash between ``create_run`` and the first checkpoint — the caller
+    launches (or re-enters) ``run_durable_graph`` under ``run_id`` either way;
+    the admitted launch snapshot in Run provenance rebuilds checkpoint 1.
+    """
+    run_id, created = await _resolve_incident_claim(
+        run_store=run_store,
+        graph=graph,
+        base_provenance={**provenance, **durable_graph_launch_provenance(inputs=inputs)},
+        claim=claim,
+        actor=actor,
+    )
+    if created:
+        return run_id, None
+    return run_id, await store.get(run_id)
+
+
+def _admission_node(
+    *,
+    effect_context: CapabilityEffectContext,
+    binding: Binding,
+    resolve_provider: Callable[[Binding], Awaitable[InfraAction]],
+) -> InfraApprovalActionNode:
+    """The admission-constructed approval node: same class recovery composes.
+
+    The admitting process injects the narrowed Invocation service, the
+    resolved Binding and the Container-resolved provider lookup — exactly the
+    collaborators it holds. Recovery rebuilds the same kind from durable
+    facts plus live authorities; the execution path is shared.
+    """
+
+    async def execute_approved(
+        provider: InfraAction, approved_action: str, approved_params: dict[str, Any]
+    ) -> ActionResult:
+        # The governed seam already verified DurableApproval. HostHealthAction
+        # is a pure executor here (#2405): pass approved=True so it never
+        # re-enters an in-process inbox wait.
+        return await execute_approved_infra_action(provider, approved_action, approved_params)
+
+    return InfraApprovalActionNode(
+        service=effect_context.with_policy_evaluator(_require_approval_policy).invocations,
+        binding=binding,
+        resolve_provider=resolve_provider,
+        execute_approved=execute_approved,
     )
 
 
@@ -184,6 +235,7 @@ async def admit_self_repair_approval(
     resolve_provider: Callable[[Binding], Awaitable[InfraAction]],
     actor_principal_id: str | None = None,
     run_store: Any | None = None,
+    resource: str | None = None,
 ) -> DurableRunRecord:
     """Park one self-repair action on a durable waiting-human NodeRun.
 
@@ -192,16 +244,17 @@ async def admit_self_repair_approval(
     Workspace + Project the operator can authorize — not the synthetic
     effect-Binding ids used only for ``infra_action`` resolution.
 
-    When ``run_store`` is set, a canonical Run is admitted first (QUEUED, with
-    durable launch provenance) and its id is passed to the executor. Calling
-    ``run_durable_graph`` with a store and no admitted ``run_id`` raises
-    ``RunIntegrityError``.
+    When ``run_store`` is set, a canonical Run is claimed under the incident's
+    stable occurrence claim before the durable Graph starts: concurrent or
+    restarted admissions of the same unresolved incident converge on one Run
+    instead of minting duplicate approvals. ``resource`` names the affected
+    infrastructure resource and is stamped onto Run provenance so restart
+    hydration can reconcile pending waits without process-local state.
 
     Raises ``ValueError`` when the action does not require approval (caller
     should auto-run those). Returns the durable record; status is ``PAUSED``.
     """
-    tier = tier_for(action, dict(params))
-    if tier is ActionTier.READ:
+    if not requires_durable_approval(action, params):
         raise ValueError(f"action {action!r} does not require durable approval")
     if not workspace_id.strip() or not project_id.strip():
         raise ValueError("workspace_id and project_id are required for durable HITL scope")
@@ -209,29 +262,10 @@ async def admit_self_repair_approval(
     if effect_context.approval_store is None:
         raise RuntimeError("CapabilityEffectContext has no ApprovalStore for durable HITL")
 
-    # Narrow policy to REQUIRE_APPROVAL without inventing a second Invocation
-    # authority — shares Binding/store/ApprovalStore with the process context.
-    gated = effect_context.with_policy_evaluator(_require_approval_policy)
-    service: GovernedInvocationExecutionService = gated.invocations
-
-    async def execute_approved(
-        provider: InfraAction, approved_action: str, approved_params: dict[str, Any]
-    ) -> ActionResult:
-        # The governed seam already verified DurableApproval. HostHealthAction
-        # is a pure executor here (#2405): pass approved=True so it never
-        # re-enters an in-process inbox wait.
-        act = provider.act
-        try:
-            return await act(approved_action, approved_params, approved=True)
-        except TypeError:
-            # Providers that have not taken the approved= kwarg yet.
-            return await act(approved_action, approved_params)
-
-    node = _InfraApprovalNode(
-        service=service,
+    node = _admission_node(
+        effect_context=effect_context,
         binding=binding,
         resolve_provider=resolve_provider,
-        execute_approved=execute_approved,
     )
     graph = _approval_graph(
         workspace_id=workspace_id,
@@ -239,6 +273,7 @@ async def admit_self_repair_approval(
         action=action,
         params=params,
         effect_key=effect_key,
+        binding=binding,
     )
 
     def resolver(node_id: str, _graph: Graph) -> BaseNode[Any, Any]:
@@ -250,29 +285,44 @@ async def admit_self_repair_approval(
         "action": action,
         "params": dict(params),
         "effect_key": effect_key,
+        # The durable Binding reference the reconstructible kind re-resolves
+        # on resume (non-secret; revocation fails closed at the live store).
+        "binding_reference": binding_reference_of(binding),
     }
-    provenance = {
-        "admission_source": "self_repair",
+    provenance: dict[str, Any] = {
+        "admission_source": SELF_REPAIR_ADMISSION_SOURCE,
         "executor": "durable_graph",
         "effect_key": effect_key,
         "action": action,
     }
+    if resource:
+        provenance[INCIDENT_RESOURCE_KEY] = resource
     actor = actor_principal_id or "self-repair"
+
     run_id: str | None = None
     if run_store is not None:
-        # Admission owns Run identity when the canonical spine is present.
-        # Skipping create_run leaves run_durable_graph to raise RunIntegrityError
-        # (#2405 Codex P1) — every Hive-wired approval would FAIL closed.
-        admitted = await run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=actor,
-            provenance={
-                **provenance,
-                **durable_graph_launch_provenance(inputs=inputs),
-            },
+        run_id, existing_wait = await _claim_incident_run(
+            store=store,
+            run_store=run_store,
+            graph=graph,
+            inputs=inputs,
+            provenance=provenance,
+            claim=incident_claim(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                resource=resource or effect_key,
+                action=action,
+                params=params,
+            ),
+            actor=actor,
         )
-        run_id = admitted.run_id
+        if existing_wait is not None:
+            # Another admission (this process before a restart, or another
+            # replica) already holds the episode's live claim and its durable
+            # wait exists — PAUSED awaiting a human, or QUEUED with an answer
+            # being recovered. A second admission must not re-execute it or
+            # mint a second DurableApproval.
+            return existing_wait
 
     record = await run_durable_graph(
         graph,
@@ -293,5 +343,6 @@ async def admit_self_repair_approval(
 
 __all__ = [
     "SELF_REPAIR_APPROVAL_NODE_ID",
+    "_require_approval_policy",
     "admit_self_repair_approval",
 ]

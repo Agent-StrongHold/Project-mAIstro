@@ -1343,6 +1343,12 @@ class Container:
             provider_registry=self.provider_registry,
             llm_router=self.llm_router,
             discovery_context=self.discovery_context,
+            # The Container-owned capability slot registry (#2405): required
+            # by the reconstructible `infra.approval_gated_action` node, which
+            # re-resolves its infra_action provider live on resume instead of
+            # trusting an admission-time closure. Unwired containers keep the
+            # registry the Container itself lazily boots.
+            capability_registry=self.capabilities,
         )
 
     async def recover_abandoned_attempts(
@@ -4482,6 +4488,7 @@ def build_node_resolver(
     llm_router: LLMRouter | None = None,
     graph_run_store: DurableRunStore | None = None,
     discovery_context: Any | None = None,
+    capability_registry: Any = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -4570,5 +4577,10 @@ def build_node_resolver(
         # discovery nodes run context-free (Binding-gated fetches still
         # refuse without a Binding) — the authority never widens execution.
         "discovery_context": discovery_context,
+        # Capability slot registry (#2405): required by the reconstructible
+        # `infra.approval_gated_action` node; None (bare callers) fails that
+        # kind's composition closed rather than resolving providers from
+        # nothing.
+        "capability_registry": capability_registry,
     }
     return _resolver
