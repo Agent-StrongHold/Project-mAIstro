@@ -82,6 +82,11 @@ class PgEventStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
+    @property
+    def pool(self) -> asyncpg.Pool:
+        """The pool this store writes; the projection registry shares it."""
+        return self._pool
+
     async def ensure_schema(self) -> None:
         await ensure_canonical_event_schema(self._pool)
 
@@ -221,6 +226,15 @@ class PgEventStore:
                 persisted.sequence,
             )
             return EventAppendResult(persisted, inserted=True)
+
+    async def stream_watermark(self, stream_id: str) -> int:
+        # The durable mark table, not the surviving rows: retention deletes
+        # rows but never rewinds the mark (see append_with_disposition).
+        value = await self._pool.fetchval(
+            "SELECT last_sequence FROM canonical_event_stream_watermarks WHERE stream_id = $1",
+            stream_id,
+        )
+        return int(value) if value is not None else 0
 
     async def get(self, event_id: str) -> EventEnvelope | None:
         row = await self._pool.fetchrow(
