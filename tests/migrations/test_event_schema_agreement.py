@@ -34,11 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 #: The tables the event revisions create: three by 004, `consumer_cursors` by
-#: 036, `event_replay_cursors` by 065, delivery-receipt columns by 066.
+#: 036, `event_replay_cursors` by 065, delivery-receipt columns by 066, and
+#: the canonical-projection column and tables by 074 (#2506).
 #: Spelled out rather than derived from the catalogue: a test that asks
 #: "are the tables that exist equal?" passes vacuously when neither side
 #: creates anything.
 EVENT_TABLES = (
+    "canonical_event_projection_streams",
+    "canonical_projection_failures",
     "consumer_cursors",
     "event_log",
     "event_replay_cursors",
@@ -50,12 +53,14 @@ EVENT_TABLES = (
 #: the revisions strictly between the two, so rendering ``003:036`` would drag
 #: every unrelated table from 005 to 035 into the comparison. 065 (#836)
 #: creates `event_replay_cursors`; 066 (#1060) carries the delivery-receipt
-#: columns both sides must agree on.
+#: columns both sides must agree on; 074 (#2506) adds the canonical source
+#: column/index on `event_log` and the two projection tables.
 EVENT_REVISION_RANGES = (
     "003:004",
     "035_outcome_scope_thumb_index:036_consumer_cursors",
     "064:065",
     "065:066",
+    "073:074",
 )
 
 
@@ -191,7 +196,7 @@ async def built_schemas():
     """Build both schemas side by side and hand back their catalogues."""
     import asyncpg
 
-    from maistro.events.pg_stores import _SCHEMA
+    from maistro.events.pg_stores import _SCHEMA, _SCHEMA_UPGRADES
 
     conn = await asyncpg.connect(_require_postgres())
     try:
@@ -205,6 +210,16 @@ async def built_schemas():
 
         await conn.execute("SET search_path TO agree_ensure")
         await conn.execute(_SCHEMA)
+        # Mirror `ensure_event_schema()` exactly: it applies `_SCHEMA` and
+        # then `_SCHEMA_UPGRADES`, and the legacy-column upgrades (including
+        # the `source_event_id` index, which must come after that column's
+        # `ADD COLUMN` on pre-074 databases) are part of the bootstrapped
+        # schema being compared. Today the upgrades are otherwise
+        # schema-neutral (`ADD COLUMN IF NOT EXISTS` on columns `_SCHEMA`
+        # already creates), so this fixture change only records where the
+        # index really comes from.
+        for statement in _SCHEMA_UPGRADES:
+            await conn.execute(statement)
 
         await conn.execute("SET search_path TO public")
         yield (

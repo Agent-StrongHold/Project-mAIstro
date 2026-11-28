@@ -30,11 +30,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import httpx
 
+from maistro.events.envelope import EventEnvelope
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
     DeliveryAlreadyStarted,
@@ -50,8 +55,11 @@ from maistro.events.invocations import (
     validated_outcome,
 )
 from maistro.http import shared_client
+from maistro.sqlite_schema import connection_transaction_lock, execute_schema_script
 
 if TYPE_CHECKING:
+    import aiosqlite
+
     from maistro.events.durable_log import EventLogStore, LoggedEvent
     from maistro.events.invocations import HandlerInvocation, InvocationStore
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
@@ -633,3 +641,610 @@ async def process_events(
         limit=limit,
     )
     return batch.cursor
+
+
+# ---
+# Canonical-Envelope -> durable-log replay projection (#2506).
+#
+# The persist-first publisher (`CanonicalEventPublisher`) projects an inserted
+# canonical Event onto the legacy bus, whose authoritative `before_handlers`
+# bridge appends it into this module's `EventLogStore` — the durable trigger
+# log's only ingress. That ingress is at-most-once: a durable-log append that
+# fails after the canonical append has committed is correctly surfaced
+# (`EventSubscriberFailure`), but the canonical fact is already durable and a
+# retry emission of the same `event_id` returns `inserted=False`, suppressing
+# the bridge forever. The event then sits outside the only log the trigger
+# cursor scans.
+#
+# The projection below closes that window without creating a second event
+# identity or processing lifecycle: a bounded, per-stream replay cursor over
+# the canonical EventStore, with source-`event_id` dedupe enforced by the log
+# itself (`append(source_event_id=...)`), retry backoff, a terminal
+# dead-letter disposition for poison records, and per-stream lease/fencing so
+# two replicas share delivery. It is ticked by `Container.process_durable_events`
+# — the ordinary ADR-086 processing tick — before the legacy pass, so healing
+# needs no special repair path and no test-only entry point.
+
+DEFAULT_MAX_PROJECTION_ATTEMPTS = 3
+"""Total attempts a failing projection append gets before it is dead-lettered.
+
+Mirrors ``MAX_PUBLISH_ATTEMPTS`` on the SQLite outbox and ``MAX_ATTEMPTS`` on
+delivery receipts: a bounded terminal disposition beats an unbounded retry
+loop that wedges the stream's later events forever.
+"""
+
+DEFAULT_PROJECTION_BACKOFF_SECONDS = 1.0
+"""How long a stream event that just failed its log append waits before its
+next attempt is due. A backoff window that has not elapsed holds the stream's
+cursor (and therefore its later events) below the failure for this tick —
+the same same-stream head-of-line behavior the outbox chose (#1162)."""
+
+
+DEFAULT_PROJECTION_LEASE_SECONDS = 300.0
+"""How long a claimed projection-stream scan lease stays owned before another
+replica may take it. Mirrors `events.consumer_cursor.DEFAULT_LEASE_SECONDS`:
+long enough that a normal scan is not stolen mid-run, short enough that a
+replica killed right after claiming does not strand its streams. Deliberately
+a projection-local constant and lease type — the legacy bridge's cursor store
+is a separate consumer's mechanics, not an import surface for this one."""
+
+
+@dataclass(frozen=True)
+class ProjectionLease:
+    """Exclusive (for the lease) permission to scan one canonical stream.
+
+    `position` is the durable scan position as of the claim; `fencing_token`
+    must accompany every `advance`, and a token the store no longer recognises
+    means the lease was taken over and the write is refused.
+    """
+
+    position: int
+    fencing_token: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class ProjectionFailure:
+    """One canonical event whose durable-log append keeps failing.
+
+    ``poisoned_at`` is the terminal poison disposition: set after
+    ``max_attempts`` total attempts, it releases the stream (the projector's
+    cursor moves past the event) while keeping the failure visible and
+    addressable through ``dead_letters``. Identity is the canonical
+    ``event_id`` — stable across restarts and replicas.
+    """
+
+    event_id: str
+    stream_id: str
+    attempts: int
+    last_error: str
+    next_attempt_at: float
+    poisoned_at: float | None
+
+
+@runtime_checkable
+class CanonicalProjectionStore(Protocol):
+    """Durable per-stream replay cursor for the canonical-log projector (#2506).
+
+    One row per canonical stream. `register_stream` inserts a stream the
+    publisher has not seen before at the canonical store's *current*
+    high-water sequence — everything at or below it was the pre-projection
+    bridge's responsibility and is deliberately never rescanned, so retained
+    history cannot be projected a second time. `claim`/`advance` are the same
+    leased+fenced, monotonic mechanics the legacy-bridge cursor store uses
+    (`events.consumer_cursor`), so two replicas share delivery without
+    double-projecting.
+    """
+
+    async def register_stream(self, stream_id: str) -> None:
+        """Track ``stream_id`` if absent, positioned at its canonical watermark."""
+        ...
+
+    async def registered_streams(self) -> tuple[str, ...]:
+        """Every tracked stream id, in stable order."""
+        ...
+
+    async def claim(
+        self,
+        stream_id: str,
+        *,
+        holder: str,
+        lease_seconds: float = DEFAULT_PROJECTION_LEASE_SECONDS,
+    ) -> ProjectionLease | None:
+        """Take or renew this stream's scan lease; ``None`` while another
+        holder's lease is live (the caller skips the stream this tick)."""
+        ...
+
+    async def advance(self, stream_id: str, *, fencing_token: str, position: int) -> bool:
+        """Record the highest confirmed sequence; refuses a stale fencing token
+        and never moves the position backwards."""
+        ...
+
+
+@runtime_checkable
+class ProjectionFailureStore(Protocol):
+    """Durable poison bookkeeping for canonical events that fail to project."""
+
+    async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
+        """Record one failed attempt; return whether the row is now dead-lettered."""
+        ...
+
+    async def forget(self, event_id: str) -> None:
+        """Drop any failure evidence — the event's row is confirmed in the log."""
+        ...
+
+    async def get(self, event_id: str) -> ProjectionFailure | None:
+        """Current failure state for one canonical event."""
+        ...
+
+    async def poisoned_records(self, *, limit: int = 100) -> list[ProjectionFailure]:
+        """Events past their attempt bound, oldest first, with their evidence."""
+        ...
+
+
+@dataclass(frozen=True)
+class ProjectionOutcome:
+    """What one `project_canonical_events` pass confirmed, per stream."""
+
+    streams_scanned: int
+    #: canonical events whose durable-log row this pass confirmed (appended
+    #: now, or already present via the bridge — the log's dedupe decides).
+    projected: int
+    #: events whose terminal poison disposition this pass released.
+    dead_lettered: int
+    #: per-stream cursor after the pass; only streams this holder scanned.
+    cursors: dict[str, int]
+
+
+class _ProjectionStep(StrEnum):
+    """What one canonical event decided for its stream's scan."""
+
+    CONFIRMED = "confirmed"
+    DEAD = "dead"
+    HOLD = "hold"
+
+
+async def _confirm_projection(
+    event: EventEnvelope,
+    *,
+    event_log: EventLogStore,
+    failure_store: ProjectionFailureStore,
+    append_kwargs: Callable[[EventEnvelope], dict[str, Any]],
+    now: float,
+) -> _ProjectionStep:
+    """Confirm one canonical event's durable-log row, or refuse to pass it.
+
+    ``CONFIRMED`` — the row is present (appended now, or already written by
+    the bridge; the log's source-`event_id` dedupe makes both one row).
+    ``DEAD`` — a terminal poison disposition released the event; the cursor
+    may move past it. ``HOLD`` — a retryable failure stands between the
+    cursor and this event; the stream stops below it this tick.
+    """
+    failure = await failure_store.get(event.event_id)
+    if failure is not None:
+        if failure.poisoned_at is not None:
+            # Poison disposition is terminal: the stream flows past the
+            # event, and the failure stays visible for repair.
+            return _ProjectionStep.DEAD
+        if failure.next_attempt_at > now:
+            # Backoff window not elapsed: this event holds the stream's
+            # cursor (and its later events) below it for this tick.
+            return _ProjectionStep.HOLD
+    try:
+        await event_log.append(**append_kwargs(event))
+    except Exception as exc:
+        dead = await failure_store.record_failure(
+            event.event_id, str(event.stream_id), f"{type(exc).__name__}: {exc}"
+        )
+        return _ProjectionStep.DEAD if dead else _ProjectionStep.HOLD
+    await failure_store.forget(event.event_id)
+    return _ProjectionStep.CONFIRMED
+
+
+class InMemoryCanonicalProjectionStore:
+    """In-memory :class:`CanonicalProjectionStore` (tests, dry-run)."""
+
+    def __init__(self, watermark_source: Any) -> None:
+        # The canonical EventStore whose `stream_watermark` positions new
+        # registrations; injected because the in-memory canonical store keeps
+        # its streams in process memory beside this store.
+        self._watermark_source = watermark_source
+        self._rows: dict[str, tuple[int, str, str, float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def register_stream(self, stream_id: str) -> None:
+        watermark = await self._watermark_source.stream_watermark(stream_id)
+        async with self._lock:
+            if stream_id not in self._rows:
+                self._rows[stream_id] = (watermark, "", "", 0.0)
+
+    async def registered_streams(self) -> tuple[str, ...]:
+        return tuple(sorted(self._rows))
+
+    async def claim(
+        self,
+        stream_id: str,
+        *,
+        holder: str,
+        lease_seconds: float = DEFAULT_PROJECTION_LEASE_SECONDS,
+    ) -> ProjectionLease | None:
+        async with self._lock:
+            now = time.time()
+            existing = self._rows.get(stream_id)
+            if existing is None:
+                # A stream the publisher has not registered yet cannot be
+                # positioned here — refusing beats silently starting at 0,
+                # which would rescan retained history.
+                return None
+            position, existing_holder, existing_token, expires_at = existing
+            if expires_at > now and existing_holder != holder:
+                return None
+            token = existing_token if existing_holder == holder else uuid.uuid4().hex
+            self._rows[stream_id] = (position, holder, token, now + lease_seconds)
+            return ProjectionLease(
+                position=position, fencing_token=token, expires_at=now + lease_seconds
+            )
+
+    async def advance(self, stream_id: str, *, fencing_token: str, position: int) -> bool:
+        async with self._lock:
+            existing = self._rows.get(stream_id)
+            if existing is None or existing[2] != fencing_token:
+                return False
+            self._rows[stream_id] = (
+                max(existing[0], position),
+                existing[1],
+                existing[2],
+                existing[3],
+            )
+            return True
+
+
+class InMemoryProjectionFailureStore:
+    """In-memory :class:`ProjectionFailureStore` (tests, dry-run)."""
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int = DEFAULT_MAX_PROJECTION_ATTEMPTS,
+        retry_backoff_seconds: float = DEFAULT_PROJECTION_BACKOFF_SECONDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds must be non-negative")
+        self._max_attempts = max_attempts
+        self._retry_backoff_seconds = retry_backoff_seconds
+        self._clock = clock
+        self._failures: dict[str, ProjectionFailure] = {}
+
+    async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
+        existing = self._failures.get(event_id)
+        if existing is not None and existing.poisoned_at is not None:
+            # Terminal disposition is never resurrected by a later attempt.
+            return True
+        attempts = (existing.attempts if existing is not None else 0) + 1
+        now = self._clock()
+        poisoned_at = now if attempts >= self._max_attempts else None
+        next_attempt_at = 0.0 if poisoned_at is not None else now + self._retry_backoff_seconds
+        self._failures[event_id] = ProjectionFailure(
+            event_id=event_id,
+            stream_id=stream_id,
+            attempts=attempts,
+            last_error=error[:2048],
+            next_attempt_at=next_attempt_at,
+            poisoned_at=poisoned_at,
+        )
+        return poisoned_at is not None
+
+    async def forget(self, event_id: str) -> None:
+        self._failures.pop(event_id, None)
+
+    async def get(self, event_id: str) -> ProjectionFailure | None:
+        return self._failures.get(event_id)
+
+    async def poisoned_records(self, *, limit: int = 100) -> list[ProjectionFailure]:
+        dead = [f for f in self._failures.values() if f.poisoned_at is not None]
+        return sorted(dead, key=lambda f: f.event_id)[:limit]
+
+
+_PROJECTION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_event_projection_streams (
+    stream_id TEXT PRIMARY KEY,
+    position INTEGER NOT NULL DEFAULT 0,
+    holder TEXT NOT NULL DEFAULT '',
+    fencing_token TEXT NOT NULL DEFAULT '',
+    lease_expires_at REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS canonical_projection_failures (
+    event_id TEXT PRIMARY KEY,
+    stream_id TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_attempt_at REAL NOT NULL DEFAULT 0,
+    failed_at REAL
+);
+"""
+
+
+class SqliteCanonicalProjectionStore:
+    """SQLite-backed :class:`CanonicalProjectionStore`.
+
+    Composed on the same connection as the canonical SQLite EventStore: the
+    watermark subquery below reads `canonical_event_stream_watermarks` from
+    that store's schema, so a new registration and its positioning position
+    are one statement on one database.
+
+    Every write commits on that shared connection, so each one holds the
+    connection-level transaction guard (the same lock
+    `SqliteEventStore.append_with_disposition` holds): without it, this
+    store's commit could land between an in-flight append's BEGIN IMMEDIATE
+    and its watermark write — committing the canonical row and leaving the
+    append's rollback nothing to discard, so a failed append would still
+    persist (and its retry would come back `inserted=False`, suppressing
+    live delivery) (#2506 review).
+    """
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        self._conn = conn
+        self._write_lock = connection_transaction_lock(conn)
+
+    async def ensure_schema(self) -> None:
+        async with self._write_lock:
+            await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
+            await self._conn.commit()
+
+    async def register_stream(self, stream_id: str) -> None:
+        # The publisher calls this before every emit, on the shared canonical
+        # connection: the guard makes the INSERT and its commit one serialized
+        # unit so it can never commit another emission's in-flight append.
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT INTO canonical_event_projection_streams
+                   (stream_id, position, holder, fencing_token, lease_expires_at)
+                   SELECT ?, COALESCE((SELECT last_sequence
+                                       FROM canonical_event_stream_watermarks
+                                       WHERE stream_id = ?), 0), '', '', 0
+                   ON CONFLICT(stream_id) DO NOTHING""",
+                (stream_id, stream_id),
+            )
+            await self._conn.commit()
+
+    async def registered_streams(self) -> tuple[str, ...]:
+        cursor = await self._conn.execute(
+            "SELECT stream_id FROM canonical_event_projection_streams ORDER BY stream_id ASC"
+        )
+        return tuple(str(row[0]) for row in await cursor.fetchall())
+
+    async def claim(
+        self,
+        stream_id: str,
+        *,
+        holder: str,
+        lease_seconds: float = DEFAULT_PROJECTION_LEASE_SECONDS,
+    ) -> ProjectionLease | None:
+        now = time.time()
+        new_token = uuid.uuid4().hex
+        # Same guard as register_stream: this write commits on the shared
+        # canonical connection and must not land inside an in-flight append.
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO canonical_event_projection_streams
+                   (stream_id, position, holder, fencing_token, lease_expires_at)
+                   VALUES (?, 0, ?, ?, ?)
+                   ON CONFLICT(stream_id) DO UPDATE SET
+                     holder = excluded.holder,
+                     fencing_token = CASE WHEN canonical_event_projection_streams.holder
+                                           = excluded.holder
+                                           THEN canonical_event_projection_streams.fencing_token
+                                           ELSE excluded.fencing_token END,
+                     lease_expires_at = excluded.lease_expires_at
+                   WHERE canonical_event_projection_streams.lease_expires_at <= ?
+                      OR canonical_event_projection_streams.holder = ?
+                   RETURNING stream_id, position, fencing_token, lease_expires_at""",
+                (stream_id, holder, new_token, now + lease_seconds, now, holder),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
+        return _sqlite_row_to_lease(tuple(row)) if row is not None else None
+
+    async def advance(self, stream_id: str, *, fencing_token: str, position: int) -> bool:
+        # Same guard as register_stream: this write commits on the shared
+        # canonical connection and must not land inside an in-flight append.
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """UPDATE canonical_event_projection_streams
+                   SET position = MAX(position, ?)
+                   WHERE stream_id = ? AND fencing_token = ?
+                   RETURNING stream_id""",
+                (position, stream_id, fencing_token),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
+        return row is not None
+
+
+class SqliteProjectionFailureStore:
+    """SQLite-backed :class:`ProjectionFailureStore`."""
+
+    def __init__(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        max_attempts: int = DEFAULT_MAX_PROJECTION_ATTEMPTS,
+        retry_backoff_seconds: float = DEFAULT_PROJECTION_BACKOFF_SECONDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds must be non-negative")
+        self._conn = conn
+        self._max_attempts = max_attempts
+        self._retry_backoff_seconds = retry_backoff_seconds
+        self._clock = clock
+        self._write_lock = connection_transaction_lock(conn)
+
+    async def ensure_schema(self) -> None:
+        async with self._write_lock:
+            await execute_schema_script(self._conn, _PROJECTION_SCHEMA)
+            await self._conn.commit()
+
+    async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
+        now = self._clock()
+        # Same guard as the projection store's writes: this commit lands on
+        # the shared canonical connection (#2506 review).
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO canonical_projection_failures
+                   (event_id, stream_id, attempts, last_error, next_attempt_at, failed_at)
+                   VALUES (?, ?, 1, ?, ?, NULL)
+                   ON CONFLICT(event_id) DO UPDATE SET
+                     attempts = canonical_projection_failures.attempts + 1,
+                     last_error = excluded.last_error,
+                     next_attempt_at = excluded.next_attempt_at,
+                     failed_at = CASE
+                       WHEN canonical_projection_failures.attempts + 1 >= ?
+                       THEN ? ELSE canonical_projection_failures.failed_at END
+                   WHERE canonical_projection_failures.failed_at IS NULL
+                   RETURNING attempts""",
+                (
+                    event_id,
+                    stream_id,
+                    error[:2048],
+                    now + self._retry_backoff_seconds,
+                    self._max_attempts,
+                    now,
+                ),
+            )
+            row = await cursor.fetchone()
+            await self._conn.commit()
+        if row is None:
+            # Already dead-lettered; the disposition is terminal.
+            return True
+        return int(row[0]) >= self._max_attempts
+
+    async def forget(self, event_id: str) -> None:
+        async with self._write_lock:
+            await self._conn.execute(
+                "DELETE FROM canonical_projection_failures WHERE event_id = ?", (event_id,)
+            )
+            await self._conn.commit()
+
+    async def get(self, event_id: str) -> ProjectionFailure | None:
+        cursor = await self._conn.execute(
+            """SELECT event_id, stream_id, attempts, last_error, next_attempt_at, failed_at
+               FROM canonical_projection_failures WHERE event_id = ?""",
+            (event_id,),
+        )
+        row = await cursor.fetchone()
+        return _sqlite_row_to_failure(tuple(row)) if row is not None else None
+
+    async def poisoned_records(self, *, limit: int = 100) -> list[ProjectionFailure]:
+        cursor = await self._conn.execute(
+            """SELECT event_id, stream_id, attempts, last_error, next_attempt_at, failed_at
+               FROM canonical_projection_failures
+               WHERE failed_at IS NOT NULL
+               ORDER BY event_id ASC LIMIT ?""",
+            (limit,),
+        )
+        return [_sqlite_row_to_failure(tuple(row)) for row in await cursor.fetchall()]
+
+
+def _sqlite_row_to_lease(row: tuple[object, ...]) -> ProjectionLease:
+    return ProjectionLease(
+        position=int(row[1]),  # type: ignore[call-overload]
+        fencing_token=str(row[2]),
+        expires_at=float(row[3]),  # type: ignore[arg-type]
+    )
+
+
+def _sqlite_row_to_failure(row: tuple[object, ...]) -> ProjectionFailure:
+    return ProjectionFailure(
+        event_id=str(row[0]),
+        stream_id=str(row[1] or ""),
+        attempts=int(row[2]),  # type: ignore[call-overload]
+        last_error=str(row[3] or ""),
+        next_attempt_at=float(row[4]),  # type: ignore[arg-type]
+        poisoned_at=float(row[5]) if row[5] is not None else None,  # type: ignore[arg-type]
+    )
+
+
+async def project_canonical_events(
+    *,
+    projection_store: CanonicalProjectionStore,
+    event_store: Any,
+    event_log: EventLogStore,
+    failure_store: ProjectionFailureStore,
+    append_kwargs: Callable[[EventEnvelope], dict[str, Any]],
+    holder: str,
+    limit: int = 100,
+    lease_seconds: float = DEFAULT_PROJECTION_LEASE_SECONDS,
+    clock: Callable[[], float] = time.time,
+) -> ProjectionOutcome:
+    """Replay canonical Events missing from the durable trigger log (#2506).
+
+    Per registered stream, under a leased+fenced claim: scan the canonical
+    EventStore above the stream's cursor and confirm each event's durable-log
+    row. The log's source-`event_id` dedupe makes "append" the only operation
+    needed — a row the bridge already wrote comes back unchanged, a missing
+    row is written with the exact mapping the bridge uses, and a concurrent
+    duplicate append converges on the one row. The cursor advances to each
+    confirmed sequence; an append failure records a bounded attempt (backoff
+    holds the stream below the failure this tick, later events of the same
+    stream wait behind it), and past the attempt bound the event is
+    dead-lettered — a visible terminal disposition that releases the stream.
+    Canonical sequences are contiguous by construction (the stream watermark
+    advances only in the appending transaction), so the cursor can never skip
+    an invisible committed Event: an aborted append leaves no gap behind.
+
+    ``append_kwargs`` maps a persisted canonical Event onto durable-log
+    ``append`` kwargs; the container injects the publisher's
+    `canonical_log_append_kwargs` so a healed row carries exactly the shape
+    the bridge would have written, keyed by the canonical `event_id` the log
+    dedupes on (#2506).
+
+    Returns what this holder confirmed; streams another replica's live lease
+    covers are skipped, not re-scanned.
+    """
+    projected = 0
+    dead_lettered = 0
+    scanned = 0
+    cursors: dict[str, int] = {}
+    for stream_id in await projection_store.registered_streams():
+        lease = await projection_store.claim(stream_id, holder=holder, lease_seconds=lease_seconds)
+        if lease is None:
+            # Another replica holds this stream's tick lease; its scan covers
+            # this round. Skipping is what makes two replicas share delivery.
+            continue
+        scanned += 1
+        position = lease.position
+        batch = await event_store.list_stream(stream_id, after_sequence=position, limit=limit)
+        for event in batch:
+            if event.sequence is None:  # pragma: no cover - stores assign sequences
+                break
+            step = await _confirm_projection(
+                event,
+                event_log=event_log,
+                failure_store=failure_store,
+                append_kwargs=append_kwargs,
+                now=clock(),
+            )
+            if step is _ProjectionStep.HOLD:
+                break
+            position = event.sequence
+            cursors[stream_id] = position
+            if step is _ProjectionStep.CONFIRMED:
+                projected += 1
+            else:
+                dead_lettered += 1
+        if position > lease.position:
+            await projection_store.advance(
+                stream_id, fencing_token=lease.fencing_token, position=position
+            )
+    return ProjectionOutcome(
+        streams_scanned=scanned,
+        projected=projected,
+        dead_lettered=dead_lettered,
+        cursors=cursors,
+    )

@@ -28,6 +28,14 @@ class EventCategory(StrEnum):
     SECURITY = "security"
 
 
+#: The payload key under which a canonical Event projection carries its
+#: canonical identity (`event_id`, Workspace stream sequence, correlation
+#: ids) onto the legacy bus. The durable-log bridge reads it to key the row's
+#: ``source_event_id`` (#2506), so both ingress paths onto the log — the
+#: bridge and the replay projector — name the one canonical fact.
+CANONICAL_EVENT_METADATA = "_canonical_event"
+
+
 @dataclass
 class Event:
     """Legacy trigger-delivery projection, not canonical Event identity."""
