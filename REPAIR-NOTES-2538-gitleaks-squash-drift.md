@@ -122,3 +122,37 @@ required.
   (2) the retained `5fac53cdb3` entries become inert if `auto-69` is deleted,
   at which point they are removable without behavior change.
 - This repair does not close #2538 or authorize any history rewrite.
+
+## Independent re-validation (L2538 second round)
+
+Reproduced from scratch on the merged lane head, not trusted from the first
+round. Same pinned binary (gitleaks 8.30.1, the SHA-pinned `security.yml`
+version); all scans `--redact`.
+
+- **Attribution**: the base→head diff of `.gitleaksignore` contains exactly the
+  two squash-commit fingerprint lines above and nothing else, so the flip is
+  attributable to them alone.
+- **BEFORE** (temporary worktree checked out at the base commit, where the
+  ignore file verifiably lacks both entries): `--log-opts="--remotes"` exits 1
+  with `leaks found: 2` — exactly the two 05df0ac3 fingerprints — and
+  `--log-opts="--all"` exits 1 with `leaks found: 5` (those two plus the three
+  origin-invisible findings listed above). Reproducing the pre-fix state from
+  the repaired checkout is not possible with gitleaks' ignore-file flag: the
+  working-tree `.gitleaksignore` is always consulted, so flag-based override
+  attempts stay green regardless; the base checkout is the faithful method.
+- **AFTER** (lane head): `--remotes` exits 0, `no leaks found` (13,010
+  commits). Local `--all` reports only the three findings keyed to commits
+  that `git branch -r --contains` shows reachable from no remote ref, so a
+  fresh CI clone cannot scan them.
+- **Classification re-checked against both blobs**: 05df0ac3's flagged lines
+  125/194 and 5fac53cdb3's lines 111/150 are the same two constructor/rotation
+  signature annotations (transcribed by line number only); neither blob has an
+  inline `gitleaks:allow`, and neither integrity.py nor `.gitleaks.toml`
+  changed between the incident commit and the base — the detection surface CI
+  reported is byte-identical to the one re-scanned here.
+- **Merge topology re-checked**: 05df0ac3 has exactly one parent (squash), and
+  5fac53cdb3 remains reachable from the still-open auto-69 remote branch, so
+  the retained branch-head entries are load-bearing as claimed.
+- Repo gates re-run on the merged head: `check-release-consistency.py` and
+  `check-security-inventory.py` pass; `ruff check .` clean (no Python
+  changed).
