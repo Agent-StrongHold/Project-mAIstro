@@ -87,6 +87,12 @@ EXPECTED_TABLES = frozenset(
         "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
+        # The canonical-Envelope -> durable-log projection (#2506, 074): the
+        # per-stream replay cursor beside the canonical watermark table it
+        # reads, and the bounded poison bookkeeping for events whose log
+        # append keeps failing.
+        "canonical_event_projection_streams",
+        "canonical_projection_failures",
         "consumer_cursors",
         # The canonical execution spine (012) and the template registry it
         # instantiates Runs from (014). Six tables and one, not seven of a

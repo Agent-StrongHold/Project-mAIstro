@@ -24,6 +24,7 @@ from maistro.events.envelope import (
     EventEnvelope,
     EventPayloadTooLarge,
     EventStore,
+    EventStreamWatermarkReader,
     InMemoryEventStore,
     SqliteEventStore,
     reconstruct_persisted_event,
@@ -50,9 +51,15 @@ from maistro.events.processing import (
     HANDLER_FAILED_EVENT,
     HandlerCaller,
     HTTPHandlerCaller,
+    InMemoryCanonicalProjectionStore,
     ProcessedBatch,
+    ProjectionFailure,
+    ProjectionFailureStore,
+    ProjectionOutcome,
+    SqliteCanonicalProjectionStore,
     process_events,
     process_events_batch,
+    project_canonical_events,
 )
 from maistro.events.trigger_store import (
     InMemoryTriggerStore,
@@ -69,12 +76,22 @@ _EVENT_STORE_STREAM_READS = (
     EventStore.list_stream,
     InMemoryEventStore.list_stream,
     SqliteEventStore.list_stream,
+    EventStreamWatermarkReader.stream_watermark,
+    InMemoryEventStore.stream_watermark,
+    SqliteEventStore.stream_watermark,
 )
 _OUTBOX_OPERATIONS = (
     SqliteEventOutbox.ensure_schema,
     SqliteEventOutbox.stage,
     SqliteEventOutbox.publish_pending,
     SqliteEventOutbox.pending_count,
+)
+_PROJECTION_OPERATIONS = (
+    InMemoryCanonicalProjectionStore.register_stream,
+    SqliteCanonicalProjectionStore.register_stream,
+    ProjectionFailureStore.record_failure,
+    ProjectionFailureStore.poisoned_records,
+    project_canonical_events,
 )
 
 __all__ = [
@@ -108,6 +125,8 @@ __all__ = [
     "InvocationStore",
     "LoggedEvent",
     "ProcessedBatch",
+    "ProjectionFailure",
+    "ProjectionOutcome",
     "ReplaySafety",
     "SqliteEventLog",
     "SqliteEventOutbox",
@@ -120,10 +139,12 @@ __all__ = [
     "TriggerDefinition",
     "TriggerStore",
     "append_from_bus_event",
+    "canonical_log_append_kwargs",
     "get_event_bus",
     "pattern_matches",
     "process_events",
     "process_events_batch",
+    "project_canonical_events",
     "reconstruct_persisted_event",
     "request_digest_v1",
     "validated_outcome",
