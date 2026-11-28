@@ -115,6 +115,33 @@ handler-owned idempotency contract.
 > and `InvocationStore`'s `(trigger_id, event_id)` claim remains what makes redelivery safe
 > (ADR-082426-82c7, "the occurrence is the claim, not the cursor").
 
+> **Amended 2026-11-28 (#2506): the durable log's canonical-Envelope ingress is a replayable,
+> idempotent projection; the legacy bus is never the only durable trigger ingress.** The
+> persist-first publisher projected an inserted canonical Event onto the in-memory bus, whose
+> authoritative `before_handlers` bridge appended it into this log — at-most-once. A bridge
+> append that failed after the canonical append committed therefore left a persisted Event
+> permanently outside the only log the trigger cursor scans: the retry emission returned
+> `inserted=False` and suppressed the bus forever. The ingress is now repairable from canonical
+> authority, with no second event identity and no second processing lifecycle:
+>
+> - **One row per canonical Event, atomically.** `event_log` carries a nullable
+>   `source_event_id` under a unique index; the bridge keys every canonical projection with it,
+>   and an append naming a known source id returns the existing row. Two ingress paths — the
+>   bridge and the replay projector — are two writers of one durable fact, never two occurrences.
+> - **Registered streams.** The publisher registers each event's stream with the projection
+>   store *before* the canonical append, positioned at the stream's canonical high-water mark, so
+>   a failure or crash after the commit always leaves the Event scan-reachable, and retained
+>   pre-projection history is never re-projected.
+> - **The replay tick.** `Container.process_durable_events` first replays the projection: per
+>   registered stream, under a leased and fenced claim, every canonical Event above the cursor is
+>   confirmed in the log through the idempotent append; the cursor advances only past confirmed
+>   sequences; a failing append gets bounded attempts with backoff and a visible terminal
+>   dead-letter disposition that releases its stream. Healing is reachable only through this
+>   ordinary production tick. Canonical stream sequences are contiguous by construction, so an
+>   aborted envelope append cannot leave a hole the projection cursor could skip — the gap
+>   policy above remains what guards the *trigger* cursor against `event_log`'s own `BIGSERIAL`
+>   holes.
+
 ## Acceptance criteria
 
 - [ ] The event bus delivers each event to its handlers at least once; redelivery is possible and

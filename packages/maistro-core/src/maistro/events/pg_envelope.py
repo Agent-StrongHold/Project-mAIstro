@@ -222,6 +222,15 @@ class PgEventStore:
             )
             return EventAppendResult(persisted, inserted=True)
 
+    async def stream_watermark(self, stream_id: str) -> int:
+        # The durable mark table, not the surviving rows: retention deletes
+        # rows but never rewinds the mark (see append_with_disposition).
+        value = await self._pool.fetchval(
+            "SELECT last_sequence FROM canonical_event_stream_watermarks WHERE stream_id = $1",
+            stream_id,
+        )
+        return int(value) if value is not None else 0
+
     async def get(self, event_id: str) -> EventEnvelope | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM canonical_event_log WHERE event_id = $1", event_id

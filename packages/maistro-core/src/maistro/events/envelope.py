@@ -307,6 +307,21 @@ class EventStore(Protocol):
 
 
 @runtime_checkable
+class EventStreamWatermarkReader(Protocol):
+    """The durable per-stream high-water sequence of a canonical EventStore.
+
+    The canonical-to-durable-log projection (#2506) reads it to place a newly
+    registered stream's replay cursor at the sequence boundary the pre-projection
+    bridge already owned: everything at or below the watermark was delivered by
+    the old at-most-once bridge and must never be re-projected a second time.
+    """
+
+    async def stream_watermark(self, stream_id: str) -> int:
+        """Return the highest sequence ever allocated in ``stream_id`` (0 if none)."""
+        ...
+
+
+@runtime_checkable
 class EventAppendDispositionStore(EventStore, Protocol):
     """EventStore that exposes the atomic outcome of an idempotent append."""
 
@@ -351,6 +366,13 @@ class InMemoryEventStore:
 
     async def get(self, event_id: str) -> EventEnvelope | None:
         return self._events_by_id.get(event_id)
+
+    async def stream_watermark(self, stream_id: str) -> int:
+        # The in-memory stream never rewinds: each append lands at
+        # len(stream) + 1 under the same lock that grows the list, so the
+        # list length is the high-water mark even though a stream's rows
+        # are never deleted here.
+        return len(self._streams.get(stream_id, []))
 
     async def list_stream(
         self,
@@ -569,6 +591,16 @@ class SqliteEventStore:
             except Exception:
                 await self._conn.rollback()
                 raise
+
+    async def stream_watermark(self, stream_id: str) -> int:
+        # The durable mark table, not the surviving rows: retention deletes
+        # rows but never rewinds the mark (see append_with_disposition).
+        cursor = await self._conn.execute(
+            "SELECT last_sequence FROM canonical_event_stream_watermarks WHERE stream_id = ?",
+            (stream_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
 
     async def get(self, event_id: str) -> EventEnvelope | None:
         cursor = await self._conn.execute(

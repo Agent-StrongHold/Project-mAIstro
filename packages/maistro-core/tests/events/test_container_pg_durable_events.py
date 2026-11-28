@@ -103,7 +103,14 @@ class TestPoolSelectsThePostgresStores:
 
     async def test_the_wired_stores_reach_the_server(self, pg_pool, wire):
         """Types alone would pass against a store holding a dead pool."""
-        await pg_pool.execute("TRUNCATE handler_invocations, trigger_definitions, event_log")
+        # The canonical projection state (#2506) is part of durable-event freshness:
+        # a surviving stream registration would re-project its canonical Event
+        # as a fresh event_log row on this file's next tick.
+        await pg_pool.execute(
+            "TRUNCATE handler_invocations, trigger_definitions, event_log, "
+            "canonical_event_log, canonical_event_stream_watermarks, "
+            "canonical_event_projection_streams, canonical_projection_failures"
+        )
         container = await wire(_config(), pg_pool=pg_pool)
 
         appended = await container.durable_event_log.append("task.created", entity_id="e1")
@@ -377,7 +384,9 @@ class TestTheDurableCursorNeverSkipsALateCommit:
             # fresh log, and a plain TRUNCATE leaves the BIGSERIAL sequence
             # at whatever earlier tests in this file consumed.
             "TRUNCATE handler_invocations, trigger_definitions, event_log, "
-            "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+            "event_replay_cursors, consumer_cursors, canonical_event_log, "
+            "canonical_event_stream_watermarks, canonical_event_projection_streams, "
+            "canonical_projection_failures RESTART IDENTITY"
         )
         container = await wire(_config(), pg_pool=pg_pool)
         replica = await wire(_config(), pg_pool=pg_pool)
@@ -460,7 +469,9 @@ class TestTheDurableCursorNeverSkipsALateCommit:
             # fresh log, and a plain TRUNCATE leaves the BIGSERIAL sequence
             # at whatever earlier tests in this file consumed.
             "TRUNCATE handler_invocations, trigger_definitions, event_log, "
-            "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+            "event_replay_cursors, consumer_cursors, canonical_event_log, "
+            "canonical_event_stream_watermarks, canonical_event_projection_streams, "
+            "canonical_projection_failures RESTART IDENTITY"
         )
         container = await wire(_config(), pg_pool=pg_pool)
         delivered: list[int] = []

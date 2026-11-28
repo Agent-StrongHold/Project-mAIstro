@@ -34,11 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 #: The tables the event revisions create: three by 004, `consumer_cursors` by
-#: 036, `event_replay_cursors` by 065, delivery-receipt columns by 066.
+#: 036, `event_replay_cursors` by 065, delivery-receipt columns by 066, and
+#: the canonical-projection column and tables by 074 (#2506).
 #: Spelled out rather than derived from the catalogue: a test that asks
 #: "are the tables that exist equal?" passes vacuously when neither side
 #: creates anything.
 EVENT_TABLES = (
+    "canonical_event_projection_streams",
+    "canonical_projection_failures",
     "consumer_cursors",
     "event_log",
     "event_replay_cursors",
@@ -50,12 +53,14 @@ EVENT_TABLES = (
 #: the revisions strictly between the two, so rendering ``003:036`` would drag
 #: every unrelated table from 005 to 035 into the comparison. 065 (#836)
 #: creates `event_replay_cursors`; 066 (#1060) carries the delivery-receipt
-#: columns both sides must agree on.
+#: columns both sides must agree on; 074 (#2506) adds the canonical source
+#: column/index on `event_log` and the two projection tables.
 EVENT_REVISION_RANGES = (
     "003:004",
     "035_outcome_scope_thumb_index:036_consumer_cursors",
     "064:065",
     "065:066",
+    "073:074",
 )
 
 
