@@ -305,12 +305,89 @@ citing the module paths as evidence the controls operate (#346):
 
 Tracking: each needs a wiring design, not just a call site — see #346.
 
+### Generic Workspace backlog control plane (#82)
+
+Updated by #7 validation (2026-11-26): the M3 exit condition for #82 required
+the generic Workspace BacklogItem/service/claim/campaign path to be either
+durably cut over or explicitly release-deferred. The durable control plane
+ships; the earlier "release-deferred, nothing exists" statement here was
+written against a stale tree and was false after the develop sync that landed
+the #98/#100/#103 slices (`05070ff077`, `5ca5a969d1`). What is reachable in
+production today: `maistro.workspaces.backlog` defines the canonical
+Workspace `BacklogItem` and store contract with atomic, fenced claim/lease
+semantics (claim/renew/release/active_claim as one CAS transition, receipts
+on every claim and release), with an in-memory reference and a SQLite durable
+store wired off the deployment's Project backend (`wire_backlog_store` in the
+canonical container); maistro-server exposes it at
+`/{workspace_id}/backlog` (CRUD, claim, dependencies, children, history).
+Campaign operator policy — pin-next/pause/exclude/human-only controls, parks,
+per-item policy records, every write attributed with its policy version —
+ships as durable state (`maistro.workspaces.campaigns` with a SQLite twin,
+plus `/{workspace_id}/campaigns` routes; without a database the fallback is
+in-memory and says so loudly). Hive's Conductor backlog board (`/v1/backlog`
+over `services.backlog`) remains the product editing surface for Conductor
+work, and `maistro.backlog.agent_surface` (list/select/claim/write/release/
+close behind one fail-closed authorization hook) backs the `maistro` backlog
+CLI. Hive's `/v1/work-items` routes stay a suggest/draft Jira surface.
+
+What remains limited: the Workspace `BacklogItem` store has no PostgreSQL
+backend yet, so a deployment whose Projects are PostgreSQL keeps its
+BacklogItems in-process (lost on restart) behind a logged startup warning;
+and no shipped service drives campaign selection or claims autonomously —
+`select_next` and the claim service are durable primitives with no production
+caller that turns a selection or a claim into canonical Runs, so work still
+starts through tasks, schedules, and agent/operator action. The control plane
+cannot launch work by itself.
+
+Tracking: finish under #82/#103 — a PostgreSQL BacklogItem backend and a
+designated production consumer for selection/claims that admits canonical
+Runs; do not add a background scheduler outside the canonical Run admission
+path.
+
+### Adaptive-Workspace user-model memory ships wired for owner control; the autonomous producer is deferred
+
+`maistro.memory.user_model` (#1047) ships the owner-only, audited fact
+ground — `promote_evidence`, revisions, corrections, tombstones, and the
+`UserModelStore` protocol — and it is wired: maistro-server constructs a
+`PostgresUserModelStore` + `UserModelService` at startup
+(`main.py::_configure_user_model`) and mounts the owner-scoped
+`/user-model` HTTP control plane (recall/correct/forget/history/private
+marking) with a 503-offline fallback when unconfigured. Relevance-gated
+same-user retrieval (`RecallQuery` conditions) is deterministically tested,
+including the cross-Workspace case where a fact surfaces in another
+Workspace only when Persona/Goal context makes it relevant, while
+workspace-private facts that were never promoted stay invisible. What
+remains deferred: no production caller invokes `promote_evidence` — the
+Dreaming/consolidation cadence that would feed it eligible evidence
+(#1046) is not built yet — and no Agent-runtime path calls
+`recall_for_task`; retrieval today is owner-invoked over HTTP.
+
+Tracking: wire the Dreaming/consolidation producer (#1046) and the
+Workspace Agent's recall seam; do not invent a producer for it sooner.
+
+### Entra JIT provisioning gates admission only
+
+#492's group-gated first-login provisioning is wired into the Entra login
+path (see `services/entra_jit.py`): an unlinked identity is admitted only
+through explicitly configured eligible groups, decided on a fresh Graph
+membership read, and receives only the mapped permissions. What it does not
+do is reconcile: an already-provisioned account keeps its grants after group
+removal, because permission rows carry no provenance distinguishing
+SSO-managed grants from local/manual ones, and silent revocation could
+delete grants an operator made on purpose.
+
+Tracking: ship entitlement reconciliation that records SSO-managed
+provenance per permission and reconciles on login (`SSOManagedEntitlements`
+is the seam) before advertising group removal as revocation.
+
 ## Release-Notes Text
 
 The following text is intended to be copied verbatim into the release notes.
 
-> v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Memory write-authority enforcement (ADR-057) is active at every
+> Task admission is durable when a database is configured: startup recovers
+> queued canonical Runs, while dispatch remains per-process. Without a database,
+> admitted tasks are lost on restart. Memory write-authority enforcement
+> (ADR-057) is active at every
 > memory store boundary — deployments run agent-managed by default and can set
 > `system_managed` to strip agent write authority — but read-path gating,
 > hybrid per-block tags and denial events are not wired, and no product-level
@@ -322,4 +399,12 @@ The following text is intended to be copied verbatim into the release notes.
 > routes are unconfigured in the default shipped service and return `503`.
 > Design Studio can discover resources and select artifact modes, but visual
 > generation and editing/preview still need wired providers. Conductor can run
-> in degraded mode when optional services are unavailable.
+> in degraded mode when optional services are unavailable. The generic Workspace
+> backlog control plane (#82) ships as durable state — BacklogItems with
+> fenced claim/lease semantics and campaign operator policy over SQLite —
+> but has no PostgreSQL BacklogItem backend yet (Projects-PostgreSQL
+> deployments keep items in-process), and no shipped service converts campaign
+> selections or claims into canonical Runs autonomously; work still starts
+> through tasks, schedules, and agent/operator action. Entra group-gated JIT
+> provisioning (#492) gates account creation only; removing a user from an
+> eligible group does not revoke an already-provisioned account's permissions.

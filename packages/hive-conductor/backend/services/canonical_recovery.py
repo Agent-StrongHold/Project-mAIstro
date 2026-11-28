@@ -2,10 +2,11 @@
 
 ``maistro-core`` exposes its recovery sweeps as bounded, idempotent,
 operator-scheduled ticks and never starts them itself (ADR-019). Hive is the
-operator: this cadence ticks the three that had no production caller, so
+operator: this cadence ticks the ones that had no production caller, so
 expired Attempt leases (task and #1170 chat) are reclaimed, chat admissions
-stranded before their first NodeRun are compensated, and ``RESUME_ON_ELAPSED``
-pauses get a timer waker. Ticks are at least ``_INTERVAL_S`` apart: a slow
+stranded before their first NodeRun are compensated, ``RESUME_ON_ELAPSED``
+pauses get a timer waker, and lapsed Goal claims release their fence with the
+Goal marked due for the bounded reconciliation sweep (M3 #806). Ticks are at least ``_INTERVAL_S`` apart: a slow
 resume delays the next one rather than overlapping it. It owns no lifecycle; the Container's Run, Attempt
 lease and fence decide what each tick may do. ``execute_admitted_runs`` stays
 with the schedule runner, and legacy DAG recovery with ``dag_recovery``.
@@ -44,6 +45,14 @@ def _halves(container: Any) -> tuple[tuple[str, Callable[[], Awaitable[int]]], .
             lambda: container.recover_stranded_chat_admissions(limit=_LIMIT),
         ),
         ("parked_runs", lambda: container.resume_parked_runs(limit=_LIMIT)),
+        # M3 #806: the Goal control plane is operator-ticked like the rest of
+        # recovery. The lease sweep is policy-free fence mechanics (the same
+        # shape as abandoned-attempt reclamation); the reconciliation sweep
+        # decides only when a #805 reconciliation policy is composed onto the
+        # Container — without one it records nothing and wakes stay durable
+        # pending facts for the composition that lands them.
+        ("goal_leases", lambda: container.sweep_goal_leases(limit=_LIMIT)),
+        ("goal_reconciliation", lambda: container.reconcile_goals(limit=_LIMIT)),
     )
 
 

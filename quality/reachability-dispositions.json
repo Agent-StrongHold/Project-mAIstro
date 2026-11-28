@@ -5,11 +5,10 @@
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
       "disposition": "RETIRE",
-      "rationale": "#2309: Workspaces v1.0 has no owner for these never-registered BFF services (chatbot platform bridge, Entra entitlement policy without an identity caller, eval/corpus bootstrap, preference calibration without pairwise UI). Do not invent main.py mounts for the tag. Physical deletion waits on #35 parity.",
+      "rationale": "#2309: Workspaces v1.0 has no owner for these never-registered BFF services (chatbot platform bridge, eval/corpus bootstrap, preference calibration without pairwise UI). Do not invent main.py mounts for the tag. Physical deletion waits on #35 parity. services.entra_entitlements left this group when the #492 JIT lane wired it as the SSO entitlement policy with a real identity caller (Settings validation + EntraJitProvisioner).",
       "modules": [
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
-        "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.preference_calibration"
       ],
