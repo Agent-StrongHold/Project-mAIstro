@@ -8,15 +8,16 @@ is a picker filter, never a resolution or membership check) and the
 per-template agent/checklist routes stay template-agnostic.
 
 Read seam under test: `services.optional_modules.picker_hidden_template_ids`
-over the durable setup record (`stores.sessions["__hive_setup__"]`), the same
-record `identity_health` reads for `crypto_identity`.
+over the durable setup record (`stores.sessions["__hive_setup__"]`), read
+through `identity_health.setup_state` — the same record and store seam
+`identity_health` reads for `crypto_identity`.
 """
 
 from __future__ import annotations
 
 import pytest
 import stores
-from services.optional_modules import SETUP_STATE_KEY
+from services.identity_health import SETUP_STATE_KEY
 
 
 @pytest.fixture(autouse=True)

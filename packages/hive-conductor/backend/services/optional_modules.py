@@ -2,9 +2,15 @@
 
 Setup (``/v1/setup/complete``) persists the operator's ``optional_modules``
 list into the durable setup record — the same record ``identity_health``
-reads for ``crypto_identity``. This module is the one read seam for
+reads for ``crypto_identity``. This module is the one interpretive seam for
 "gating a surface on one of those choices", so no consumer restates the
 lookup against the setup record.
+
+The raw store read lives in ``identity_health.setup_state`` — that module is
+the retiring ``sessions`` store's ledger-listed consumer, and
+``quality/workspace-retirement.json`` forbids a retiring surface from
+gaining new ones, so gating code must read through that seam rather than
+``import stores`` itself.
 
 The first consumer is the UAT product direction in #2549: the PM-demo
 heritage (the ``pm_fleet`` workspace persona and its Jira-first tooling) is
@@ -20,10 +26,6 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Same durable setup record ``routes/setup.py`` writes and
-#: ``services/identity_health.py`` reads. One key, declared once here.
-SETUP_STATE_KEY = "__hive_setup__"
-
 #: Persona templates an optional module gates. A template listed here is
 #: hidden from the workspace-creation picker unless every gating module is
 #: enabled. (A template may list under several modules; all must be on.)
@@ -33,10 +35,14 @@ PERSONA_MODULE_GATES: dict[str, frozenset[str]] = {
 
 
 def _setup_config() -> dict[str, Any] | None:
-    try:
-        import stores
+    """The setup record via ``identity_health.setup_state``, or ``None``.
 
-        config = stores.sessions.get(SETUP_STATE_KEY)
+    ``None`` covers both pre-setup (no record) and an unreadable store.
+    """
+    from services.identity_health import setup_state
+
+    try:
+        config = setup_state()
     except Exception:
         # An unreadable store hides the gated personas (fails closed) rather
         # than advertising a surface the deployment did not choose.

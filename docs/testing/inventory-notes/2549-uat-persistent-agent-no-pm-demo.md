@@ -54,3 +54,15 @@ on the request's `turn_id` so the idempotence discipline holds there too.
 durable across a plain session GET (the dock's rehydration), a retried
 `turn_id` appends once, and a foreign session is never written while the
 answer still returns.
+
+CI-repair, same slice, no count change: `services.optional_modules` read
+the setup record with its own `import stores; stores.sessions.get(...)`,
+which made it a NEW consumer of the retiring `stores.py::sessions` surface
+and failed the workspace-retirement ratchet ("a retiring surface may not
+gain consumers") in `tests/test_check_workspace_retirement.py` and
+`scripts/check-workspace-retirement.py`. The raw read moved to
+`identity_health.setup_state` — that module is the store's ledger-listed
+consumer, so the tolerated-importer set stays at 78 instead of growing —
+and the gate now interprets the record through that seam. Test import of
+the setup key moved to `services.identity_health`; case count unchanged
+(`test_pm_tooling_module_gate.py` still +5, suite still +6 net).
