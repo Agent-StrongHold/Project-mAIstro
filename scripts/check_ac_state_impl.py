@@ -1087,11 +1087,6 @@ def _token_stream(text: str) -> list[tuple[str, bool]]:
     return stream
 
 
-def normative_tokens(text: str) -> list[str]:
-    """The words of the token stream, code spans included verbatim."""
-    return [word for word, _ in _token_stream(text)]
-
-
 def _levenshtein(a: str, b: str, *, cap: int = 3) -> int:
     """Character edit distance, abandoned once it exceeds `cap`.
 

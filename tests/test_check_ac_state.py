@@ -1273,12 +1273,40 @@ class TestNormativeMateriality:
     def test_code_reflow_and_backtick_styling_stay_editorial(self, check):
         """Keeping code verbatim must not start firing on formatting: a
         reflow inside the backticks (whitespace only) and wrapping or
-        unwrapping a prose word in code marks change no obligation."""
+        unwrapping a prose word in code marks change no obligation — in both
+        directions, including when the wrapped content carries punctuation
+        the prose filter would strip."""
         base = "## Decision\nthe gate accepts `x!=y` and rejects a bare x.\n"
         reflowed = "## Decision\nthe gate accepts `x != y` and rejects a bare x.\n"
-        restyled = "## Decision\nthe gate accepts x!=y and rejects a bare `x`.\n"
+        unwrapped = "## Decision\nthe gate accepts x!=y and rejects a bare `x`.\n"
         assert check.material_edits(base, reflowed) == []
-        assert check.material_edits(base, restyled) == []
+        assert check.material_edits(base, unwrapped) == []
+        assert (
+            check.material_edits(
+                "## Decision\nthe gate accepts x!=y.\n",
+                "## Decision\nthe gate accepts `x!=y`.\n",
+            )
+            == []
+        )
+        assert check.material_edits(base, base) == []
+
+    def test_short_inserts_and_deletes_stay_editorial(self, check):
+        """A fragment of at most two characters is a stray fragment, not a
+        word — the same editorial budget the replace branch applies, held on
+        the move-shaped ops."""
+        base = "## Decision\nkeep the audit trail and the it.\n"
+        shorter = "## Decision\nkeep the audit trail and the.\n"
+        longer = "## Decision\nkeep the audit trail and the it xy.\n"
+        assert check.material_edits(base, shorter) == []
+        assert check.material_edits(base, longer) == []
+
+    def test_levenshtein_abandons_once_a_row_exceeds_the_budget(self, check):
+        """The capped distance is only a typo classifier; once no cell in the
+        row can come back under the cap the walk stops and reports over-budget
+        — which is what keeps a rewritten section off a full matrix."""
+        assert check._levenshtein("aaaa", "bbbb", cap=2) == 3
+        assert check._levenshtein("aaaaaa", "bb", cap=2) == 3  # length gap alone
+        assert check._levenshtein("teh", "the", cap=2) <= 2
 
     def test_prose_around_a_fenced_block_stays_in_the_stream(self, check):
         """A fence splits the document into prose/fence/prose segments; the
@@ -1614,3 +1642,144 @@ class TestDecisionMandate:
         facts = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
         code, rows = self._run(check, facts, facts, texts={"ADR-002": self.BASE})
         assert code == 0 and rows == []
+
+
+class TestGateWritePath:
+    """main's tail: ratchet, then mandates, then the report write (#2542 DoD).
+
+    The write ordering is the DoD's reporting contract: the report must land
+    after the mandates so it carries `decision_traceability` beside the
+    measured `design_coverage` aggregate, and the exit code must be the merge
+    of everything the gates found — not the last one to run.
+    """
+
+    def _args(self, tmp_path, **overrides):
+        import argparse
+
+        defaults = {
+            "out": tmp_path / "ac-state.json",
+            "ratchet": False,
+            "mandate": None,
+            "bank": False,
+        }
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _facts(self, check, doc_id, normative, file):
+        return check.ChainFacts(
+            id=doc_id,
+            kind="adr",
+            file=file,
+            status="Accepted",
+            implements=(),
+            has_criteria=False,
+            has_ac_heading=False,
+            non_measurable=False,
+            normative=check.normative_text(normative),
+        )
+
+    def test_report_lands_after_the_mandates_and_carries_the_rows(
+        self, check, monkeypatch, tmp_path, capsys
+    ):
+        """`decision_traceability` is written into the same payload the report
+        serializes, and the write happens after — not before — the mandates
+        run, so an in-flight mandate failure cannot cost the report its rows."""
+        rows = [
+            {"id": "ADR-002", "file": "docs/adr/ADR-002.md", "edits": [], "evidence": "unproven"}
+        ]
+        order: list[str] = []
+
+        def fake_ratchet(totals, measured, bank):
+            order.append("ratchet")
+            return 0
+
+        def fake_run_mandate(*_args, **_kwargs):
+            order.append("mandate")
+            return 0, rows
+
+        monkeypatch.setattr(check, "ratchet", fake_ratchet)
+        monkeypatch.setattr(check, "run_mandate", fake_run_mandate)
+        payload: dict = {"totals": {}}
+        out = tmp_path / "ac-state.json"  # outside ROOT: the ValueError path too
+        args = self._args(tmp_path, out=out, ratchet=True, mandate="base")
+        code = check._run_gates_and_write(payload, args, [], [], {}, {}, None)
+
+        assert code == 0
+        assert order == ["ratchet", "mandate"], "mandates run after the ratchet"
+        assert payload["decision_traceability"]["decisions"] == rows
+        assert (
+            "Per-change" in payload["decision_traceability"]["definition"]
+            or "per-change" in payload["decision_traceability"]["definition"]
+        )
+        written = json.loads(out.read_text(encoding="utf-8"))
+        assert written["decision_traceability"]["decisions"] == rows
+        assert "wrote" in capsys.readouterr().out
+
+    def test_gate_codes_merge_ratchet_and_mandate_failures(self, check, monkeypatch, tmp_path):
+        """A ratchet failure is not masked by a passing mandate and vice versa:
+        a PR sees everything it has to fix in one run."""
+        monkeypatch.setattr(check, "ratchet", lambda *_a, **_k: 1)
+        monkeypatch.setattr(check, "run_mandate", lambda *_a, **_k: (0, []))
+        args = self._args(tmp_path, ratchet=True)
+        assert check._run_gates_and_write({"totals": {}}, args, [], [], {}, {}, None) == 1
+
+        mandate_args = self._args(tmp_path, ratchet=False, mandate="base")
+        monkeypatch.setattr(check, "ratchet", lambda *_a, **_k: 0)
+        monkeypatch.setattr(check, "run_mandate", lambda *_a, **_k: (1, []))
+        assert check._run_gates_and_write({"totals": {}}, mandate_args, [], [], {}, {}, None) == 1
+
+    def test_run_mandate_rolls_all_three_mandates(self, check, monkeypatch, capsys):
+        """One base read serves criterion, chain, and decision mandates: with
+        an empty trusted corpus and an untouched worktree, all three run and
+        the merge is green."""
+        monkeypatch.setattr(check, "corpus_at", lambda _rev: ({}, {}))
+        code, rows = check.run_mandate("base", [], [], {})
+        assert code == 0 and rows == []
+        out = capsys.readouterr().out
+        assert "acceptance mandate" in out and "chain mandate" in out and "decision mandate" in out
+
+    def test_run_mandate_fails_when_the_decision_mandate_fails(self, check, monkeypatch):
+        """A materially rewritten decision with no closure fails the roll-up
+        even though criterion and chain mandates pass."""
+        monkeypatch.setattr(check, "corpus_at", lambda _rev: ({}, {}))
+        base = {
+            "ADR-002": self._facts(
+                check, "ADR-002", TestDecisionMandate.BASE, "docs/adr/ADR-002.md"
+            )
+        }
+        head = {
+            "ADR-002": self._facts(
+                check, "ADR-002", TestDecisionMandate.MATERIAL, "docs/adr/ADR-002.md"
+            )
+        }
+        code, rows = check.run_mandate("base", [], [], head)
+
+        # criterion and chain mandates see no corpus and no touched criteria;
+        # the decision mandate sees the rewrite.
+        monkeypatch.setattr(check, "corpus_at", lambda _rev: ({}, base))
+        code, rows = check.run_mandate("base", [], [], head)
+        assert code == 1
+        assert rows and rows[0]["id"] == "ADR-002"
+
+    def test_an_unreadable_base_fails_before_any_mandate(self, check, monkeypatch, capsys):
+        """A shallow clone cannot be judged against; refusing loudly is the
+        contract, and no mandate half may run on an unreadable base."""
+        monkeypatch.setattr(check, "corpus_at", lambda _rev: None)
+        code, rows = check.run_mandate("base", [], [], {})
+        assert code == 1 and rows == []
+        assert "could not read the criteria corpus" in capsys.readouterr().out
+
+    def test_head_text_falls_back_to_the_checkout(self, check):
+        """Without caller-supplied texts the mandate reads the working tree —
+        the production path — and a missing file reads as empty rather than
+        raising."""
+        facts = self._facts(
+            check, "ADR-002", "## Decision\nthe rule\n", "docs/adr/ADR-002-porting-workflow.md"
+        )
+        text = check._head_text({"ADR-002": facts}, "ADR-002", None)
+        assert "Per-port spec-first workflow" in text
+
+        missing = self._facts(
+            check, "ADR-999", "## Decision\nthe rule\n", "docs/adr/ADR-999-not-here.md"
+        )
+        assert check._head_text({"ADR-999": missing}, "ADR-999", None) == ""
