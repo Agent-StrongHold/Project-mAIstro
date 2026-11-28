@@ -9,16 +9,29 @@ a projection carrying that already-persisted identity and sequence.
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, Protocol
 
-from maistro.events.bus import Event, EventBus, EventCategory
+from maistro.events.bus import CANONICAL_EVENT_METADATA, Event, EventBus, EventCategory
+from maistro.events.durable_log import append_from_bus_event
 from maistro.events.envelope import (
     EventAppendDispositionStore,
     EventEnvelope,
     EventStore,
 )
 
-CANONICAL_EVENT_METADATA = "_canonical_event"
+
+class ProjectionStreamRegistry(Protocol):
+    """Durable registrar of the streams the canonical-log projector must scan (#2506).
+
+    The publisher registers a stream BEFORE its canonical append: a stream
+    registered at its current high-water sequence guarantees every sequence
+    that append allocates lands above the projector's starting position. A
+    bridge append that fails after the canonical commit therefore leaves the
+    event inside a tracked, scan-reachable range instead of outside it — that
+    ordering is what makes the projection replayable rather than lossy.
+    """
+
+    async def register_stream(self, stream_id: str) -> None: ...
 
 
 class CanonicalEventPublisher:
@@ -29,15 +42,29 @@ class CanonicalEventPublisher:
     projects it. A process loss after persistence but before legacy delivery can
     therefore lose that compatibility notification; the legacy bus is not made
     into a second durable delivery authority to close that crash window.
+
+    The durable trigger ingress is separate (#2506): with a
+    ``projection_registry``, the publisher durably registers each event's stream
+    before appending, so the replayable canonical-Envelope -> ADR-086 log
+    projector can heal any bridge-append failure from canonical authority —
+    the registry write failing fails the emit before anything commits, rather
+    than committing an Event no durable ingress will ever scan.
     """
 
-    def __init__(self, store: EventStore, *, legacy_bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        store: EventStore,
+        *,
+        legacy_bus: EventBus | None = None,
+        projection_registry: ProjectionStreamRegistry | None = None,
+    ) -> None:
         if legacy_bus is not None and not isinstance(store, EventAppendDispositionStore):
             raise TypeError(
                 "legacy EventBus projection requires an EventStore with atomic append disposition"
             )
         self._store = store
         self._legacy_bus = legacy_bus
+        self._projection_registry = projection_registry
 
     @property
     def store(self) -> EventStore:
@@ -46,6 +73,15 @@ class CanonicalEventPublisher:
 
     async def emit(self, event: EventEnvelope) -> EventEnvelope:
         """Persist ``event`` before any compatibility consumer can observe it."""
+        if self._projection_registry is not None:
+            # Before the append, not after: the registry places new streams at
+            # the current canonical watermark, so a crash after this write but
+            # before the append costs an empty tracked range, while a crash or
+            # bridge failure after the append still leaves the committed Event
+            # scan-reachable (#2506). Failing here commits nothing — an Event
+            # that cannot be durably tracked must not silently become durable.
+            await self._projection_registry.register_stream(event.stream_id)
+
         if self._legacy_bus is None:
             return await self._store.append(event)
 
@@ -109,8 +145,25 @@ def project_legacy_event(event: EventEnvelope) -> Event:
     )
 
 
+def canonical_log_append_kwargs(event: EventEnvelope) -> dict[str, Any]:
+    """The durable-log append kwargs for one persisted canonical Event (#2506).
+
+    Deliberately routes through the same legacy projection the live bridge
+    uses (:func:`project_legacy_event` -> :func:`append_from_bus_event`), so a
+    projector-healed row is indistinguishable from a bridge-appended row:
+    same event-type mapping, same canonical-identity payload metadata, and
+    ``source_event_id`` naming the canonical ``event_id`` the log dedupes on.
+    Requires a persisted sequence — the projector only ever sees
+    store-assigned Events.
+    """
+    kwargs = append_from_bus_event(project_legacy_event(event))
+    kwargs["source_event_id"] = event.event_id
+    return kwargs
+
+
 __all__ = [
     "CANONICAL_EVENT_METADATA",
     "CanonicalEventPublisher",
+    "canonical_log_append_kwargs",
     "project_legacy_event",
 ]
