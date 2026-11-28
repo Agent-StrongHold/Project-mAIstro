@@ -75,10 +75,10 @@
     {
       "image": "node",
       "tag": "26.13.1-bookworm-slim",
-      "digest": "sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1",
-      "recorded": "2026-11-21",
-      "recorded_in": "#2431",
-      "note": "Donor for the research image's patchright driver overlay only (Dockerfile.research `node-driver-patch` stage). patchright 1.64.4 still ships node 24.22.1; grype 0.116.0 --only-fixed --fail-on high flags CVE-2026-126051/123865/123866/123874/123863/123872/123864 (HIGH, fixed 24.22.3/26.13.1) on maistro-engine-research while playwright 1.65.2 already ships 26.13.1 and no newer patchright wheel exists on PyPI as of 2026-11-20. Dependabot bump #2431 moved the donor from the 24.22.3 line to this 26.13.1 line (same seven fixes). Hub index digest verified 2026-11-21: node:26.13.1-bookworm-slim resolves to this OCI image index (linux/amd64 child sha256:18a166e2\u2026, created 2026-11-11); the pinned digest was pulled and `node -v` prints v26.13.1. Remove this pin and the overlay RUN when a patchright release bundles >=24.22.3.",
+      "digest": "sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9",
+      "recorded": "2026-11-28",
+      "recorded_in": "#2572",
+      "note": "Donor for the research image's patchright driver overlay only (Dockerfile.research `node-driver-patch` stage). patchright 1.64.4 still ships node 24.22.1; grype 0.116.0 --only-fixed --fail-on high flags CVE-2026-126051/123865/123866/123874/123863/123872/123864 (HIGH, fixed 24.22.3/26.13.1) on maistro-engine-research while playwright 1.65.2 already ships 26.13.1 and no newer patchright wheel exists on PyPI as of 2026-11-20. Dependabot bump #2431 moved the donor from the 24.22.3 line to this 26.13.1 line (same seven fixes). Hub index digest verified 2026-11-21: node:26.13.1-bookworm-slim resolves to this OCI image index (linux/amd64 child sha256:18a166e2\u2026, created 2026-11-11); the pinned digest was pulled and `node -v` prints v26.13.1. Same-tag index rebuild re-verified 2026-11-28 for Dependabot bump #2572 (5df79989\u2026 -> 0042e17\u2026): the tag now resolves to this index (linux/amd64 child sha256:40168539\u2026, created 2026-11-24 on a newer debian:bookworm-slim base); the pinned digest was pulled and `node -v` still prints v26.13.1, so the overlay assertion in Dockerfile.research is unchanged. Remove this pin and the overlay RUN when a patchright release bundles >=24.22.3.",
       "used_by": [
         "Dockerfile.research"
       ]

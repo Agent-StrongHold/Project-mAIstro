@@ -62,7 +62,7 @@
 # The donor line moved from 24.22.3 to 26.13.1 with the Dependabot bump
 # (#2431); both lines carry the same seven fixes, so only the donor
 # version annotation and the assertion below change.
-FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-driver-patch
+FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS node-driver-patch
 
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
