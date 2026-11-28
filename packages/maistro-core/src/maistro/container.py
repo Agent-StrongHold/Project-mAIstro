@@ -39,6 +39,10 @@ from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 from maistro.events.publisher import CanonicalEventPublisher
 from maistro.events.wiring import CanonicalProjection
 from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.reconciliation.production import (
+    FactDrivenReconciliationPolicy,
+    GoalRunAdmitter,
+)
 from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
@@ -162,7 +166,10 @@ if TYPE_CHECKING:
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
     from maistro.extensions.tenancy import TenantScopedExtensionState
-    from maistro.goals.reconciliation.reconciler import ReconciliationPolicy
+    from maistro.goals.reconciliation.reconciler import (
+        PhysicalAdmitter,
+        ReconciliationPolicy,
+    )
     from maistro.goals.reconciliation.store import GoalReconciliationStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
@@ -523,11 +530,16 @@ class Container:
     _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
     # Goal reconciliation control plane (M3 #806): the one durable store of
     # Goal rows, claim/lease fences, wake facts and admissions, plus the
-    # #805-owned decision policy. `None` until #805 composes one: without a
-    # policy the Container still reclaims lapsed leases (`sweep_goal_leases`)
-    # but never decides, so no admission semantics are invented here.
+    # #805-owned decision policy. ``create_container`` composes the production
+    # decide-half: the fact-driven policy consults a claimed Goal and the
+    # ``GoalRunAdmitter`` fulfils a run admission as one canonical QUEUED Run
+    # bound to the Goal (``goal_reconciliation_admitter``). ``None`` only on a
+    # hand-built Container: without a policy the Container still reclaims
+    # lapsed leases (``sweep_goal_leases``) but never decides, so no admission
+    # semantics are invented here.
     goal_reconciliation_store: GoalReconciliationStore = None  # type: ignore[assignment]
     goal_reconciliation_policy: ReconciliationPolicy | None = None
+    goal_reconciliation_admitter: PhysicalAdmitter | None = None
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -1459,10 +1471,13 @@ class Container:
         """Tick the Goal reconciliation sweep (M3 #806). Returns passes decided.
 
         Runs the bounded sweep — lapsed leases, missed wakes, due sleeps —
-        under the #805-owned `goal_reconciliation_policy`. Without a policy
-        this returns 0 and decides nothing: the mechanics never invent what a
-        reconciliation decision means, so activation is composition, not a
-        default. Wakes recorded meanwhile stay durable pending facts, and
+        under the #805-owned `goal_reconciliation_policy`. ``create_container``
+        composes the production policy and the `GoalRunAdmitter`, so a
+        production decision is fulfilled as one canonical QUEUED Run bound to
+        the Goal; a hand-built Container without a policy returns 0 and
+        decides nothing — the mechanics never invent what a reconciliation
+        decision means, so activation is composition, not a default. Wakes
+        recorded meanwhile stay durable pending facts, and
         `sweep_goal_leases` keeps the fences honest regardless.
         """
         if self.goal_reconciliation_policy is None:
@@ -1475,6 +1490,7 @@ class Container:
             # The same process identity that holds the durable-event cursor
             # lease: one identity per Container for every cross-process fence.
             holder=self._durable_events_holder,
+            admitter=self.goal_reconciliation_admitter,
         )
         outcomes = await reconciler.sweep(
             now if now is not None else datetime.now(UTC), limit=limit
@@ -2978,6 +2994,15 @@ async def create_container(
         # plane lives beside the Runs it reconciles, so a restart answers from
         # the same database the Runs do (M3 #806).
         goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
+        # The #805 decide-half, production composition: the fact-driven policy
+        # answers each claimed Goal's consultation from durable facts, and the
+        # admitter fulfils a run admission through the same admission seam as
+        # tasks and schedules — one canonical QUEUED Run bound to the Goal and
+        # the revision it was admitted against, which the consumer tick then
+        # claims, executes and settles under the canonical lineage. Both read
+        # the same stores wired above; neither is a second authority.
+        goal_reconciliation_policy = FactDrivenReconciliationPolicy()
+        goal_reconciliation_admitter = GoalRunAdmitter(run_store, goal_store)
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
@@ -3401,6 +3426,8 @@ async def create_container(
             handler_caller=handler_caller,
             consumer_cursor_store=consumer_cursor_store,
             goal_reconciliation_store=goal_reconciliation_store,
+            goal_reconciliation_policy=goal_reconciliation_policy,
+            goal_reconciliation_admitter=goal_reconciliation_admitter,
             provider_registry=provider_registry,
             llm_router=llm_router,
             model_chat_binding=model_chat_binding,
