@@ -1157,3 +1157,307 @@ class TestPassingPerRoot:
 
         monkeypatch.setattr(check.subprocess, "run", fake_run)
         assert check._passing_in_root(tmp_path) is None
+
+
+class TestNormativeMateriality:
+    """What counts as a material change to a decision (#2542).
+
+    The mandate underneath these tests exists because a document already in an
+    absent population can be rewritten wholesale and stay invisible: the chain
+    mandate compares populations by document id, and `#165` guards criteria,
+    not a decision that carries none. These tests pin the boundary the issue
+    draws — editorial repairs never fire, normative rewrites always do.
+    """
+
+    def test_formatting_links_and_renumbering_are_editorial(self, check):
+        base = (
+            "## Decision\nEvery port follows this sequence without collapsing steps:\n\n"
+            "1. Step one — see [docs](https://example.com/a).\n"
+            "2. Step two.\n"
+        )
+        head = (
+            "## Decision\nEvery port follows this sequence without collapsing steps:\n\n"
+            "1.  Step one — see [elsewhere](https://example.com/b).\n"
+            "2.  Step two.\n"
+        )
+        assert check.material_edits(base, head) == []
+
+    def test_a_typo_sized_repair_is_editorial(self, check):
+        base = "## Decision\nEvery port follows this sequence without collapsing steps.\n"
+        head = "## Decision\nEvery port follows this sequence without colapsing steps.\n"
+        assert check.material_edits(base, head) == []
+
+    def test_the_modal_verbs_that_change_obligation_are_material(self, check):
+        base = "## Decision\nA port may skip the coverage audit.\n"
+        head = "## Decision\nA port must skip the coverage audit.\n"
+        assert check.material_edits(base, head)
+
+    def test_inserting_a_negation_is_material(self, check):
+        base = "## Decision\nA port may skip the coverage audit.\n"
+        head = "## Decision\nA port may not skip the coverage audit.\n"
+        assert check.material_edits(base, head)
+
+    def test_removing_an_obligation_is_material(self, check):
+        base = (
+            "## Decision\nEvery port follows this sequence without collapsing steps\n"
+            "and without skipping the coverage audit.\n"
+        )
+        head = "## Decision\nEvery port follows this sequence without collapsing steps.\n"
+        edits = check.material_edits(base, head)
+        assert edits and edits[0]["kind"] == "delete"
+
+    def test_a_change_outside_the_normative_sections_is_not_a_decision(self, check):
+        base = "## Context\nold story\n\n## Decision\nEvery port follows this sequence.\n"
+        head = (
+            "## Context\nan entirely new story\n\n## Decision\nEvery port follows this sequence.\n"
+        )
+        assert check.material_edits(check.normative_text(base), check.normative_text(head)) == []
+
+    def test_front_matter_never_reads_as_a_decision(self, check):
+        base = "---\nid: ADR-002\nstatus: Accepted\n---\n\n## Decision\nEvery port follows this sequence.\n"
+        head = "---\nid: ADR-002\nstatus: Accepted\nowners: [x]\n---\n\n## Decision\nEvery port follows this sequence.\n"
+        assert check.material_edits(check.normative_text(base), check.normative_text(head)) == []
+
+    def test_only_decision_contract_interface_requirements_are_normative(self, check):
+        text = "## Context\nx\n\n## Decision\nthe rule\n\n## Test plan\ny\n\n## Contract\nthe promise\n"
+        extracted = check.normative_text(text)
+        assert "the rule" in extracted and "the promise" in extracted
+        assert "old story" not in extracted and "Test plan" not in extracted
+
+
+class TestDecisionMandate:
+    """A materially rewritten decision must close its own evidence gap (#2542)."""
+
+    BASE = (
+        "---\nid: ADR-002\nkind: adr\nstatus: Accepted\n---\n\n"
+        "## Decision\n"
+        "Every port follows this sequence without collapsing steps:\n\n"
+        "1. Step one — see [docs](https://example.com/a).\n"
+        "2. Step two.\n"
+    )
+    MATERIAL = (
+        "---\nid: ADR-002\nkind: adr\nstatus: Accepted\n---\n\n"
+        "## Decision\nA port may skip any step it likes and every audit is optional.\n"
+    )
+    DISPOSITION_SUFFIX = "\n<!-- ac-state: decision-unproven ADR-002 - respin pending #132 -->\n"
+
+    def _facts(self, check, doc_id, normative, file, status="Accepted", implements=()):
+        return check.ChainFacts(
+            id=doc_id,
+            kind="adr",
+            file=file,
+            status=status,
+            implements=implements,
+            has_criteria=False,
+            has_ac_heading=False,
+            non_measurable=False,
+            normative=check.normative_text(normative),
+        )
+
+    def _spec(self, spec_id, adr_id, rung="reachable", claimed=True):
+        return {
+            "id": spec_id,
+            "file": f"docs/specs/{spec_id}.md",
+            "declared_status": "Draft",
+            "implements": [adr_id],
+            "declared_unproven": [],
+            "criteria": [
+                {
+                    "id": f"{spec_id}/AC-1",
+                    "claimed": claimed,
+                    "rung": rung,
+                    "module": "some.module",
+                    "covered_by": ["tests/test_x.py"],
+                }
+            ],
+        }
+
+    def _run(
+        self,
+        check,
+        base_facts,
+        working,
+        specs=(),
+        adrs=(),
+        base_corpus=None,
+        head_corpus=None,
+        texts=None,
+    ):
+        return check.decision_mandate(
+            "base",
+            base_facts,
+            working,
+            list(specs),
+            list(adrs),
+            base_corpus or {},
+            head_corpus or {},
+            head_texts=texts,
+        )
+
+    def test_a_prior_orphan_materially_touched_fails(self, check, capsys):
+        """The planted candidate the issue verified: an already-uncovered taken
+        ADR rewritten wholesale passed both existing mandates. This is that
+        plant, pinned."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, base, head, texts={"ADR-002": self.MATERIAL})
+        assert code == 1
+        assert rows and rows[0]["id"] == "ADR-002" and rows[0]["evidence"] == "unproven"
+        assert "ADR-002" in capsys.readouterr().out
+
+    def test_an_editorial_only_touch_passes(self, check):
+        editorial = (
+            "---\nid: ADR-002\nkind: adr\nstatus: Accepted\n---\n\n"
+            "## Context\na whole new story, none of it normative\n\n"
+            "## Decision\n"
+            "Every port follows this sequence without colapsing steps:\n\n"
+            "1.  Step one — see [elsewhere](https://example.com/b).\n"
+            "2.  Step two.\n\n"
+            "## Test plan\nirrelevant\n"
+        )
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", editorial, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, base, head, texts={"ADR-002": editorial})
+        assert code == 0 and rows == []
+
+    def test_unrelated_evidence_cannot_pay_for_the_rewritten_decision(self, check):
+        """Debt reduction on a document that does not implement this decision
+        proves nothing about it — the same anti-offset rule the chain mandate
+        applies to absent links."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        offsetting = self._spec("SPEC-700", "ADR-003")
+        code, _rows = self._run(
+            check,
+            base,
+            head,
+            specs=[offsetting],
+            head_corpus={"SPEC-700/AC-1": True},
+            texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 1
+
+    def test_owned_proven_evidence_closes_the_gap(self, check):
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        spec = self._spec("SPEC-500", "ADR-002")
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            specs=[spec],
+            head_corpus={"SPEC-500/AC-1": True},
+            texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 0
+        assert rows and rows[0]["evidence"] == check.DECISION_EVIDENCE_OWNED
+
+    def test_a_marker_without_a_passing_test_is_not_evidence(self, check):
+        """Marker-only proof: a touched owned criterion that stops at `covered`
+        names a test but nothing passing — the rewrite stays unproven."""
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        spec = self._spec("SPEC-500", "ADR-002", rung="covered")
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            specs=[spec],
+            head_corpus={"SPEC-500/AC-1": True},
+            texts={"ADR-002": self.MATERIAL},
+        )
+        assert code == 1 and rows[0]["evidence"] == "unproven"
+
+    def test_a_valid_disposition_closes_the_gap(self, check):
+        head_text = self.MATERIAL + self.DISPOSITION_SUFFIX
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, base, head, texts={"ADR-002": head_text})
+        assert code == 0
+        assert rows[0]["evidence"] == check.DECISION_EVIDENCE_DISPOSITION
+
+    def test_a_disposition_without_a_reason_disposes_of_nothing(self, check):
+        head_text = self.MATERIAL + "\n<!-- ac-state: decision-unproven ADR-002 -->\n"
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        code, _rows = self._run(check, base, head, texts={"ADR-002": head_text})
+        assert code == 1
+
+    def test_a_disposition_cannot_cover_another_document(self, check):
+        head_text = self.MATERIAL + "\n<!-- ac-state: decision-unproven ADR-003 - borrowed -->\n"
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        code, _rows = self._run(check, base, head, texts={"ADR-002": head_text})
+        assert code == 1
+
+    def _adr_doc(self, adr_id, criteria):
+        return {
+            "id": adr_id,
+            "file": f"docs/adr/{adr_id}.md",
+            "declared_status": "Accepted",
+            "implements": [],
+            "declared_unproven": [],
+            "own_detail": criteria,
+        }
+
+    def test_a_disposition_with_an_implemented_status_is_a_contradiction(self, check):
+        head_text = self.MATERIAL + self.DISPOSITION_SUFFIX
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {
+            "ADR-002": self._facts(
+                check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md", status="Implemented"
+            )
+        }
+        code, rows = self._run(
+            check, base, head, adrs=[self._adr_doc("ADR-002", [])], texts={"ADR-002": head_text}
+        )
+        assert code == 1
+        assert rows[0]["evidence"] == "contradicted-disposition"
+        assert "Implemented" in rows[0]["problem"]
+
+    def test_a_disposition_cannot_ride_on_a_ticked_unproven_criterion(self, check):
+        """Ticking an owned criterion the artefacts cannot prove, on top of a
+        standing disposition, is a claim the disposition refutes — the row
+        reports the rewrite unproven, and the criterion through the mandate
+        violations."""
+        head_text = self.MATERIAL + self.DISPOSITION_SUFFIX
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        adr = self._adr_doc(
+            "ADR-002",
+            [
+                {
+                    "id": "ADR-002/AC-1",
+                    "claimed": True,
+                    "rung": "covered",
+                    "module": "m",
+                    "covered_by": ["tests/test_x.py"],
+                }
+            ],
+        )
+        code, rows = self._run(
+            check,
+            base,
+            head,
+            adrs=[adr],
+            head_corpus={"ADR-002/AC-1": True},
+            texts={"ADR-002": head_text},
+        )
+        assert code == 1 and rows[0]["evidence"] == "unproven"
+
+    def test_a_document_this_change_adds_is_not_this_mandates(self, check):
+        """A new orphan decision is the chain mandate's; this one judges what
+        already existed and was rewritten."""
+        head = {"ADR-002": self._facts(check, "ADR-002", self.MATERIAL, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, {}, head, texts={"ADR-002": self.MATERIAL})
+        assert code == 0 and rows == []
+
+    def test_a_document_this_change_removes_is_not_this_mandates(self, check):
+        base = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, base, {})
+        assert code == 0 and rows == []
+
+    def test_an_untouched_document_passes(self, check):
+        facts = {"ADR-002": self._facts(check, "ADR-002", self.BASE, "docs/adr/ADR-002.md")}
+        code, rows = self._run(check, facts, facts, texts={"ADR-002": self.BASE})
+        assert code == 0 and rows == []

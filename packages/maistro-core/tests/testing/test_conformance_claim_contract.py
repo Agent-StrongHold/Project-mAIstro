@@ -33,6 +33,7 @@ from maistro.conformance.runner import (
     assert_conformant,
     discover_subjects,
     render_report,
+    run_registered_subjects,
 )
 from testing.conformance_subjects import (
     BaseConformanceSubject,
@@ -302,3 +303,78 @@ def test_report_result_finds_later_entries_and_missing_ones() -> None:
     found = report.result(CheckId.USAGE_AND_PROVENANCE)
     assert found is not None and found.detail == "second"
     assert report.result(CheckId.BYPASS_REFUSED) is None
+
+
+class _RegisteredEntry:
+    """One installed-style entry point in the canonical registration group."""
+
+    def __init__(self, name: str, factory: object) -> None:
+        self.name = name
+        self._factory = factory
+
+    def load(self) -> object:
+        return self._factory
+
+
+async def test_every_registered_subject_is_executed_with_a_valid_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registration is not evidence: a supported adapter registered under the
+    canonical group is *executed* by `run_registered_subjects`, and only a
+    claim-valid report comes back (#965/#2542). Nothing registered can sit the
+    suite out — that is the "no registered supported adapter silently escapes"
+    binding, held at the production seam rather than by convention."""
+
+    def _reference() -> object:
+        return BaseConformanceSubject(name="registered-reference")
+
+    monkeypatch.setattr(
+        "maistro.conformance.runner.metadata.entry_points",
+        lambda group: [_RegisteredEntry("registered-reference", _reference)],
+    )
+    reports = await run_registered_subjects()
+
+    assert [report.descriptor.name for report in reports] == ["registered-reference"]
+    assert all(report.claim_valid for report in reports)
+    assert all(report.conforms for report in reports)
+
+
+async def test_a_registered_nonconforming_subject_fails_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A supported adapter that registers but breaks a semantic cannot pass by
+    virtue of being registered: the run fails naming that subject."""
+
+    from testing.conformance_subjects import UncancellableSubject
+
+    def _violator() -> object:
+        return UncancellableSubject(name="registered-violator")
+
+    monkeypatch.setattr(
+        "maistro.conformance.runner.metadata.entry_points",
+        lambda group: [_RegisteredEntry("registered-violator", _violator)],
+    )
+    with pytest.raises(ConformanceFailure, match="registered-violator"):
+        await run_registered_subjects()
+
+
+async def test_a_registered_subject_cannot_skip_its_way_to_a_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A skipped required leg makes the report claim-less, and a claim-less
+    report fails the registered run — marker-only proof and never-run paths
+    buy nothing (#965's acceptance, pinned at the registration seam)."""
+
+    from testing.conformance_subjects import UnavailableBackendSubject
+
+    monkeypatch.delenv("MAISTRO_REQUIRE_REAL_BACKEND_LEGS", raising=False)
+
+    def _skipper() -> object:
+        return UnavailableBackendSubject(name="registered-skipper")
+
+    monkeypatch.setattr(
+        "maistro.conformance.runner.metadata.entry_points",
+        lambda group: [_RegisteredEntry("registered-skipper", _skipper)],
+    )
+    with pytest.raises(ConformanceFailure, match="registered-skipper"):
+        await run_registered_subjects()
