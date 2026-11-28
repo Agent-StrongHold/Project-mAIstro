@@ -19,6 +19,7 @@ caller who already held a pool had no way to reach the durable stores at all.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -513,3 +514,234 @@ class TestTheDurableCursorNeverSkipsALateCommit:
         assert await container.process_durable_events() == 3
         assert delivered == [1, 3]
         assert await pg_pool.fetchval("SELECT count(*) FROM event_log") == 2
+
+
+class TestTheReplayAcknowledgementIsFencedThroughTheCursor:
+    """#2511, end to end on real PostgreSQL.
+
+    The log's `event_replay_cursors` row carries no fencing token: a tick
+    whose `advance` was refused by the canonical cursor (its lease was
+    taken over mid-batch) must not publish its rejected position there nor
+    report it, even when it processed further than the new holder has —
+    and a takeover between an accepted advance and the acknowledgement can
+    only ever publish a position the authoritative cursor already accepted.
+    """
+
+    @staticmethod
+    def _ids_caller(sink: list[int]):
+        async def _caller(trigger: object, event: Any) -> None:
+            sink.append(event.id)
+
+        return _caller
+
+    async def test_a_lease_takeover_denies_the_old_replica_the_log_acknowledgement(
+        self, pg_pool, wire
+    ) -> None:
+        """Two replicas on two independent pools over one server. Replica A
+        pauses mid-batch inside its handler; its lease lapses and replica B
+        takes the cursor over; A resumes, settles all three events, and
+        tries to advance past B — the advance is refused, and A must
+        acknowledge nothing on the log and claim no progress.
+        """
+        import asyncpg
+
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        second_pool = await asyncpg.create_pool(_require_postgres(), min_size=1, max_size=4)
+        try:
+            await pg_pool.execute(
+                "TRUNCATE handler_invocations, trigger_definitions, event_log, "
+                "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+            )
+            replica_a = await wire(_config(), pg_pool=pg_pool)
+            replica_b = await wire(_config(), pg_pool=second_pool)
+            delivered_a: list[int] = []
+            delivered_b: list[int] = []
+            replica_a.handler_caller = self._ids_caller(delivered_a)
+            replica_b.handler_caller = self._ids_caller(delivered_b)
+            # A sendable handler_url (the injected caller never dials it): an
+            # empty target settles as a pre-send refusal, which would advance
+            # the cursor without any dispatch this test is meant to observe.
+            await replica_a.trigger_store.add(
+                TriggerDefinition(
+                    trigger_id="t1",
+                    event_pattern="agent.*",
+                    handler_url="http://handlers.invalid/agent",
+                    replay_safety=ReplaySafety.IDEMPOTENT,
+                    contract_ref="contract-v1",
+                )
+            )
+
+            for _ in range(3):
+                await replica_a.durable_event_log.append("agent.created")  # ids 1..3
+
+            a_in_batch = asyncio.Event()
+            release_a = asyncio.Event()
+
+            async def pausing_caller(trigger: object, event: Any) -> None:
+                if event.id == 1:
+                    # The barrier: replica A is parked inside its own batch
+                    # while the test takes its lease away.
+                    a_in_batch.set()
+                    await release_a.wait()
+                delivered_a.append(event.id)
+
+            replica_a.handler_caller = pausing_caller
+            tick = asyncio.create_task(replica_a.process_durable_events())
+            await asyncio.wait_for(a_in_batch.wait(), 10)
+
+            # Force the lease to lapse and replica B (its own pool, its own
+            # connection) takes the canonical cursor over — without ticking:
+            # B owns the cursor but has advanced nothing. The claim uses B's
+            # own holder id so B's production tick later renews it as the
+            # same holder.
+            await second_pool.execute("UPDATE consumer_cursors SET lease_expires_at = 0")
+            lease_b = await replica_b.consumer_cursor_store.claim(
+                LEGACY_BRIDGE_CONSUMER_ID, holder=replica_b._durable_events_holder
+            )
+            assert lease_b is not None
+            assert lease_b.position == 0
+
+            release_a.set()
+            cursor_a = await asyncio.wait_for(tick, 10)
+
+            # A settled all three events — the receipts are durable — but
+            # the canonical cursor refused its write: it must not write the
+            # log acknowledgement, report its rejected position, or mirror
+            # it, even though it processed further than B has.
+            assert delivered_a == [1, 2, 3]
+            assert cursor_a == replica_a.durable_event_cursor == 0
+            assert (
+                await replica_a.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID)
+                == 0
+            )
+            assert (
+                await replica_a.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
+            )
+            assert await second_pool.fetchval("SELECT position FROM consumer_cursors") == 0
+            assert await second_pool.fetchval("SELECT count(*) FROM event_replay_cursors") == 0
+            assert await second_pool.fetchval("SELECT count(*) FROM handler_invocations") == 3
+
+            # B now ticks under its own lease: A's settled receipts dedupe
+            # (no dispatch is repeated), the accepted advance carries the log
+            # acknowledgement, and both pools read the same consistent
+            # checkpoint back.
+            cursor_b = await replica_b.process_durable_events()
+            assert delivered_b == []
+            assert cursor_b == replica_b.durable_event_cursor == 3
+            assert (
+                await replica_b.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+            )
+            assert (
+                await replica_a.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+            )
+            assert (
+                await replica_a.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID)
+                == 3
+            )
+            assert await second_pool.fetchval("SELECT count(*) FROM handler_invocations") == 3
+        finally:
+            await second_pool.close()
+
+    async def test_a_takeover_between_the_advance_and_the_acknowledgement_publishes_the_authoritative_position(
+        self, pg_pool, wire
+    ) -> None:
+        """Replica B takes the lease over in the window between replica A's
+        accepted primary advance and A's log acknowledgement. A acknowledges
+        the authoritative cursor — re-read from the store, which B has
+        already advanced further — never its own pre-takeover view, so the
+        log's replay cursor stays inside what the primary cursor accepted.
+        """
+        import asyncpg
+
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        second_pool = await asyncpg.create_pool(_require_postgres(), min_size=1, max_size=4)
+        try:
+            await pg_pool.execute(
+                "TRUNCATE handler_invocations, trigger_definitions, event_log, "
+                "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+            )
+            replica_a = await wire(_config(), pg_pool=pg_pool)
+            replica_b = await wire(_config(), pg_pool=second_pool)
+            delivered: list[int] = []
+            replica_a.handler_caller = self._ids_caller(delivered)
+            await replica_a.trigger_store.add(
+                TriggerDefinition(
+                    trigger_id="t1",
+                    event_pattern="agent.*",
+                    handler_url="http://handlers.invalid/agent",
+                    replay_safety=ReplaySafety.IDEMPOTENT,
+                    contract_ref="contract-v1",
+                )
+            )
+
+            await replica_a.durable_event_log.append("agent.created")
+            await replica_a.durable_event_log.append("agent.created")  # ids 1..2
+
+            cursor_store = replica_a.consumer_cursor_store
+            holder = replica_a._durable_events_holder
+
+            async def handover() -> None:
+                """Runs after replica A's advance is accepted, before its
+                acknowledgement: B takes the lease over and advances the
+                authoritative cursor further (its own settled tick)."""
+                await cursor_store.claim(
+                    LEGACY_BRIDGE_CONSUMER_ID, holder=holder, lease_seconds=-1.0
+                )
+                lease_b = await cursor_store.claim(
+                    LEGACY_BRIDGE_CONSUMER_ID, holder=replica_b._durable_events_holder
+                )
+                assert lease_b is not None
+                assert await cursor_store.advance(
+                    LEGACY_BRIDGE_CONSUMER_ID,
+                    fencing_token=lease_b.fencing_token,
+                    position=9,
+                )
+
+            class _HandoverAfterAdvance:
+                def __init__(self, inner: Any, hook: Any) -> None:
+                    self._inner = inner
+                    self._hook = hook
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+                async def advance(
+                    self, consumer_id: str, *, fencing_token: str, position: int
+                ) -> bool:
+                    accepted = await self._inner.advance(
+                        consumer_id, fencing_token=fencing_token, position=position
+                    )
+                    if accepted:
+                        await self._hook()
+                    return accepted
+
+            replica_a.consumer_cursor_store = _HandoverAfterAdvance(cursor_store, handover)  # type: ignore[assignment]
+            cursor_a = await replica_a.process_durable_events()
+            replica_a.consumer_cursor_store = cursor_store  # type: ignore[assignment]
+
+            # The authoritative cursor (9) is what both replicas report and
+            # what the log acknowledges: A's own advance reached only 2, and
+            # the unfenced acknowledgement published nothing beyond what the
+            # primary cursor explicitly accepted.
+            assert delivered == [1, 2]
+            assert cursor_a == replica_a.durable_event_cursor == 9
+            assert await second_pool.fetchval("SELECT position FROM consumer_cursors") == 9
+            assert await second_pool.fetchval("SELECT event_id FROM event_replay_cursors") == 9
+            assert (
+                await replica_a.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 9
+            )
+
+            # The takeover is clean: B renews its own lease and continues
+            # from the authoritative position with nothing contradictory to
+            # reconcile.
+            cursor_b = await replica_b.process_durable_events()
+            assert cursor_b == 9
+            assert await second_pool.fetchval("SELECT event_id FROM event_replay_cursors") == 9
+        finally:
+            await second_pool.close()

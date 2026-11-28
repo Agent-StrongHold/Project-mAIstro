@@ -908,6 +908,13 @@ class PgConsumerCursorStore:
         )
         return row is not None
 
+    async def current_position(self, consumer_id: str) -> int:
+        value = await self._pool.fetchval(
+            "SELECT position FROM consumer_cursors WHERE consumer_id = $1",
+            consumer_id,
+        )
+        return int(value) if value is not None else 0
+
 
 class PgCanonicalProjectionStore:
     """PostgreSQL-backed replay cursor over the canonical Event streams (#2506).

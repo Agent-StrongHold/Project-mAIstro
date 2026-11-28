@@ -92,6 +92,17 @@ handler-owned idempotency contract.
 > - **Fencing.** Every `advance` carries the fencing token its claim returned. A token the store
 >   no longer recognises — the lease was taken over — is refused, and the write is additionally
 >   monotonic (`GREATEST`/`MAX`), so a stale or reordered write cannot move the position back.
+> - **Fenced acknowledgement.** Amended 2026-11 (#2511): the log's own replay acknowledgement
+>   (`EventLogStore.acknowledge_replay`, #836) has no fencing token of its own, so the bridge
+>   fences it through the primary cursor instead of trusting the tick's own view. An `advance`
+>   the store refuses — the lease was taken over mid-tick — acknowledges nothing on the log and
+>   reports the authoritative cursor position (re-read from the store), never the rejected one;
+>   an accepted advance acknowledges the position re-read from the authoritative cursor, so a
+>   takeover between the primary write and the acknowledgement can only publish a position the
+>   primary already accepted. The acknowledgement stays monotonic, so a crash between the two
+>   writes leaves it lagging the cursor — conservative, never contradictory — until the next
+>   settled tick carries it forward. `ConsumerCursorStore.current_position` is the read-only
+>   projection the rejected holder reports from; it adds no second authority.
 > - **Settled before persisted.** The position is written only after every event up to it has a
 >   terminal invocation on every matching trigger; a crash between processing and the write costs
 >   a replay of already-idempotent work and never skips an event still in flight.
