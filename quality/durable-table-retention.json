@@ -367,6 +367,32 @@
       "notes": "Removed with its Workspace (purge_workspace_in in the Workspace delete transaction)."
     },
     {
+      "table": "canonical_event_projection_streams",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/processing.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per canonical Event stream (#2506); bounded by the stream count, not by time. Same shape as consumer_cursors: a replay-cursor resume point, never an occurrence record."
+    },
+    {
+      "table": "canonical_projection_failures",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/processing.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per canonical Event whose durable-log append failed (#2506); rows are deleted on success (forget) and bounded by the poison-event count. Dead-lettered rows carry the terminal disposition's failure evidence."
+    },
+    {
       "table": "canonical_projects",
       "backends": [
         "postgres",
@@ -1633,7 +1659,7 @@
       "retention": "indefinite_by_decision",
       "deletion_path": null,
       "issue": "#37",
-      "notes": "One row per deleted Workspace id — the tombstone that keeps deletion true after the Workspace row is gone (#37). PgWorkspaceStore.delete writes it in the same transaction that removes the Workspace, and create on either backend refuses a tombstoned id, so a stale Hive mirror, a replayed import journal, or leftover configuration cannot resurrect deleted authority. Deleting a tombstone would be resurrecting the Workspace, so no purge path exists by design; the table grows by one row per Workspace deletion, which is bounded by the number of Workspaces ever deleted. Alembic 072 creates it on PostgreSQL; SqliteWorkspaceStore.ensure_schema creates the same definition on SQLite (guarded DDL)."
+      "notes": "One row per deleted Workspace id \u2014 the tombstone that keeps deletion true after the Workspace row is gone (#37). PgWorkspaceStore.delete writes it in the same transaction that removes the Workspace, and create on either backend refuses a tombstoned id, so a stale Hive mirror, a replayed import journal, or leftover configuration cannot resurrect deleted authority. Deleting a tombstone would be resurrecting the Workspace, so no purge path exists by design; the table grows by one row per Workspace deletion, which is bounded by the number of Workspaces ever deleted. Alembic 072 creates it on PostgreSQL; SqliteWorkspaceStore.ensure_schema creates the same definition on SQLite (guarded DDL)."
     },
     {
       "table": "canonical_orphan_project_quarantine",
@@ -1645,7 +1671,7 @@
       "retention": "indefinite_by_decision",
       "deletion_path": null,
       "issue": "#37",
-      "notes": "One row per historical Project whose Workspace id nothing canonical owned, copied here with its full payload and the reason it was held out before removal from the live tree (alembic 072, the approved non-destructive orphan disposition of #37). This is provenance evidence, not live scope: nothing references a quarantined Workspace id again, and create_root refuses the id via the tombstone. Rows are never auto-deleted — an operator may quarantine further leftover rows by hand and VALIDATE CONSTRAINT per the migration's runbook; a bounded purge decision has no owner today. SQLite carries no legacy orphan population (its schema is store-created), so the table is PostgreSQL-only."
+      "notes": "One row per historical Project whose Workspace id nothing canonical owned, copied here with its full payload and the reason it was held out before removal from the live tree (alembic 072, the approved non-destructive orphan disposition of #37). This is provenance evidence, not live scope: nothing references a quarantined Workspace id again, and create_root refuses the id via the tombstone. Rows are never auto-deleted \u2014 an operator may quarantine further leftover rows by hand and VALIDATE CONSTRAINT per the migration's runbook; a bounded purge decision has no owner today. SQLite carries no legacy orphan population (its schema is store-created), so the table is PostgreSQL-only."
     }
   ]
 }
