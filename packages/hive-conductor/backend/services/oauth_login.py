@@ -37,6 +37,7 @@ from maistro.auth.oauth import (
     complete_login,
 )
 from maistro.http import get_shared_client
+from services.entra_jit import EntraJitProvisioner, build_entra_jit_provisioner
 from services.entra_oauth import ProductIdTokenVerifier
 from services.model_store import JsonStore
 from services.secrets import resolve_secret
@@ -217,6 +218,7 @@ class OAuthLoginService:
         state_store: StateStore | None = None,
         link_store: HiveIdentityLinkStore | None = None,
         clock: Callable[[], float] = time.monotonic,
+        jit_provisioner: EntraJitProvisioner | None = None,
     ) -> None:
         if not settings.oauth_providers or settings.oauth_public_origin is None:
             raise OAuthLoginDenied(stage="configuration", reason="missing")
@@ -237,6 +239,16 @@ class OAuthLoginService:
         )
         self._links = link_store or HiveIdentityLinkStore()
         self._linker = IdentityLinker(store=self._links, open_registration=False)
+        # #492: group-gated JIT admission for unlinked Entra identities.
+        # None — the shipped default — keeps the pre-JIT behavior exactly:
+        # an unknown identity is refused, never provisioned. The explicit
+        # link flow never consults this; linking is a deliberate act by an
+        # already-authenticated account, not an admission decision.
+        self._jit = (
+            jit_provisioner
+            if jit_provisioner is not None
+            else build_entra_jit_provisioner(settings, http=self._http, links=self._links)
+        )
 
         providers = {
             name: self._core_provider(name, provider)
@@ -329,6 +341,15 @@ class OAuthLoginService:
         self._validate_browser_state(state, browser_state)
 
         user_id, exchange = await self._complete_login(provider, code, state)
+        if user_id is None and self._jit is not None and self._jit.applies_to(provider):
+            # The identity verified but no local account exists. Before the
+            # uniform unlinked-identity refusal, give the deployment's JIT
+            # policy (#492) its one product transaction: admission creates
+            # the account; refusal returns None and falls through to the
+            # same denial as before, with the decision already audited.
+            provisioned = await self._jit.provision(exchange.identity, exchange)
+            if provisioned is not None:
+                user_id = provisioned.id
         return self._resolve_active_user(provider, user_id, exchange)
 
     async def link_authenticated_user(

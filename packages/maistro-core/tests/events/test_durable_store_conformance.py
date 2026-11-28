@@ -79,6 +79,50 @@ async def _sqlite_conn():
     return await aiosqlite.connect(":memory:")
 
 
+class _SharedConnSpy:
+    """Forwards every connection call; fires a callback when the proof's
+    hole re-read is dispatched through it — i.e. when a proof is running on
+    the shared spine connection instead of its own (the old wiring)."""
+
+    def __init__(self, inner, on_proof_read):
+        self._inner = inner
+        self._on_proof_read = on_proof_read
+
+    async def execute(self, sql, *args):
+        result = await self._inner.execute(sql, *args)
+        if sql.lstrip().upper().startswith("SELECT ID FROM EVENT_LOG"):
+            await self._on_proof_read()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _ProofConnProxy:
+    """Forwards every call to the isolated proof connection; fires a callback
+    once its rollback completes — the moment the write lock is released and a
+    sibling write can proceed against the shared connection."""
+
+    def __init__(self, inner, on_rollback):
+        self._inner = inner
+        self._on_rollback = on_rollback
+
+    def __await__(self):
+        # Already opened by `_proof_conn_connect`; `await conn` (if a caller
+        # ever does) resolves to the proxy itself.
+        return iter(())
+
+    async def execute(self, sql, *args):
+        return await self._inner.execute(sql, *args)
+
+    async def rollback(self):
+        await self._inner.rollback()
+        await self._on_rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 async def _pg_pool():
     url = _require_postgres()
     import asyncpg
@@ -334,6 +378,319 @@ class TestReplayCursor:
     async def test_negative_acknowledgement_is_rejected(self, event_log):
         with pytest.raises(ValueError, match="non-negative"):
             await event_log.acknowledge_replay("reactor", -1)
+
+
+class TestHoleProof:
+    """`prove_holes_absent` invariants every backend must hold (#2509).
+
+    The durable cursor may cross an id only once its append is proven
+    terminally absent by the store's own evidence. These are the universal
+    halves of that contract: a visible id is never absent, and proving no
+    holes proves nothing. The positive half — a rolled-back append proven
+    absent — needs a live second writer and is proved per backend below
+    (`test_sqlite_...` here, `test_pg_...` for PostgreSQL); the in-memory
+    store has no transaction outcome to prove, so its honest answer is to
+    prove nothing, ever.
+    """
+
+    async def test_a_visible_id_is_never_proven_absent(self, event_log):
+        event = await event_log.append("agent.created")
+        assert await event_log.prove_holes_absent((event.id,)) == frozenset()
+
+    async def test_proving_no_holes_proves_nothing(self, event_log):
+        await event_log.append("agent.created")
+        assert await event_log.prove_holes_absent(()) == frozenset()
+
+    async def test_the_memory_store_never_proves_a_hole_absent(self):
+        """An in-memory append has no transaction outcome, so no id can be
+        judged absent from evidence; refusing every hole keeps a cursor
+        below an id a synthetic writer could still be filling."""
+        from maistro.events.durable_log import InMemoryEventLog
+
+        log = InMemoryEventLog()
+        await log.append("agent.created")
+        assert await log.prove_holes_absent((1, 2, 999)) == frozenset()
+
+
+async def test_sqlite_hole_proof_waits_out_a_live_writer(tmp_path):
+    """The SQLite positive half: evidence, not elapsed time (#2509).
+
+    SQLite serialises writers, so the proof procedure is: take the write
+    lock (`BEGIN IMMEDIATE`); success means no writer transaction is live,
+    and a re-read inside that lock answers terminally. While another
+    connection holds a write transaction, the proof must come back empty —
+    that append may still commit — and only after it rolls back (its id
+    permanently absent) does the store prove the hole. A commit instead
+    makes the id visible, which is never 'absent'.
+    """
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+
+    conn = await aiosqlite.connect(str(tmp_path / "holes.db"))
+    try:
+        store = SqliteEventLog(conn)
+        await store.ensure_schema()
+        committed = await store.append("agent.created")
+
+        writer = await aiosqlite.connect(str(tmp_path / "holes.db"))
+        try:
+            # A second writer allocates the next id and holds its
+            # transaction open — the append that may yet commit.
+            await writer.execute("PRAGMA busy_timeout = 2000")
+            await writer.execute("BEGIN IMMEDIATE")
+            cursor = await writer.execute(
+                "INSERT INTO event_log (event_type, entity_type, entity_id, payload, "
+                "source, created_at) VALUES ('agent.created', '', '', '{}', '', 0)"
+            )
+            inflight_id = cursor.lastrowid
+            assert inflight_id == committed.id + 1
+
+            # Live writer: nothing may be proven, not even the committed id.
+            assert await store.prove_holes_absent((committed.id, inflight_id)) == frozenset()
+
+            # The append rolls back; its id can never become visible.
+            await writer.execute("ROLLBACK")
+            assert await store.get(inflight_id) is None
+            assert await store.prove_holes_absent((inflight_id,)) == frozenset({inflight_id})
+        finally:
+            await writer.close()
+    finally:
+        await conn.close()
+
+
+async def test_the_sqlite_hole_proof_never_rolls_back_a_sibling_stores_write(tmp_path):
+    """The proof must run on its own connection, not on the shared spine one.
+
+    `_wire_sqlite_durable_events` wires the event log, trigger store,
+    invocation store and cursor store onto ONE connection, so a proof that
+    took its write lock and rolled back there would swallow whatever a
+    sibling store had appended mid-proof: the sibling's INSERT joins the
+    proof's transaction, the proof's rollback silently discards it, and the
+    sibling still reports success (#2509 review). This test fires a sibling
+    INSERT into the exact window that loses it — after the proof's read has
+    been dispatched, before its rollback — and asserts the write survives.
+    Against a proof running on the shared connection the row is gone after
+    the commit; against the isolated proof connection it persists."""
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+    from maistro.events.trigger_store import SqliteTriggerStore
+
+    db_path = str(tmp_path / "shared.db")
+    conn = await aiosqlite.connect(db_path)
+    try:
+        store = SqliteEventLog(conn)
+        await store.ensure_schema()
+        triggers = SqliteTriggerStore(conn)
+        await triggers.ensure_schema()
+        committed = await store.append("agent.created")
+
+        # A second writer allocates the next id, then rolls back: id
+        # `committed.id + 1` is a permanent hole the proof may judge.
+        writer = await aiosqlite.connect(db_path)
+        try:
+            await writer.execute("PRAGMA busy_timeout = 2000")
+            await writer.execute("BEGIN IMMEDIATE")
+            cursor = await writer.execute(
+                "INSERT INTO event_log (event_type, entity_type, entity_id, payload, "
+                "source, created_at) VALUES ('agent.created', '', '', '{}', '', 0)"
+            )
+            hole_id = cursor.lastrowid
+            await writer.execute("ROLLBACK")
+        finally:
+            await writer.close()
+        assert hole_id == committed.id + 1
+
+        # Fire the sibling write exactly once, at whichever point the proof
+        # hands this test control mid-transaction: after the proof's hole
+        # re-read on the shared connection (the proof running there), or at
+        # the isolated proof connection's rollback completion (the write lock
+        # just released). One-shot: exactly one sibling INSERT either way.
+        fired = False
+
+        async def fire_sibling_insert() -> None:
+            nonlocal fired
+            if fired:
+                return
+            fired = True
+            await conn.execute(
+                "INSERT INTO trigger_definitions (trigger_id, name) VALUES ('sibling', 'in-flight')"
+            )
+
+        real_connect = aiosqlite.connect
+
+        async def proxying_connect(database, *args, **kwargs):
+            assert database == db_path  # only the proof opens its own connection
+            return _ProofConnProxy(
+                await real_connect(database, *args, **kwargs), fire_sibling_insert
+            )
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(aiosqlite, "connect", proxying_connect)
+            spied_store = SqliteEventLog(_SharedConnSpy(conn, fire_sibling_insert))
+            proven = await spied_store.prove_holes_absent((hole_id,))
+
+        # The proof itself stays honest in either wiring.
+        assert proven == frozenset({hole_id})
+
+        # The sibling believed its INSERT succeeded; the commit must land it.
+        await conn.commit()
+        checker = await aiosqlite.connect(db_path)
+        try:
+            survived = await checker.execute(
+                "SELECT name FROM trigger_definitions WHERE trigger_id = 'sibling'"
+            )
+            assert await survived.fetchone() is not None, (
+                "the hole proof rolled back a sibling store's uncommitted write"
+            )
+        finally:
+            await checker.close()
+    finally:
+        await conn.close()
+
+
+class _DatabaseListCursor:
+    """`fetchall` over rows shaped like `PRAGMA database_list` output."""
+
+    def __init__(self, rows: list[tuple[int, str, str]]) -> None:
+        self._rows = rows
+
+    async def fetchall(self) -> list[tuple[int, str, str]]:
+        return self._rows
+
+
+class _DatabaseListConn:
+    """A connection stub answering only `PRAGMA database_list`, with rows the
+    real engine cannot produce.
+
+    `_database_path` is the proof's one look at the database's identity: it
+    must select the row NAMED ``main`` (engine row shape: index 1 the name,
+    index 2 the file), ignore every other database in the list, and answer
+    None when ``main`` carries no usable file — the answer that makes the
+    proof refuse rather than open a connection to a database it cannot
+    isolate. The real engine always lists ``main`` first and always lists it
+    (see the attached-database test below), so the not-main and no-main
+    branches are defensive: reachable only from a connection that does not
+    behave like the engine's. This stub is how that defensive contract is
+    pinned; it duck-types exactly the two calls `_database_path` makes.
+    """
+
+    def __init__(self, rows: list[tuple[int, str, str]]) -> None:
+        self._rows = rows
+
+    async def execute(self, sql: str, *args: object) -> _DatabaseListCursor:
+        assert sql == "PRAGMA database_list", sql
+        return _DatabaseListCursor(self._rows)
+
+
+async def test_the_hole_proof_resolves_main_past_an_attached_database(tmp_path):
+    """`PRAGMA database_list` real shape: `main` is row zero even with another
+    database attached, and `_database_path` must answer *main's* file — the
+    isolated proof connection opens the database the spine connection is on,
+    never a sibling of it."""
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+
+    main_path = str(tmp_path / "main.db")
+    conn = await aiosqlite.connect(main_path)
+    try:
+        await conn.execute("ATTACH DATABASE ? AS attached", (str(tmp_path / "side.db"),))
+        store = SqliteEventLog(conn)
+        assert await store._database_path() == main_path
+    finally:
+        await conn.close()
+
+
+async def test_the_hole_proof_selects_main_by_name_not_by_list_position():
+    """A connection that lists an attached database BEFORE `main` (nothing in
+    the PRAGMA contract forbids an engine from reordering) must still resolve
+    to main's file: selection is by the row's name, not by its position."""
+    from maistro.events.durable_log import SqliteEventLog
+
+    store = SqliteEventLog(
+        _DatabaseListConn([(2, "attached", "/data/attached.db"), (0, "main", "/data/main.db")])
+    )
+    assert await store._database_path() == "/data/main.db"
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        ([(2, "attached", "/data/attached.db")], "no main row is listed at all"),
+        ([(0, "main", ""), (2, "attached", "/data/attached.db")], "main resolves to no file"),
+        ([(0, "main", ":memory:")], "main is the transient in-memory database"),
+    ],
+    ids=["no-main-row", "main-without-file", "main-in-memory"],
+)
+async def test_the_hole_proof_refuses_a_database_it_cannot_isolate(rows, reason):
+    """When `_database_path` cannot answer a real file for ``main`` — no main
+    row, an empty file column, or ``:memory:`` — the proof must refuse every
+    hole: an isolated connection would open some OTHER empty database, and a
+    proof on the shared connection could roll a sibling's write back. The
+    answer for every such database is the in-memory store's: prove nothing."""
+    from maistro.events.durable_log import SqliteEventLog
+
+    store = SqliteEventLog(_DatabaseListConn(rows))
+    assert await store._database_path() is None, reason
+    assert await store.prove_holes_absent((1, 2, 999)) == frozenset()
+
+
+async def test_pg_hole_proof_uses_two_connections_and_durable_evidence():
+    """The PostgreSQL positive half of `prove_holes_absent` (#2509).
+
+    Two independent connections, the exact shape the durable cursor must
+    survive: connection A allocates a `BIGSERIAL` id and holds its
+    transaction open — far longer than any healthy append — while the
+    store's own pool has already committed a higher id. While A can still
+    commit, the proof must come back empty no matter how long the hole has
+    been open (elapsed time is not evidence); once A rolls back, the
+    sequence lock is gone, the id is still invisible, and BIGSERIAL never
+    reuses an id — so the store proves the hole terminally absent. A
+    committed id, by contrast, is never 'absent'.
+    """
+    import asyncpg
+
+    from maistro.events.pg_stores import PgEventLog, ensure_event_schema
+
+    url = _require_postgres()
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        await ensure_event_schema(pool)
+        await pool.execute("TRUNCATE event_log, event_replay_cursors")
+        store = PgEventLog(pool)
+        committed = await store.append("agent.created")
+
+        holder = await asyncpg.connect(url)
+        try:
+            await holder.execute("BEGIN")
+            inflight_id = await holder.fetchval(
+                "INSERT INTO event_log (event_type, created_at) "
+                "VALUES ('agent.created', 0) RETURNING id"
+            )
+            assert inflight_id == committed.id + 1
+
+            # Live append: it may still commit, so nothing is proven —
+            # the committed id stays unproven too, and there is no sleep
+            # or timeout that would ever change this answer.
+            assert await store.prove_holes_absent((committed.id, inflight_id)) == frozenset()
+
+            # The append aborts: lock released, id still invisible, and no
+            # future transaction can allocate that id again.
+            await holder.execute("ROLLBACK")
+            assert await store.get(inflight_id) is None
+            assert await store.prove_holes_absent((inflight_id,)) == frozenset({inflight_id})
+        finally:
+            await holder.close()
+
+        # A committed id is visible and therefore never 'absent'; the next
+        # allocation confirms the rolled-back id is never handed out again.
+        after = await store.append("agent.created")
+        assert after.id == inflight_id + 1
+        assert await store.prove_holes_absent((after.id,)) == frozenset()
+    finally:
+        await pool.close()
 
 
 async def test_pg_replay_cursor_survives_a_pool_restart():
@@ -1345,6 +1702,33 @@ class TestConsumerCursorStore:
         again = await cursor_store.claim("c1", holder="h1")
         assert again is not None
         assert again.position == 50
+
+    async def test_current_position_reads_zero_for_an_unknown_consumer(self, cursor_store):
+        assert await cursor_store.current_position("never-ticked") == 0
+
+    async def test_current_position_reads_back_the_accepted_position(self, cursor_store):
+        """The read path a rejected advance reports from (#2511): what the
+        store holds is what `current_position` answers, for the holder that
+        advanced and for a fresh reader alike."""
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        assert await cursor_store.current_position("c1") == 0
+
+        assert await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=42)
+        assert await cursor_store.current_position("c1") == 42
+
+    async def test_a_rejected_advance_leaves_the_current_position_untouched(self, cursor_store):
+        """A stale-token `advance` writes nothing, so the authoritative
+        position a rejected holder re-reads is exactly what the current
+        holder owns (#2511) — not the position the authority refused."""
+        stale = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert stale is not None
+        new_holder = await cursor_store.claim("c1", holder="h2")
+        assert new_holder is not None
+        await cursor_store.advance("c1", fencing_token=new_holder.fencing_token, position=10)
+
+        assert not await cursor_store.advance("c1", fencing_token=stale.fencing_token, position=999)
+        assert await cursor_store.current_position("c1") == 10
 
     async def test_different_consumers_do_not_share_a_cursor(self, cursor_store):
         lease_a = await cursor_store.claim("a", holder="h1")

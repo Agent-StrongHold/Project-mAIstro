@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from maistro.events.consumer_cursor import DEFAULT_LEASE_SECONDS as CURSOR_DEFAULT_LEASE_SECONDS
@@ -63,6 +64,13 @@ from maistro.events.invocations import (
     validate_settle,
     validated_outcome,
 )
+from maistro.events.processing import (
+    DEFAULT_MAX_PROJECTION_ATTEMPTS,
+    DEFAULT_PROJECTION_BACKOFF_SECONDS,
+    DEFAULT_PROJECTION_LEASE_SECONDS,
+    ProjectionFailure,
+    ProjectionLease,
+)
 from maistro.events.trigger_store import TriggerDefinition
 from maistro.observability.metrics import (
     PostgresFetchRow,
@@ -72,6 +80,8 @@ from maistro.observability.metrics import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
 
 #: `BIGSERIAL` rather than SQLite's implicit rowid, and `DOUBLE PRECISION` for
@@ -87,10 +97,20 @@ CREATE TABLE IF NOT EXISTS event_log (
     entity_id TEXT NOT NULL DEFAULT '',
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     source TEXT NOT NULL DEFAULT '',
-    created_at DOUBLE PRECISION NOT NULL
+    created_at DOUBLE PRECISION NOT NULL,
+    source_event_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_type_id ON event_log(event_type, id);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
+-- The unique index on `source_event_id` is deliberately NOT created here:
+-- `ensure_event_schema` runs `_SCHEMA` before `_SCHEMA_UPGRADES`, and on a
+-- database bootstrapped before this column existed `CREATE TABLE IF NOT
+-- EXISTS` is a no-op, so the index statement would fail on the missing
+-- column before the upgrade below could add it. It is created (idempotently,
+-- after the `ADD COLUMN`) as the second `_SCHEMA_UPGRADES` statement: one row
+-- per canonical Event across both ingress paths (bridge + replay projector,
+-- #2506); NULLs are distinct in a Postgres unique index, so legacy and
+-- non-canonical rows never collide.
 
 CREATE TABLE IF NOT EXISTS event_replay_cursors (
     consumer_id TEXT PRIMARY KEY,
@@ -149,6 +169,23 @@ CREATE TABLE IF NOT EXISTS consumer_cursors (
     fencing_token TEXT NOT NULL DEFAULT '',
     lease_expires_at DOUBLE PRECISION NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS canonical_event_projection_streams (
+    stream_id TEXT PRIMARY KEY,
+    position BIGINT NOT NULL DEFAULT 0,
+    holder TEXT NOT NULL DEFAULT '',
+    fencing_token TEXT NOT NULL DEFAULT '',
+    lease_expires_at DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS canonical_projection_failures (
+    event_id TEXT PRIMARY KEY,
+    stream_id TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_attempt_at DOUBLE PRECISION NOT NULL DEFAULT 0,
+    failed_at DOUBLE PRECISION
+);
 """
 
 
@@ -163,6 +200,9 @@ _SCHEMA_LOCK_KEY = 0x6D61_6973  # "mais"
 #: written by the claim/begin/settle protocol carries one, and historical
 #: SUCCESS rows stay untouched as settled historical acknowledgment.
 _SCHEMA_UPGRADES = (
+    "ALTER TABLE event_log ADD COLUMN IF NOT EXISTS source_event_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_event_log_source_event_id "
+    "ON event_log (source_event_id)",
     "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
     "replay_safety TEXT NOT NULL DEFAULT 'unproven'",
     "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
@@ -289,29 +329,51 @@ class PgEventLog:
         entity_id: str = "",
         payload: dict[str, Any] | None = None,
         source: str = "",
+        source_event_id: str | None = None,
     ) -> LoggedEvent:
         created_at = time.time()
         require_json_encodable_payload(payload or {})
         row = await self._pool.fetchrow(
             """INSERT INTO event_log
-               (event_type, entity_type, entity_id, payload, source, created_at)
-               VALUES ($1,$2,$3,$4::jsonb,$5,$6) RETURNING id""",
+               (event_type, entity_type, entity_id, payload, source, created_at,
+                source_event_id)
+               VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)
+               ON CONFLICT (source_event_id) DO NOTHING
+               RETURNING id""",
             event_type,
             entity_type,
             entity_id,
             json.dumps(payload or {}),
             source,
             created_at,
+            source_event_id,
         )
-        return LoggedEvent(
-            id=row["id"],
-            event_type=event_type,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            payload=dict(payload or {}),
-            source=source,
-            created_at=created_at,
+        if row is not None:
+            return LoggedEvent(
+                id=row["id"],
+                event_type=event_type,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                payload=dict(payload or {}),
+                source=source,
+                created_at=created_at,
+            )
+        # The arbiter index found a row already carrying this canonical source
+        # id: the bridge and the projector are two ingress paths for one fact,
+        # and the log returns the winning row rather than a duplicate (#2506).
+        # NULL source ids never reach this branch — NULLs never conflict.
+        if source_event_id is None:  # pragma: no cover - defensive
+            msg = "event_log insert returned no row without a conflicting source id"
+            raise RuntimeError(msg)
+        existing = await self._pool.fetchrow(
+            "SELECT id, event_type, entity_type, entity_id, payload, source, created_at "
+            "FROM event_log WHERE source_event_id = $1",
+            source_event_id,
         )
+        if existing is None:  # pragma: no cover - the conflict proves a row exists
+            msg = f"event_log row for source_event_id {source_event_id!r} vanished"
+            raise RuntimeError(msg)
+        return _row_to_event(existing)
 
     async def get(self, event_id: int) -> LoggedEvent | None:
         row = await self._pool.fetchrow(
@@ -381,6 +443,50 @@ class PgEventLog:
             time.time(),
         )
         return int(value)
+
+    async def prove_holes_absent(self, hole_ids: Sequence[int]) -> frozenset[int]:
+        """Prove a hole terminally absent from PostgreSQL's own bookkeeping.
+
+        `BIGSERIAL` allocates the id inside the appending transaction, and a
+        transaction that has called `nextval` holds a granted lock on the
+        sequence relation until it commits or aborts. That lock is the proof
+        mechanism, in two steps ordered so the reasoning holds:
+
+        1. Read `pg_locks` for the sequence. A granted lock means some append
+           transaction is still live and *may yet commit* — perhaps the very
+           transaction that allocated one of these holes — so nothing is
+           proven and the caller must keep its cursor below every hole.
+        2. No granted lock means every transaction that ever allocated an id
+           from this sequence has ended: an id invisible to the fresh read in
+           step 2 was allocated by a transaction that rolled back, and since
+           a sequence never hands out a value twice, no future transaction
+           can make it visible either. That is durable database evidence,
+           not elapsed time — a transaction can stay open past any timeout
+           and commit afterwards, so time alone must never be what lets a
+           cursor cross a hole (#2509).
+
+        Reads take no sequence lock, so this store's own scanning cannot
+        false-positive step 1; only genuine in-flight appends do, and they
+        should.
+        """
+        if not hole_ids:
+            return frozenset()
+        async with self._pool.acquire() as conn:
+            live_append = await conn.fetchval(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_locks "
+                "WHERE granted AND relation = to_regclass('event_log_id_seq')::oid)"
+            )
+            if live_append:
+                # Some append transaction still holds the sequence; the hole
+                # this consumer saw may be the id it will commit.
+                return frozenset()
+            rows = await conn.fetch(
+                "SELECT id FROM event_log WHERE id = ANY($1::bigint[])",
+                list(hole_ids),
+            )
+            visible = {int(row["id"]) for row in rows}
+            return frozenset(hole_ids) - visible
 
 
 class PgTriggerStore:
@@ -802,6 +908,180 @@ class PgConsumerCursorStore:
         )
         return row is not None
 
+    async def current_position(self, consumer_id: str) -> int:
+        value = await self._pool.fetchval(
+            "SELECT position FROM consumer_cursors WHERE consumer_id = $1",
+            consumer_id,
+        )
+        return int(value) if value is not None else 0
+
+
+class PgCanonicalProjectionStore:
+    """PostgreSQL-backed replay cursor over the canonical Event streams (#2506).
+
+    One row per canonical stream: `position` is the highest stream sequence the
+    projector has confirmed present in the durable trigger log, and the
+    holder/lease/fencing columns are the same two-replica mechanics
+    `consumer_cursors` uses. `register_stream` places a stream the publisher has
+    not seen before at the canonical store's *current* high-water sequence, so
+    retained history the pre-projection bridge already delivered is never
+    rescanned — and never projected a second time. The canonical watermark table
+    lives in the same database (this store is composed beside its
+    `PgEventStore`), so the registration is one statement.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await ensure_event_schema(self._pool)
+
+    async def register_stream(self, stream_id: str) -> None:
+        await self._pool.execute(
+            """INSERT INTO canonical_event_projection_streams
+               (stream_id, position, holder, fencing_token, lease_expires_at)
+               SELECT $1,
+                      COALESCE((SELECT last_sequence
+                                FROM canonical_event_stream_watermarks
+                                WHERE stream_id = $1), 0),
+                      '', '', 0
+               ON CONFLICT (stream_id) DO NOTHING""",
+            stream_id,
+        )
+
+    async def registered_streams(self) -> tuple[str, ...]:
+        rows = await self._pool.fetch(
+            "SELECT stream_id FROM canonical_event_projection_streams ORDER BY stream_id ASC"
+        )
+        return tuple(str(row["stream_id"]) for row in rows)
+
+    async def claim(
+        self,
+        stream_id: str,
+        *,
+        holder: str,
+        lease_seconds: float = DEFAULT_PROJECTION_LEASE_SECONDS,
+    ) -> ProjectionLease | None:
+        now = time.time()
+        new_token = uuid.uuid4().hex
+        row = await self._pool.fetchrow(
+            """INSERT INTO canonical_event_projection_streams
+               (stream_id, position, holder, fencing_token, lease_expires_at)
+               VALUES ($1, 0, $2, $3, $4)
+               ON CONFLICT (stream_id) DO UPDATE SET
+                 holder = EXCLUDED.holder,
+                 fencing_token = CASE WHEN canonical_event_projection_streams.holder
+                                       = EXCLUDED.holder
+                                       THEN canonical_event_projection_streams.fencing_token
+                                       ELSE EXCLUDED.fencing_token END,
+                 lease_expires_at = EXCLUDED.lease_expires_at
+               WHERE canonical_event_projection_streams.lease_expires_at <= $5
+                  OR canonical_event_projection_streams.holder = $2
+               RETURNING stream_id, position, fencing_token, lease_expires_at""",
+            stream_id,
+            holder,
+            new_token,
+            now + lease_seconds,
+            now,
+        )
+        return _row_to_projection_lease(row) if row is not None else None
+
+    async def advance(self, stream_id: str, *, fencing_token: str, position: int) -> bool:
+        row = await self._pool.fetchrow(
+            """UPDATE canonical_event_projection_streams
+               SET position = GREATEST(position, $1)
+               WHERE stream_id = $2 AND fencing_token = $3
+               RETURNING stream_id""",
+            position,
+            stream_id,
+            fencing_token,
+        )
+        return row is not None
+
+
+class PgProjectionFailureStore:
+    """PostgreSQL-backed poison bookkeeping for the replay projector (#2506).
+
+    A durable-log append that keeps failing must not wedge the stream or retry
+    unbounded: `record_failure` counts attempts, hands backoff timestamps, and
+    sets the terminal disposition past the bound — visible through
+    `dead_letters`, never silently dropped.
+    """
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        max_attempts: int = DEFAULT_MAX_PROJECTION_ATTEMPTS,
+        retry_backoff_seconds: float = DEFAULT_PROJECTION_BACKOFF_SECONDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds must be non-negative")
+        self._pool = pool
+        self._max_attempts = max_attempts
+        self._retry_backoff_seconds = retry_backoff_seconds
+        self._clock = clock
+
+    async def ensure_schema(self) -> None:
+        await ensure_event_schema(self._pool)
+
+    async def record_failure(self, event_id: str, stream_id: str, error: str) -> bool:
+        """Persist one failed attempt; return whether the row is now dead-lettered."""
+        now = self._clock()
+        row = await self._pool.fetchrow(
+            """INSERT INTO canonical_projection_failures
+               (event_id, stream_id, attempts, last_error, next_attempt_at, failed_at)
+               VALUES ($1, $2, 1, $3, $4, NULL)
+               ON CONFLICT (event_id) DO UPDATE SET
+                 attempts = canonical_projection_failures.attempts + 1,
+                 last_error = EXCLUDED.last_error,
+                 next_attempt_at = EXCLUDED.next_attempt_at,
+                 failed_at = CASE
+                   WHEN canonical_projection_failures.attempts + 1 >= $5::int
+                   THEN $6::double precision
+                   ELSE canonical_projection_failures.failed_at END
+               WHERE canonical_projection_failures.failed_at IS NULL
+               RETURNING attempts, failed_at""",
+            event_id,
+            stream_id,
+            error[:2048],
+            now + self._retry_backoff_seconds,
+            self._max_attempts,
+            now,
+        )
+        if row is None:
+            # No RETURNING row: the row is already dead-lettered, and a
+            # dead-lettered disposition is terminal — never resurrected by a
+            # later failed attempt.
+            return True
+        return int(row["attempts"]) >= self._max_attempts
+
+    async def forget(self, event_id: str) -> None:
+        await self._pool.execute(
+            "DELETE FROM canonical_projection_failures WHERE event_id = $1", event_id
+        )
+
+    async def get(self, event_id: str) -> ProjectionFailure | None:
+        row = await self._pool.fetchrow(
+            """SELECT event_id, stream_id, attempts, last_error, next_attempt_at, failed_at
+               FROM canonical_projection_failures WHERE event_id = $1""",
+            event_id,
+        )
+        return _row_to_projection_failure(row) if row is not None else None
+
+    async def poisoned_records(self, *, limit: int = 100) -> list[ProjectionFailure]:
+        rows = await self._pool.fetch(
+            """SELECT event_id, stream_id, attempts, last_error, next_attempt_at, failed_at
+               FROM canonical_projection_failures
+               WHERE failed_at IS NOT NULL
+               ORDER BY event_id ASC LIMIT $1""",
+            limit,
+        )
+        return [_row_to_projection_failure(row) for row in rows]
+
 
 def _row_to_event(row: Any) -> LoggedEvent:
     payload = row["payload"]
@@ -859,4 +1139,23 @@ def _row_to_cursor_lease(row: Any) -> CursorLease:
         position=int(row["position"]),
         fencing_token=row["fencing_token"],
         expires_at=float(row["lease_expires_at"] or 0),
+    )
+
+
+def _row_to_projection_lease(row: Any) -> ProjectionLease:
+    return ProjectionLease(
+        position=int(row["position"]),
+        fencing_token=row["fencing_token"],
+        expires_at=float(row["lease_expires_at"] or 0),
+    )
+
+
+def _row_to_projection_failure(row: Any) -> ProjectionFailure:
+    return ProjectionFailure(
+        event_id=str(row["event_id"]),
+        stream_id=str(row["stream_id"] or ""),
+        attempts=int(row["attempts"]),
+        last_error=str(row["last_error"] or ""),
+        next_attempt_at=float(row["next_attempt_at"] or 0),
+        poisoned_at=float(row["failed_at"]) if row["failed_at"] is not None else None,
     )

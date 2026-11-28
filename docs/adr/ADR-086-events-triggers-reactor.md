@@ -92,19 +92,66 @@ handler-owned idempotency contract.
 > - **Fencing.** Every `advance` carries the fencing token its claim returned. A token the store
 >   no longer recognises — the lease was taken over — is refused, and the write is additionally
 >   monotonic (`GREATEST`/`MAX`), so a stale or reordered write cannot move the position back.
+> - **Fenced acknowledgement.** Amended 2026-11 (#2511): the log's own replay acknowledgement
+>   (`EventLogStore.acknowledge_replay`, #836) has no fencing token of its own, so the bridge
+>   fences it through the primary cursor instead of trusting the tick's own view. An `advance`
+>   the store refuses — the lease was taken over mid-tick — acknowledges nothing on the log and
+>   reports the authoritative cursor position (re-read from the store), never the rejected one;
+>   an accepted advance acknowledges the position re-read from the authoritative cursor, so a
+>   takeover between the primary write and the acknowledgement can only publish a position the
+>   primary already accepted. The acknowledgement stays monotonic, so a crash between the two
+>   writes leaves it lagging the cursor — conservative, never contradictory — until the next
+>   settled tick carries it forward. `ConsumerCursorStore.current_position` is the read-only
+>   projection the rejected holder reports from; it adds no second authority.
 > - **Settled before persisted.** The position is written only after every event up to it has a
 >   terminal invocation on every matching trigger; a crash between processing and the write costs
 >   a replay of already-idempotent work and never skips an event still in flight.
 > - **Gap policy.** PostgreSQL hands out `event_log.id` before the appending transaction
 >   commits, so a lower id can be invisible while a higher one is readable. The bridge processes
->   what it can see but persists its position only up to the first id the log skipped, and holds
->   there until the id appears or a grace window (`durable_event_hole_grace_s`, default 60 s)
->   lapses, after which the hole is treated as an append that aborted and the position moves on.
->   Handler work is never delayed by a hole; only the persisted resume point is.
+>   what it can see but persists its position only up to the first skipped id it has not proven
+>   terminally absent — the log reports and proves **every** skipped id of a run individually
+>   (`EventLogStore.prove_holes_absent`, #2509), because proof that one id's append rolled back
+>   says nothing about a neighbouring id that may still commit. "Terminally absent" is durable
+>   database evidence — never elapsed time — that the allocating transaction ended
+>   without committing and that no future transaction can make the id visible. On PostgreSQL the
+>   evidence is `pg_locks`: a transaction that has called `nextval` holds a granted lock on the
+>   sequence until it commits or aborts, so when no such lock exists and a fresh read still cannot
+>   see the id, the append rolled back and a sequence never hands the id out again. A time-based
+>   grace used to move the position past an unresolved hole after 60 s; that was removed — a
+>   transaction can stay open past any timeout and commit afterwards, and the position moving past
+>   it then loses the event from every later read. Handler work is never delayed by a hole; only
+>   the persisted resume point is.
 >
 > None of this changes the correctness contract above: the cursor is a resume *optimisation*,
 > and `InvocationStore`'s `(trigger_id, event_id)` claim remains what makes redelivery safe
 > (ADR-082426-82c7, "the occurrence is the claim, not the cursor").
+
+> **Amended 2026-11-28 (#2506): the durable log's canonical-Envelope ingress is a replayable,
+> idempotent projection; the legacy bus is never the only durable trigger ingress.** The
+> persist-first publisher projected an inserted canonical Event onto the in-memory bus, whose
+> authoritative `before_handlers` bridge appended it into this log — at-most-once. A bridge
+> append that failed after the canonical append committed therefore left a persisted Event
+> permanently outside the only log the trigger cursor scans: the retry emission returned
+> `inserted=False` and suppressed the bus forever. The ingress is now repairable from canonical
+> authority, with no second event identity and no second processing lifecycle:
+>
+> - **One row per canonical Event, atomically.** `event_log` carries a nullable
+>   `source_event_id` under a unique index; the bridge keys every canonical projection with it,
+>   and an append naming a known source id returns the existing row. Two ingress paths — the
+>   bridge and the replay projector — are two writers of one durable fact, never two occurrences.
+> - **Registered streams.** The publisher registers each event's stream with the projection
+>   store *before* the canonical append, positioned at the stream's canonical high-water mark, so
+>   a failure or crash after the commit always leaves the Event scan-reachable, and retained
+>   pre-projection history is never re-projected.
+> - **The replay tick.** `Container.process_durable_events` first replays the projection: per
+>   registered stream, under a leased and fenced claim, every canonical Event above the cursor is
+>   confirmed in the log through the idempotent append; the cursor advances only past confirmed
+>   sequences; a failing append gets bounded attempts with backoff and a visible terminal
+>   dead-letter disposition that releases its stream. Healing is reachable only through this
+>   ordinary production tick. Canonical stream sequences are contiguous by construction, so an
+>   aborted envelope append cannot leave a hole the projection cursor could skip — the gap
+>   policy above remains what guards the *trigger* cursor against `event_log`'s own `BIGSERIAL`
+>   holes.
 
 ## Acceptance criteria
 

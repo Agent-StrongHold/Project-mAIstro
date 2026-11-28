@@ -45,25 +45,6 @@ a normal tick is not stolen mid-run, short enough that a replica killed right
 after claiming does not strand the bridge until someone notices.
 """
 
-DEFAULT_HOLE_GRACE_SECONDS = 60.0
-"""How long a durable consumer waits at an id the log skipped over before
-treating it as an insert that will never commit.
-
-PostgreSQL's `BIGSERIAL` hands out ids at insert time, before the appending
-transaction commits, so a slow or rolled-back append leaves a lower id
-invisible while a higher one is already readable. A consumer that persisted
-its position past the lower id would exclude that event from every later
-``id > position`` read, restart included. So `Container.process_durable_events`
-keeps its *durable* position below the first such hole until either the id
-appears (the append committed; it is read on the next tick) or this many
-seconds pass without it (the append aborted, or is slower than any healthy
-append, and the position moves on). Sixty seconds is far longer than a
-healthy single-row append takes to commit and short enough that an aborted
-insert does not stall the bridge's resume point for the rest of the day.
-The in-flight handler work is not delayed by this — only the persisted
-resume point is.
-"""
-
 LEGACY_BRIDGE_CONSUMER_ID = "legacy-event-bridge"
 """The one consumer this store currently serves: `Container.process_durable_events`,
 which replays `durable_event_log` (the in-process `EventBus` bridge) into
@@ -120,6 +101,19 @@ class ConsumerCursorStore(Protocol):
         """
         ...
 
+    async def current_position(self, consumer_id: str) -> int:
+        """Read the durable position this consumer's cursor holds right now.
+
+        The read path a *rejected* `advance` needs (#2511): a caller whose
+        fencing token was refused must not keep reporting its own attempted
+        position as progress — it re-derives the authoritative position from
+        the store that owns the cursor instead. It is a read-only projection
+        of the same authority `claim`/`advance` serve, never a second one:
+        whoever holds the lease writes this position, and `advance`'s
+        monotonic write is the only thing that ever moves it.
+        """
+        ...
+
 
 class InMemoryConsumerCursorStore:
     """In-memory :class:`ConsumerCursorStore` (tests, dry-run, single-process homelab)."""
@@ -159,6 +153,10 @@ class InMemoryConsumerCursorStore:
             current = self._positions.get(consumer_id, 0)
             self._positions[consumer_id] = max(current, position)
             return True
+
+    async def current_position(self, consumer_id: str) -> int:
+        async with self._lock:
+            return self._positions.get(consumer_id, 0)
 
 
 _SCHEMA = """
@@ -224,6 +222,15 @@ class SqliteConsumerCursorStore:
         row = await cursor.fetchone()
         await self._conn.commit()
         return row is not None
+
+    async def current_position(self, consumer_id: str) -> int:
+        cursor = await self._conn.execute(
+            "SELECT position FROM consumer_cursors WHERE consumer_id = ?",
+            (consumer_id,),
+        )
+        row = await cursor.fetchone()
+        await self._conn.commit()
+        return int(row[0]) if row is not None else 0
 
     @staticmethod
     def _row_to_lease(row: tuple[object, ...]) -> CursorLease:

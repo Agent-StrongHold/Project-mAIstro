@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -36,12 +35,14 @@ from maistro.capabilities.effect_context import (
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
-from maistro.events.consumer_cursor import (
-    DEFAULT_HOLE_GRACE_SECONDS,
-    LEGACY_BRIDGE_CONSUMER_ID,
-)
+from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 from maistro.events.publisher import CanonicalEventPublisher
+from maistro.events.wiring import CanonicalProjection
 from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.reconciliation.production import (
+    FactDrivenReconciliationPolicy,
+    GoalRunAdmitter,
+)
 from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
@@ -165,7 +166,10 @@ if TYPE_CHECKING:
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
     from maistro.extensions.tenancy import TenantScopedExtensionState
-    from maistro.goals.reconciliation.reconciler import ReconciliationPolicy
+    from maistro.goals.reconciliation.reconciler import (
+        PhysicalAdmitter,
+        ReconciliationPolicy,
+    )
     from maistro.goals.reconciliation.store import GoalReconciliationStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
@@ -506,6 +510,13 @@ class Container:
     # legacy-only projection (`_recovery_events`), never a second authority.
     recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
+    # Replayable canonical-Envelope -> durable-log projection (#2506): the
+    # per-stream replay cursor (registered at the canonical watermark,
+    # claimed under a lease, advanced under a fence) and the poison
+    # bookkeeping for events whose log append keeps failing. `None` only on
+    # a hand-built Container; then `process_durable_events` keeps the
+    # bridge-only ingress and cannot heal a failed bridge append.
+    canonical_projection: CanonicalProjection | None = None
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
     handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -517,20 +528,18 @@ class Container:
     # a lease holder across repeated ticks/renewals.
     consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
     _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
-    # Ids the durable log skipped over below the settled cursor, keyed to
-    # when this holder first saw each missing. PostgreSQL allocates ids
-    # before commit, so a hole is an append that has not committed yet (or
-    # never will); the durable position stays below it for
-    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
-    _durable_event_holes: dict[int, float] = field(default_factory=dict)
-    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
     # Goal reconciliation control plane (M3 #806): the one durable store of
     # Goal rows, claim/lease fences, wake facts and admissions, plus the
-    # #805-owned decision policy. `None` until #805 composes one: without a
-    # policy the Container still reclaims lapsed leases (`sweep_goal_leases`)
-    # but never decides, so no admission semantics are invented here.
+    # #805-owned decision policy. ``create_container`` composes the production
+    # decide-half: the fact-driven policy consults a claimed Goal and the
+    # ``GoalRunAdmitter`` fulfils a run admission as one canonical QUEUED Run
+    # bound to the Goal (``goal_reconciliation_admitter``). ``None`` only on a
+    # hand-built Container: without a policy the Container still reclaims
+    # lapsed leases (``sweep_goal_leases``) but never decides, so no admission
+    # semantics are invented here.
     goal_reconciliation_store: GoalReconciliationStore = None  # type: ignore[assignment]
     goal_reconciliation_policy: ReconciliationPolicy | None = None
+    goal_reconciliation_admitter: PhysicalAdmitter | None = None
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -1238,6 +1247,14 @@ class Container:
         call repeatedly (idempotent invocations dedupe redelivery) and safe
         to call from more than one replica at once.
 
+        The tick first replays the canonical-Envelope -> durable-log
+        projection (#2506): canonical Events a bridge append failed after
+        their canonical commit become durable log rows here, through the
+        log's source-`event_id` dedupe, before the legacy pass below
+        dispatches them. Healing is therefore reachable only through this
+        ordinary production tick — never a direct bus emit or a test-only
+        repair call.
+
         The cursor is a resume optimisation, not the correctness backstop --
         that is `InvocationStore.claim` (ADR-082426-82c7: "the occurrence is
         the claim, not the cursor"). What `consumer_cursor_store.claim` adds
@@ -1249,11 +1266,26 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`. The same
+        out but has not committed yet: the position stops just below the
+        first hole the log has not proven terminally absent -- see
+        `_gap_safe_position`. The same
         settled position is also acknowledged on the log itself
         (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
         replay cursor stored beside the events stays truthful for readers
         of the log.
+
+        Both writes are fenced through the primary cursor (#2511): the
+        acknowledgement on the log is written only after `advance` accepted
+        this holder's token, and its position is re-read from the cursor
+        store rather than assumed from this tick's batch -- so a lease taken
+        over between the two writes can only ever publish a position the
+        authoritative cursor already accepted, never this holder's rejected
+        or stale one. A rejected `advance` (the lease lapsed and was
+        reclaimed mid-tick) acknowledges nothing and claims no progress: the
+        tick reports the authoritative position instead. Both writes remain
+        monotonic and neither is the correctness backstop -- that is
+        `InvocationStore.claim` -- so a crash between them costs a replay of
+        already-settled, idempotent work, never a skip.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1262,6 +1294,35 @@ class Container:
             # Another replica currently holds the tick lease; ticking anyway
             # would only repeat work its lease already covers this round.
             return self.durable_event_cursor
+
+        from maistro.events.processing import project_canonical_events
+
+        # Projection pass first (#2506): canonical Events the bridge failed to
+        # append become log rows now, so the legacy pass below dispatches the
+        # healed occurrence in the same tick. Its own per-stream leases make
+        # the pass shared across replicas, and the log's source-id dedupe
+        # makes a row the bridge did write come back unchanged — never a
+        # second occurrence.
+        if self.canonical_projection is not None:
+            from maistro.events.publisher import canonical_log_append_kwargs
+
+            outcome = await project_canonical_events(
+                projection_store=self.canonical_projection.projection_store,
+                event_store=self.capability_effects.event_store,
+                event_log=self.durable_event_log,
+                failure_store=self.canonical_projection.failure_store,
+                append_kwargs=canonical_log_append_kwargs,
+                holder=self._durable_events_holder,
+                limit=limit,
+            )
+            if outcome.projected or outcome.dead_lettered:
+                logger.info(
+                    "Canonical-log projection healed %d event(s), dead-lettered %d, "
+                    "across %d stream(s) this tick",
+                    outcome.projected,
+                    outcome.dead_lettered,
+                    outcome.streams_scanned,
+                )
 
         from maistro.events.processing import process_events_batch
 
@@ -1273,46 +1334,84 @@ class Container:
             after_id=lease.position,
             limit=limit,
         )
-        new_cursor = self._gap_safe_position(batch.cursor, batch.holes, now=time.time())
+        new_cursor = await self._gap_safe_position(batch.cursor, batch.holes)
         if new_cursor > lease.position:
-            await self.consumer_cursor_store.advance(
+            advanced = await self.consumer_cursor_store.advance(
                 LEGACY_BRIDGE_CONSUMER_ID,
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
-            # The log's own replay acknowledgement (#836) records the same
-            # settlement keyed to this consumer, so `get_replay_cursor`
-            # answers from the store the events live in rather than only
-            # from the bridge's separate cursor store. Both writes are
-            # monotonic and neither is the correctness backstop -- that is
-            # `InvocationStore.claim` -- so a crash between them costs a
-            # replay of already-settled, idempotent work, never a skip. The
-            # gap-safe position is acknowledged, not the raw batch cursor:
-            # a hole is not settled yet, and this acknowledgement must not
+            if not advanced:
+                # The lease lapsed mid-tick and another replica took it over
+                # (#2511): the canonical cursor refused this holder's write.
+                # Acknowledging the rejected position on the log -- whose
+                # `event_replay_cursors` row carries no fencing token of its
+                # own -- or reporting it as local progress would publish a
+                # cursor position the authority explicitly declined. The
+                # truthful answer is the authoritative position, whatever the
+                # new holder has made it; the events this tick settled stay
+                # settled in the InvocationStore and the new holder re-derives
+                # them idempotently from there.
+                settled = await self.consumer_cursor_store.current_position(
+                    LEGACY_BRIDGE_CONSUMER_ID
+                )
+                logger.warning(
+                    "durable-event cursor advance rejected: fencing token stale; "
+                    "reporting authoritative position %s instead of attempted %s",
+                    settled,
+                    new_cursor,
+                )
+                self.durable_event_cursor = settled
+                return settled
+            # The primary advance accepted this holder's token, so the stored
+            # position is at least `new_cursor` (the write is monotonic).
+            # Re-read it rather than assuming `new_cursor`: a lease takeover
+            # between this advance and the acknowledgement below must not let
+            # an obsolete holder publish its own position onto the log (#2511)
+            # -- the log's `event_replay_cursors` row has no fencing token, so
+            # deriving the acknowledged position from the authoritative cursor
+            # is what keeps the secondary view inside what the primary
+            # explicitly accepted. The log's own replay acknowledgement (#836)
+            # records the same settlement keyed to this consumer, so
+            # `get_replay_cursor` answers from the store the events live in
+            # rather than only from the bridge's separate cursor store. The
+            # gap-safe position is what was advanced, not the raw batch
+            # cursor: a hole is not settled yet, and no acknowledgement may
             # claim otherwise.
-            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
+            settled = await self.consumer_cursor_store.current_position(LEGACY_BRIDGE_CONSUMER_ID)
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, settled)
+            self.durable_event_cursor = settled
+            return settled
         self.durable_event_cursor = new_cursor
         return new_cursor
 
-    def _gap_safe_position(self, cursor: int, holes: tuple[int, ...], *, now: float) -> int:
+    async def _gap_safe_position(self, cursor: int, holes: tuple[int, ...]) -> int:
         """The highest position this tick may persist without skipping an event.
 
         `holes` are ids below `cursor` that the log did not return (see
-        `ProcessedBatch`). On PostgreSQL an id can be allocated by an append
-        that has not committed yet; persisting past it would drop that event
-        from every later ``id > position`` read. So the durable position is
-        capped just below the first hole this holder has known for less than
-        `durable_event_hole_grace_s`. A hole that outlives the grace is an
-        append that aborted (or is slower than any healthy one), and the
-        position moves past it. A hole that fills is simply not reported
-        next tick, so the event is read and dispatched then; every event
-        above the cap was already dispatched this tick and is redelivered
-        idempotently until the cap lifts.
+        `ProcessedBatch` — every missing id of a run, not just its first). On
+        PostgreSQL an id can be allocated by an append that has not committed
+        yet; persisting past it would drop that event from every later
+        ``id > position`` read. The position therefore stops just below the
+        first hole the log has not **proven terminally absent**
+        (`EventLogStore.prove_holes_absent`): durable database evidence that
+        the allocating transaction ended without committing and that no
+        future transaction can ever make the id visible. Each missing id is
+        proven on its own — proof that one id of a run rolled back says
+        nothing about its neighbours, which may still be in flight. Elapsed
+        time never authorizes crossing a hole — a transaction can hold an
+        allocated id past any timeout and still commit (#2509) — so a hole
+        without evidence pins the cursor for as long as it is unproven. A
+        hole that fills is simply not reported next tick, so the event is
+        read and dispatched then; every event above the cap was already
+        dispatched this tick and is redelivered idempotently until the cap
+        lifts.
         """
-        seen = {hole: self._durable_event_holes.get(hole, now) for hole in holes}
-        self._durable_event_holes = seen
+        if not holes:
+            return cursor
+        absent = await self.durable_event_log.prove_holes_absent(holes)
         for hole in holes:
-            if now - seen[hole] < self.durable_event_hole_grace_s:
+            if hole not in absent:
                 return hole - 1
         return cursor
 
@@ -1415,10 +1514,13 @@ class Container:
         """Tick the Goal reconciliation sweep (M3 #806). Returns passes decided.
 
         Runs the bounded sweep — lapsed leases, missed wakes, due sleeps —
-        under the #805-owned `goal_reconciliation_policy`. Without a policy
-        this returns 0 and decides nothing: the mechanics never invent what a
-        reconciliation decision means, so activation is composition, not a
-        default. Wakes recorded meanwhile stay durable pending facts, and
+        under the #805-owned `goal_reconciliation_policy`. ``create_container``
+        composes the production policy and the `GoalRunAdmitter`, so a
+        production decision is fulfilled as one canonical QUEUED Run bound to
+        the Goal; a hand-built Container without a policy returns 0 and
+        decides nothing — the mechanics never invent what a reconciliation
+        decision means, so activation is composition, not a default. Wakes
+        recorded meanwhile stay durable pending facts, and
         `sweep_goal_leases` keeps the fences honest regardless.
         """
         if self.goal_reconciliation_policy is None:
@@ -1431,6 +1533,7 @@ class Container:
             # The same process identity that holds the durable-event cursor
             # lease: one identity per Container for every cross-process fence.
             holder=self._durable_events_holder,
+            admitter=self.goal_reconciliation_admitter,
         )
         outcomes = await reconciler.sweep(
             now if now is not None else datetime.now(UTC), limit=limit
@@ -2934,6 +3037,15 @@ async def create_container(
         # plane lives beside the Runs it reconciles, so a restart answers from
         # the same database the Runs do (M3 #806).
         goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
+        # The #805 decide-half, production composition: the fact-driven policy
+        # answers each claimed Goal's consultation from durable facts, and the
+        # admitter fulfils a run admission through the same admission seam as
+        # tasks and schedules — one canonical QUEUED Run bound to the Goal and
+        # the revision it was admitted against, which the consumer tick then
+        # claims, executes and settles under the canonical lineage. Both read
+        # the same stores wired above; neither is a second authority.
+        goal_reconciliation_policy = FactDrivenReconciliationPolicy()
+        goal_reconciliation_admitter = GoalRunAdmitter(run_store, goal_store)
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
@@ -3172,6 +3284,27 @@ async def create_container(
         )
         from maistro.credentials.types import CredentialRecord
 
+        # The replayable canonical-Envelope -> durable-log projection (#2506),
+        # composed beside the canonical EventStore the container actually
+        # publishes through. That store decides the projection's backend and
+        # connection — pool, SQLite connection, or in-memory — because a
+        # caller may inject a composed `effect_context` whose event authority
+        # is not the container's own database (#2506 review): an injected
+        # context skips `wire_canonical_events`' schema work, so selecting the
+        # projection from the container's pools could build the registry on a
+        # database that has no `canonical_event_stream_watermarks` table
+        # (every publisher emission then fails at registration), or read
+        # another database's watermark. The publisher registers streams here
+        # before appending, and `process_durable_events` scans them, so a
+        # bridge append that fails after the canonical commit heals on the
+        # ordinary processing tick instead of leaving a persisted Event
+        # permanently invisible to its only durable trigger processor.
+        from maistro.events.wiring import wire_canonical_projection
+
+        canonical_projection = await wire_canonical_projection(
+            event_store=capability_effects.event_store,
+        )
+
         model_chat_binding = Binding(
             workspace_id=config.workspace_id,
             project_id="default",
@@ -3210,8 +3343,13 @@ async def create_container(
         # sequencing authority. It projects each inserted Event onto `event_bus`
         # so the durable-log bridge and legacy trigger/notification fan-out keep
         # firing on recovery facts, as the pre-canonical path delivered them.
+        # The projection registry (#2506) makes the durable trigger-log ingress
+        # replayable: the legacy bridge stays at-most-once compatibility
+        # delivery, never the only path a committed Event can reach the log by.
         canonical_event_publisher = CanonicalEventPublisher(
-            capability_effects.event_store, legacy_bus=event_bus
+            capability_effects.event_store,
+            legacy_bus=event_bus,
+            projection_registry=canonical_projection.projection_store,
         )
         from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
@@ -3329,12 +3467,15 @@ async def create_container(
             canonical_event_publisher=canonical_event_publisher,
             recovery_event_sink=recovery_event_sink,
             durable_event_log=durable_event_log,
+            canonical_projection=canonical_projection,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
             handler_invocation_store=handler_invocation_store,
             handler_caller=handler_caller,
             consumer_cursor_store=consumer_cursor_store,
             goal_reconciliation_store=goal_reconciliation_store,
+            goal_reconciliation_policy=goal_reconciliation_policy,
+            goal_reconciliation_admitter=goal_reconciliation_admitter,
             provider_registry=provider_registry,
             llm_router=llm_router,
             model_chat_binding=model_chat_binding,
