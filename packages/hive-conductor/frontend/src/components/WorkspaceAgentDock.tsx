@@ -97,7 +97,6 @@ function WorkspaceAgentConversation({ workspaceId }: { workspaceId: string }) {
         if (cancelled || epochRef.current !== generation) return;
         const existing = list.find((s) => s.title === DOCK_SESSION_TITLE);
         if (existing) {
-          setSession(existing);
           // Hydrate the transcript from durable truth.
           const detail = await apiGet<ChatSessionDetail>(
             `/v1/chat/sessions/${encodeURIComponent(existing.id)}`,
@@ -113,6 +112,11 @@ function WorkspaceAgentConversation({ workspaceId }: { workspaceId: string }) {
                 timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
               })),
           );
+          // Publish session and hydrated turns together (#review: the composer
+          // must not enable against the initial empty `turns` array — a send
+          // here would omit all conversation history, and the later
+          // `setTurns` would clobber its optimistic user/assistant bubbles).
+          setSession(existing);
         } else {
           const created = await apiPost<ChatSessionDetail>("/v1/chat/sessions", {
             title: DOCK_SESSION_TITLE,

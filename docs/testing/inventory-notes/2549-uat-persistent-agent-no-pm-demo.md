@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +5
+  packages/hive-conductor/backend/tests: +6
 ---
 # 2549-uat-persistent-agent-no-pm-demo
 
@@ -39,3 +39,18 @@ honest "No workspace selected" panel (the Chat page's refusal pattern),
 pinned by the spec's zero-workspace journey test; the conversation tests
 stub the workspace/session seam (the `goal-run-roundtrip.spec.ts` pattern)
 so they no longer depend on ambient server state. No pytest suite changed.
+
+Dock-transcript durability, found in review of the same slice: a turn the
+brief interview answers (`routes.chat._interview_turn`) returns before the
+admitted path's `execute_turn` transcript append ever runs, so the exchange
+existed only in the dock's in-memory `turns` state — closing and reopening
+the panel (which rehydrates from the durable `/v1/chat/sessions` row) lost
+the whole interview, commit confirmation included. The interview seam now
+lands the exchange through the same `conversation_sessions.append_turn`
+call the admitted path uses (`routes.chat._persist_brief_exchange`), keyed
+on the request's `turn_id` so the idempotence discipline holds there too.
+**+1** in `backend/tests/test_chat_brief_interview.py`
+(`test_interview_turns_reach_the_dock_session_transcript`): the exchange is
+durable across a plain session GET (the dock's rehydration), a retried
+`turn_id` appends once, and a foreign session is never written while the
+answer still returns.
