@@ -87,7 +87,7 @@ RUN apk add --no-cache git && \
 # would leave no interpreter satisfying the contract on the base -- uv's
 # managed-download fallback resolves an unregistered 3.13.15, which is
 # exactly the silent interpreter change the header forbids.
-FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
+FROM python:3.15.2-slim-bookworm@sha256:498829c717b1e59fc42f0e7865eafe4e04ca0f70a3769d4ae70ba218df54507c AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -243,7 +243,7 @@ RUN mkdir -p /app/state_seed
 # final image even though the app runs on the grafted 3.13.18 build, so the
 # binary is scanned). 3.15.2 is still Debian 12 (bookworm), so the grafted
 # binary runs against the glibc it was built against.
-FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-apt
+FROM python:3.15.2-slim-bookworm@sha256:498829c717b1e59fc42f0e7865eafe4e04ca0f70a3769d4ae70ba218df54507c AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
