@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import importlib.util
 import json
 import os
@@ -939,12 +940,284 @@ def declared_unproven(text: str) -> set[str]:
 # introduced. So `main` gives up its inline copies and asks the same function.
 
 
+# ─── normative text, and what counts as a material change to it (#2542) ──────
+#
+# The chain mandate compares *populations by document id*, so a document already
+# in an absent population can be rewritten wholesale and stay invisible: the id
+# was absent at the base, is absent at the head, and the difference is empty.
+# The criterion mandate cannot catch it either, because the rewritten decision
+# may carry no criterion at all. This section closes that gap.
+
+
+#: The `##` sections that carry what a decision *says*, as opposed to the
+#: provenance around it. Surveyed over the corpus: `Decision` dominates both
+#: ADRs and specs; `Contract`/`Requirements` carry spec obligations; `Interface`
+#: carries the ADR-level contract shape (40 ADRs). Everything else — Context,
+#: Test plan, References, Open questions — is commentary or bookkeeping, and a
+#: change confined to it is not a changed decision.
+NORMATIVE_HEADINGS = ("decision", "contract", "interface", "requirements")
+
+_NORMATIVE_HEADING_RE = re.compile(r"^(?P<level>#{2,6})\s+(?P<name>.+?)\s*$", re.MULTILINE)
+_ANY_HEADING_RE = re.compile(r"^(?P<level>#{1,6})\s+", re.MULTILINE)
+
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_MD_REF_LINK_RE = re.compile(r"\[[^\]]+\]\[[^\]]*\]")
+_AUTOLINK_RE = re.compile(r"<https?://[^>\s]*>")
+_BARE_URL_RE = re.compile(r"https?://\S+")
+_HTML_COMMENT_RE = re.compile(r"<!--(?:(?!-->).)*-->", re.DOTALL)
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+_HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s")
+#: An inline code span or fenced block, matched greedily over backtick runs so
+#: ``` fences compare as one verbatim token. SPEC-247's Decision is a fenced
+#: python contract whose comparison operators (`!=`, `==`) carry the whole
+#: obligation — punctuation-stripping them away made an operator reversal
+#: invisible to the materiality diff (#2542 review).
+_CODE_SPAN_RE = re.compile(r"`+([^`]+?)`+")
+#: A ``` fenced block, allowed to be indented (a decision may fence code
+#: inside a list item). Matched over the whole document before any per-line
+#: work, because a fence spans lines and the per-line pass cannot pair its
+#: opening and closing runs.
+_FENCED_CODE_RE = re.compile(
+    r"^[ \t]*`{3,}[^\n]*\n(.*?)^[ \t]*`{3,}[ \t]*$", re.MULTILINE | re.DOTALL
+)
+
+
+def normative_text(text: str) -> str:
+    """The document's normative sections, verbatim, front matter excluded.
+
+    Section content runs to the next heading of equal or higher level, so the
+    `###` subsections of a Decision stay inside it — ADR-038's retry rule
+    lives under `### 1. Retries`, and cutting at the first heading of any
+    level would leave the decision mandate guarding only the section's intro
+    line. Only the named sections are kept: a change to
+    Context or Test plan is a change to the *story around* the decision, not
+    the decision, and firing on it would train people to split normative edits
+    across cosmetic ones to slip past — the opposite of what a gate wants.
+    """
+    opening = FRONTMATTER_RE.match(text)
+    body = text[opening.end() :] if opening else text
+    found: list[str] = []
+    matches = list(_NORMATIVE_HEADING_RE.finditer(body))
+    for match in matches:
+        if match.group("name").strip().lower() not in NORMATIVE_HEADINGS:
+            continue
+        level = len(match.group("level"))
+        rest = body[match.end() :]
+        section_end = next(
+            (h for h in _ANY_HEADING_RE.finditer(rest) if len(h.group("level")) <= level),
+            None,
+        )
+        found.append(rest[: section_end.start()] if section_end else rest)
+    return "\n".join(found)
+
+
+def _prose_form(word: str) -> str:
+    """What the prose filter would make of a word: punctuation dropped, case
+    folded. The projection a code token must survive on when a styling flip
+    demotes it to prose."""
+    return re.sub(r"[^\w-]", "", word, flags=re.UNICODE).lower()
+
+
+def _line_stream(line: str) -> list[tuple[str, bool]]:
+    """The stream one prose line contributes: code spans kept verbatim, the
+    words around them through the prose filter."""
+    stream: list[tuple[str, bool]] = []
+    # re.split with a capturing group interleaves code-span contents at
+    # odd indices with the prose between them at even ones.
+    for i, part in enumerate(_CODE_SPAN_RE.split(line)):
+        if i % 2:
+            token = "".join(part.split())
+            if token:
+                stream.append((token, True))
+            continue
+        part = part.replace("`", "").replace("**", "").replace("__", "")
+        for token in part.split():
+            word = _prose_form(token)
+            if word:
+                stream.append((word, False))
+    return stream
+
+
+def _token_stream(text: str) -> list[tuple[str, bool]]:
+    """The `(word, from_code)` stream a materiality comparison runs on.
+
+    Everything the issue calls editorial is stripped *before* any diff runs:
+    link targets (the text survives), autolinks and bare URLs, HTML comments
+    (dispositions are checked separately — adding one must not read as a new
+    decision), emphasis, list bullets and renumbering, table pipes, case, and
+    every whitespace run. What survives is the words the decision makes, in
+    the order it makes them.
+
+    Code spans and fenced blocks are the one thing normalization keeps: their
+    content is the decision written as an expression, where the punctuation
+    the prose filter drops is exactly what obligates (`!=` vs `==`, `is None`
+    vs `is not None`). Code tokens keep their content verbatim,
+    whitespace-collapsed so a cosmetic reflow inside the backticks stays
+    editorial, and case- and punctuation-sensitive so an operator flip cannot
+    hide. The flag lets `material_edits` hold code-carried differences to a
+    stricter rule than the typo budget that prose differences get; wrapping
+    prose in backticks (or unwrapping it) changes the flag, not the word, and
+    a code token demoted to prose still matches through its prose projection
+    (`_prose_form`), so re-styling never fires on its own.
+    """
+    stream: list[tuple[str, bool]] = []
+    # Fenced blocks first, over the whole document: a fence spans lines, and
+    # its content is verbatim — no link stripping, no comment stripping, no
+    # prose filters may touch it. re.split with the capturing group
+    # interleaves fence contents at odd indices with the prose between them.
+    for i, segment in enumerate(_FENCED_CODE_RE.split(text)):
+        if i % 2:
+            token = "".join(segment.split())
+            if token:
+                stream.append((token, True))
+            continue
+        # Links are editorial wholesale — target *and* label. A re-labeled or
+        # re-targeted reference says nothing about what the decision obligates,
+        # and keeping the label would fire on reference churn (#2542's exemption).
+        stripped = _HTML_COMMENT_RE.sub(" ", segment)
+        stripped = _MD_LINK_RE.sub(" ", stripped)
+        stripped = _MD_REF_LINK_RE.sub(" ", stripped)
+        stripped = _AUTOLINK_RE.sub(" ", stripped)
+        stripped = _BARE_URL_RE.sub(" ", stripped)
+        for raw_line in stripped.splitlines():
+            if _HEADING_LINE_RE.match(raw_line):
+                continue
+            line = _LIST_MARKER_RE.sub("", raw_line).lstrip("> ").replace("|", " ")
+            stream.extend(_line_stream(line))
+    return stream
+
+
+def _levenshtein(a: str, b: str, *, cap: int = 3) -> int:
+    """Character edit distance, abandoned once it exceeds `cap`.
+
+    Every caller only distinguishes typo-sized edits from real ones, so the
+    early exit is what keeps a rewritten section from costing a full matrix.
+    """
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        if min(current) > cap:
+            return cap + 1
+        previous = current
+    return previous[-1]
+
+
+#: The character-edit budget a replaced segment may cost and still be an
+#: editorial repair. Two edits move "teh"→"the" or "recieve"→"receive"; they
+#: do not move "may"→"must" (3) or "should"→"shall" (3) — the replacements
+#: that change what a decision obligates are exactly the ones over budget.
+_TYPO_EDIT_BUDGET = 2
+
+
+def _code_content_changed(
+    base_pairs: list[tuple[str, bool]],
+    head_pairs: list[tuple[str, bool]],
+) -> bool:
+    """Whether a replaced segment changed text a code span carries.
+
+    An operator flip is a one-character edit — `!=` → `==` — so it slips under
+    the typo budget that forgives prose repairs. Code-carried words get no
+    such forgiveness: a differing word where either side came from a code span
+    is the decision's own expression changing — unless the other side is that
+    same content run through the prose filter, which is a styling flip
+    (`` `x!=y` `` → x!=y) and editorial like any formatting.
+    """
+    # strict=False on purpose: a `replace` opcode's two segments may differ in
+    # length — the comparison walks the overlap, which is exactly what an
+    # operator flip inside a longer segment needs.
+    for (base_word, base_code), (head_word, head_code) in zip(base_pairs, head_pairs, strict=False):
+        if base_word == head_word:
+            continue
+        if base_code and _prose_form(base_word) == head_word:
+            continue
+        if head_code and _prose_form(head_word) == base_word:
+            continue
+        if base_code or head_code:
+            return True
+    return False
+
+
+def material_edits(base_text: str, head_text: str) -> list[dict[str, str]]:
+    """The edits a change made that normalization cannot explain away.
+
+    A `replace` op is editorial when the two segments sit within the typo
+    budget of each other character-wise — unless the difference sits inside a
+    code span, whose content is the decision written as an expression and
+    gets no typo forgiveness (`!=` → `==` is a one-character edit). An
+    `insert`/`delete` op is editorial only when the moved text is at most two
+    characters — which, after punctuation stripping, means a stray fragment,
+    not a word. Anything else is reported with the head-side words, so a
+    reviewer reads what the decision now says instead of a diff summary.
+    """
+    base_stream = _token_stream(base_text)
+    head_stream = _token_stream(head_text)
+    base_tokens = [word for word, _ in base_stream]
+    head_tokens = [word for word, _ in head_stream]
+    edits: list[dict[str, str]] = []
+    matcher = difflib.SequenceMatcher(None, base_tokens, head_tokens, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        base_segment = " ".join(base_tokens[i1:i2])
+        head_segment = " ".join(head_tokens[j1:j2])
+        if tag == "replace":
+            if _levenshtein(
+                base_segment, head_segment, cap=_TYPO_EDIT_BUDGET
+            ) <= _TYPO_EDIT_BUDGET and not _code_content_changed(
+                base_stream[i1:i2], head_stream[j1:j2]
+            ):
+                continue
+        elif tag == "delete":
+            if len(base_segment) <= _TYPO_EDIT_BUDGET:
+                continue
+        elif len(head_segment) <= _TYPO_EDIT_BUDGET:
+            continue
+        edits.append({"kind": tag, "was": base_segment, "now": head_segment})
+    return edits
+
+
+#: How a document says "this change amended the decision, and the amendment is
+#: not proven yet". Reason mandatory, in the body where the diff shows it —
+#: the same contract as `unproven AC-N` and `non-measurable`, for the same
+#: reason: an escape hatch a reviewer cannot see is an unstated one.
+DECISION_UNPROVEN_RE = re.compile(
+    r"<!--\s*ac-state:\s*decision-unproven\s+(?P<doc>[A-Za-z][\w.-]*)(?P<body>(?:(?!-->).)*)-->",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def declares_decision_unproven(text: str, doc_id: str) -> bool:
+    """Whether `text` declares *this* document's amended decision unproven.
+
+    The marker has to name the document it disposes of, so a marker cannot be
+    parked in a file the change never touched and read as covering one it did;
+    and the reason is mandatory, like every other `ac-state:` hatch.
+    """
+    for match in DECISION_UNPROVEN_RE.finditer(text):
+        if match.group("doc").strip().lower() != doc_id.strip().lower():
+            continue
+        body = match.group("body").strip()
+        if body.startswith(_REASON_DELIMITERS) and body[1:].strip():
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class ChainFacts:
     """One document's answers to the three absence questions.
 
     Text-only, for the same reason `_criteria_in` is: this runs against
     `git show <base>:<path>`, where there is no working tree to import from.
+
+    `normative` carries the document's normative decision/contract sections
+    verbatim (#2542). Both sides derive it through this one function, so a
+    base and a head answer the materiality question with the same extractor —
+    the property that keeps a wording-only re-derivation from reading as a
+    decision this change never made.
     """
 
     id: str
@@ -955,6 +1228,7 @@ class ChainFacts:
     has_criteria: bool
     has_ac_heading: bool
     non_measurable: bool
+    normative: str = ""
 
 
 def chain_facts(path: str, text: str) -> ChainFacts | None:
@@ -986,6 +1260,7 @@ def chain_facts(path: str, text: str) -> ChainFacts | None:
         has_criteria=bool(_criteria_in(text, doc_id)),
         has_ac_heading=bool(AC_HEADING_RE.search(text)),
         non_measurable=declares_non_measurable(text),
+        normative=normative_text(text),
     )
 
 
@@ -2261,6 +2536,53 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     return 0
 
 
+def _run_gates_and_write(
+    payload: dict[str, Any],
+    args: argparse.Namespace,
+    specs: list[dict[str, Any]],
+    adrs: list[dict[str, Any]],
+    working: dict[str, ChainFacts],
+    totals: dict[str, Any],
+    passing: dict[str, bool] | None,
+) -> int:
+    """Ratchet, mandates, then the report write — main's whole tail.
+
+    Extracted so `main` stays under the complexity ceiling, and so the write
+    ordering has one owner: the report lands after the mandates so it can
+    carry what they found.
+    """
+    exit_code = 0
+    if args.ratchet:
+        print()
+        exit_code = ratchet(totals, measured=passing is not None, bank=args.bank)
+
+    if args.mandate:
+        print()
+        mandate_code, decision_rows = run_mandate(args.mandate, specs, adrs, working)
+        # The report carries the per-change traceability next to the measured
+        # aggregate on purpose (DoD): `design_coverage` answers "how much of
+        # the design is proven"; these rows answer "what did *this* candidate
+        # rewrite, and what closed it". One number must never be read as the
+        # other.
+        payload["decision_traceability"] = {
+            "definition": (
+                "per-change: documents whose normative decision/contract text this candidate "
+                "materially rewrote relative to the mandate base, and how each closed the gap"
+            ),
+            "decisions": decision_rows,
+        }
+        exit_code = mandate_code or exit_code
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    try:
+        written = args.out.relative_to(ROOT)
+    except ValueError:  # --out may legitimately point outside the repo
+        written = args.out
+    print(f"\nwrote {written}")
+    return exit_code
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -2439,8 +2761,6 @@ def main(argv: list[str]) -> int:
         "specs": specs,
         "adrs": adrs,
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
     t = payload["totals"]
     print("acceptance-criterion state (report only):")
@@ -2472,20 +2792,7 @@ def main(argv: list[str]) -> int:
     for rung in RUNGS:
         n = sum(1 for s in specs if s["criteria_total"] and s["tier"] == rung)
         print(f"  specs at tier {rung:<10}: {n}")
-    try:
-        written = args.out.relative_to(ROOT)
-    except ValueError:  # --out may legitimately point outside the repo
-        written = args.out
-    print(f"\nwrote {written}")
-    exit_code = 0
-    if args.ratchet:
-        print()
-        exit_code = ratchet(t, measured=passing is not None, bank=args.bank)
-
-    if args.mandate:
-        print()
-        exit_code = run_mandate(args.mandate, specs, adrs, working) or exit_code
-    return exit_code
+    return _run_gates_and_write(payload, args, specs, adrs, working, t, passing)
 
 
 def run_mandate(
@@ -2493,12 +2800,12 @@ def run_mandate(
     specs: list[dict[str, Any]],
     adrs: list[dict[str, Any]],
     working: dict[str, ChainFacts],
-) -> int:
-    """Zero tolerance on what this change created, in both mandates.
+) -> tuple[int, list[dict[str, Any]]]:
+    """Zero tolerance on what this change created, in all three mandates.
 
-    One base read serves both. Both run even when the first fails: a PR should
-    see everything it has to fix in one go, not discover the second gate after
-    pushing a fix for the first.
+    One base read serves the criterion, chain, and decision mandates. All run
+    even when one fails: a PR should see everything it has to fix in one go,
+    not discover the second gate after pushing a fix for the first.
     """
     corpus = corpus_at(base_rev)
     if corpus is None:
@@ -2510,12 +2817,17 @@ def run_mandate(
             "  retrofitted in one PR — a gate that fires on everything gets\n"
             "  turned off."
         )
-        return 1
+        return 1, []
     base, base_facts = corpus
     criterion_code = _criterion_mandate(base_rev, base, specs, adrs)
     print()
     chain_code = chain_mandate(base_rev, base_facts, working)
-    return criterion_code or chain_code
+    head_corpus = {c["id"]: c["claimed"] for d in (*specs, *adrs) for c in _criteria_of(d)}
+    print()
+    decision_code, decision_rows = decision_mandate(
+        base_rev, base_facts, working, specs, adrs, base, head_corpus
+    )
+    return criterion_code or chain_code or decision_code, decision_rows
 
 
 def _criterion_mandate(
@@ -2620,6 +2932,285 @@ def chain_mandate(
         "  a ceiling comparing totals would have let an unrelated fix pay for them."
     )
     return 1
+
+
+#: How each closed decision was closed, for the report. The distinction the DoD
+#: asks the report to keep: `design_coverage` in `totals` is a measured
+#: aggregate over the whole corpus — how much of *the design* is proven — while
+#: this mandate is per-change traceability of the contracts *this candidate*
+#: touched. A candidate that moves neither number can still fail here, and one
+#: that improves the aggregate still owes evidence for what it rewrote.
+DECISION_EVIDENCE_OWNED = "owned-evidence"
+DECISION_EVIDENCE_DISPOSITION = "unproven-disposition"
+
+
+def _owned_touched_criteria(
+    doc_id: str,
+    working: dict[str, ChainFacts],
+    specs: list[dict[str, Any]],
+    touched: set[str],
+) -> set[str]:
+    """The touched criteria this decision *owns*: its own, plus every
+    criterion declared by a spec whose `implements:` names it.
+
+    Ownership is the anti-offset rule. Evidence parked in a document that does
+    not implement this decision proves nothing about it — which is exactly the
+    hole `chain_mandate` already closes for absent links — so criteria an
+    unrelated document declares are invisible here no matter how proven they
+    are.
+    """
+    owning = {
+        d["id"]
+        # Raw `implements:` entries keep the qualified spellings the corpus
+        # uses (`maistro-engine#ADR-014` in SPEC-215), which never equal the
+        # bare decision id — normalise first, as `collect_adrs()` already does.
+        for d in specs
+        if doc_id in adr_refs(d.get("implements") or ())
+    }
+    owning.add(doc_id)
+    return {ac for ac in touched if ac.split("/")[0] in owning}
+
+
+def _close_decision(
+    doc_id: str,
+    file: str,
+    edits: list[dict[str, str]],
+    *,
+    working: dict[str, ChainFacts],
+    specs: list[dict[str, Any]],
+    touched: set[str],
+    proven: set[str],
+    head_doc: ChainFacts,
+    head_by_id: dict[str, dict[str, Any]],
+    head_texts: dict[str, str] | None,
+) -> dict[str, Any]:
+    """How one materially touched decision closed its gap, as a report row."""
+    row: dict[str, Any] = {"id": doc_id, "file": file, "edits": edits}
+    owned = _owned_touched_criteria(doc_id, working, specs, touched)
+    # Absence from `violations_all` is not proof: `mandate_violations` exempts
+    # criteria carrying an `ac-state: unproven AC-N` marker, so a declared-only
+    # criterion with that marker vanishes from the violations while proving
+    # nothing (#2542 review). Owned evidence means every owned touched criterion
+    # measured at the `reachable` rung — a passing test on a wired module.
+    owned_gap = sorted(owned - proven)
+    if owned and not owned_gap:
+        row["evidence"] = DECISION_EVIDENCE_OWNED
+        return row
+    if owned:
+        # Some owned criterion is touched and not proven; an unproven-disposition
+        # marker cannot ride on top of a failing proof (#2542): the claim and the
+        # refutation would be in the same diff. Name the criteria the exemption
+        # would have hidden, so the row says what evidence is missing rather
+        # than just that it is missing.
+        row["evidence"] = "unproven"
+        if owned_gap:
+            row["gap"] = owned_gap
+        return row
+    if declares_decision_unproven(_head_text(working, doc_id, head_texts), doc_id):
+        contradiction = _disposition_contradiction(doc_id, head_doc, head_by_id, touched)
+        if contradiction is None:
+            row["evidence"] = DECISION_EVIDENCE_DISPOSITION
+        else:
+            row["evidence"] = "contradicted-disposition"
+            row["problem"] = contradiction
+        return row
+    row["evidence"] = "unproven"
+    return row
+
+
+def decision_mandate(
+    base_rev: str,
+    base_facts: dict[str, ChainFacts],
+    working: dict[str, ChainFacts],
+    specs: list[dict[str, Any]],
+    adrs: list[dict[str, Any]],
+    base_corpus: dict[str, bool],
+    head_corpus: dict[str, bool],
+    head_texts: dict[str, str] | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Zero tolerance on a rewritten decision that stays unproven (#2542).
+
+    A document already outside the ADR → spec → AC chain can be materially
+    changed and remain in the same absent population: `chain_mandate` compares
+    populations by document id, and this document's id was absent at the base
+    and is absent at the head, so the difference is empty — the plant that
+    motivated this mandate passed both existing mandates. And `#165`'s
+    criterion mandate asks nothing about a decision that carries no criterion.
+
+    So: any document whose normative decision/contract text changed beyond the
+    editorial budget (formatting, links, typo-sized repairs) must close its
+    own evidence gap. Two ways out, both visible in the diff:
+
+    * **owned evidence** — this change also added or newly claimed criteria
+      owned by the decision (its own, or an implementing spec's) and proved
+      them, under the same rung `#165` already demands; or
+    * **an explicit unproven disposition** — `<!-- ac-state:
+      decision-unproven <id> - reason -->` — which, while it stands, forbids
+      implementation claims: the document may not declare `status:
+      Implemented` and may not tick a criterion it cannot prove.
+
+    Documents *added* by this change are not this mandate's; the chain and
+    criterion mandates already govern them. Inherited absent-population debt
+    stays on the ceilings — only what this change materially rewrote is
+    demanded of it. A standing disposition is enforced the same way even when
+    this candidate edits nothing normative: a follow-up change that only
+    promotes `status: Implemented` must not walk past a `decision-unproven`
+    marker a prior change landed, because the disposition's whole contract is
+    that, while it stands, the document cannot claim implementation (#2542
+    review).
+    """
+    head_by_id = {d["id"]: d for d in (*specs, *adrs)}
+    touched = touched_since(base_corpus, head_corpus)
+    # Proof is measured straight off the criteria, never inferred from the
+    # criterion mandate's violation list: that list deliberately exempts
+    # criteria carrying an `ac-state: unproven AC-N` marker, and an exemption
+    # is a disposition, not evidence.
+    proven = {c["id"] for d in (*specs, *adrs) for c in _criteria_of(d) if c["rung"] == "reachable"}
+
+    rows: list[dict[str, Any]] = []
+    for doc_id in sorted(set(base_facts) & set(working)):
+        base_doc, head_doc = base_facts[doc_id], working[doc_id]
+        edits = material_edits(base_doc.normative, head_doc.normative)
+        if not edits:
+            # No normative change never reaches `_close_decision`, so the
+            # standing-disposition contract is checked here, on its own: the
+            # status lives in front matter, and promoting it is the one edit a
+            # candidate can make while leaving the rewritten decision alone.
+            if head_doc.status.strip().lower() == "implemented" and declares_decision_unproven(
+                _head_text(working, doc_id, head_texts), doc_id
+            ):
+                contradiction = _disposition_contradiction(doc_id, head_doc, head_by_id, touched)
+                rows.append(
+                    {
+                        "id": doc_id,
+                        "file": head_doc.file,
+                        "edits": [],
+                        "evidence": "contradicted-disposition",
+                        "problem": (
+                            contradiction
+                            or "a decision-unproven disposition stands and the document claims implementation"
+                        ),
+                    }
+                )
+            continue
+        rows.append(
+            _close_decision(
+                doc_id,
+                head_doc.file,
+                edits,
+                working=working,
+                specs=specs,
+                touched=touched,
+                proven=proven,
+                head_doc=head_doc,
+                head_by_id=head_by_id,
+                head_texts=head_texts,
+            )
+        )
+
+    print(f"decision mandate (materially changed decisions since {base_rev}):")
+    print("  measured design coverage is an aggregate over the whole corpus; this mandate")
+    print("  is per-change traceability of the contracts this candidate touched.")
+    print(f"  decisions materially touched    : {len(rows)}")
+    print(
+        f"  ...closed with owned evidence   : {sum(1 for r in rows if r['evidence'] == DECISION_EVIDENCE_OWNED)}"
+    )
+    print(
+        f"  ...declared unproven, visibly   : {sum(1 for r in rows if r['evidence'] == DECISION_EVIDENCE_DISPOSITION)}"
+    )
+    failures = [
+        r
+        for r in rows
+        if r["evidence"] not in (DECISION_EVIDENCE_OWNED, DECISION_EVIDENCE_DISPOSITION)
+    ]
+    print(f"  unproven and not declared so    : {len(failures)}")
+    if not failures:
+        if rows:
+            print(
+                "\nOK: every decision this change materially rewrote closes its own evidence gap."
+            )
+        else:
+            print("\nOK: this change rewrites no normative decision or contract.")
+        return 0, rows
+
+    print()
+    _print_decision_failure_rows(failures)
+    print("\nFAIL: this change materially rewrites a normative decision and leaves it unproven.\n")
+    print(
+        "  The chain mandate compares absent populations by document id, so a document\n"
+        "  already outside the chain can be rewritten without a new absent link — and\n"
+        "  the criterion mandate never asks about a decision that carries no criterion.\n"
+        "  This one does. Close the gap this change opened:\n\n"
+        "  * add or newly claim criteria owned by the decision (its own, or a spec\n"
+        "    whose `implements:` names it) and prove them — passing @pytest.mark.ac\n"
+        "    tests, a reachable module, the same rung #165 demands; or\n\n"
+        "  * declare the amendment deliberately unproven, with a reason, in the\n"
+        "    document a reviewer is reading:\n\n"
+        "        <!-- ac-state: decision-unproven ADR-002 - respin pending #132 -->\n\n"
+        "    While the disposition stands the document cannot claim `Implemented` or\n"
+        "    tick a criterion it cannot prove — a disposition and an implementation\n"
+        "    claim cannot both be true.\n"
+    )
+    return 1, rows
+
+
+def _print_decision_failure_rows(failures: list[dict[str, Any]]) -> None:
+    """Print each failing decision row: what moved, what evidence is missing."""
+    for row in failures:
+        print(f"  {row['id']}  {row['file']}")
+        for edit in row["edits"][:3]:
+            if edit["was"]:
+                print(f"    was: {edit['was'][:120]}")
+            print(f"    now: {edit['now'][:120]}")
+        if row.get("gap"):
+            print(f"    unproven owned criteria: {', '.join(row['gap'])}")
+        if row["evidence"] == "contradicted-disposition":
+            print(f"    disposition contradicted: {row['problem']}")
+
+
+def _head_text(
+    working: dict[str, ChainFacts],
+    doc_id: str,
+    head_texts: dict[str, str] | None,
+) -> str:
+    """The head document's full text, for disposition checks.
+
+    `ChainFacts` keeps only the normative sections — deliberately, they are
+    what materiality compares. The disposition marker may sit anywhere in the
+    file (top, next to the status, bottom), so the mandate reads the whole
+    head text; `head_texts` lets a caller that already has it hand it over
+    instead of re-reading the checkout.
+    """
+    if head_texts is not None:
+        return head_texts.get(doc_id, "")
+    path = ROOT / working[doc_id].file
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _disposition_contradiction(
+    doc_id: str,
+    head_doc: ChainFacts,
+    head_by_id: dict[str, dict[str, Any]],
+    touched: set[str],
+) -> str | None:
+    """The implementation claim a standing disposition forbids, or None.
+
+    `decision-unproven` says the amended decision is not proven; declaring
+    `status: Implemented` in the same diff is a claim and a refutation at
+    once — the promotion-shaped claim the issue bars an unproven disposition
+    from riding on. (A *touched* owned criterion that is ticked but unproven
+    is caught one path earlier: `_close_decision` never reaches the
+    disposition branch while an owned proof is failing, so its row reads
+    `unproven` and names the criterion through the mandate violations. The
+    same claim on a later, status-only promotion — normative text untouched —
+    is checked in `decision_mandate` itself before this helper is reached.)
+    """
+    if head_doc.status.strip().lower() == "implemented":
+        return f"declares status {head_doc.status} while the decision is unproven"
+    return None
 
 
 if __name__ == "__main__":
