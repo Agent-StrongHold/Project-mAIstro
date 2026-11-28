@@ -578,15 +578,15 @@ def test_fetch_target_paginates_until_all_children_are_closed(gate, monkeypatch)
     assert target.has_open_sub_issues is False
 
 
-def test_fetch_target_treats_missing_sub_issues_endpoint_as_empty(gate, monkeypatch) -> None:
+def test_fetch_target_rejects_unavailable_sub_issues_endpoint(gate, monkeypatch) -> None:
     def fake_urlopen(request, timeout=30):
         if request.full_url.endswith("/sub_issues?per_page=100&page=1"):
             raise HTTPError(request.full_url, 404, "missing", hdrs=None, fp=None)
         return io.BytesIO(json.dumps({"title": "ordinary issue", "state": "open"}).encode())
 
     monkeypatch.setattr(gate.urllib.request, "urlopen", fake_urlopen)
-    target = gate.fetch_target(REPO, 10, "test-token")
-    assert target.has_open_sub_issues is False
+    with pytest.raises(gate.GitHubError, match="sub_issues"):
+        gate.fetch_target(REPO, 10, "test-token")
 
 
 @pytest.mark.parametrize(
@@ -636,3 +636,146 @@ def test_fetch_target_defaults_a_missing_state_to_open(gate, monkeypatch) -> Non
     )
     target = gate.fetch_target(REPO, 10, "test-token")
     assert target.state == "open"
+
+
+# --- #2503: prose-only children must not bypass the closing guard --------------
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "## Direct children\n"
+            "### Milestone trackers\n- [ ] #5 M1\n"
+            "### Cross-milestone programs\n- [ ] #160 CI\n"
+            "## Current roadmap extent\n- #999 related\n",
+            [5, 160],
+        ),
+        ("## Direct child epics\n- #12 scope\n- #13 execution\n", [12, 13]),
+        ("## Direct deferred children\n- [x] #399 fixed\n", [399]),
+        ("## Direct child\n- **#1079** work\n- [ ] **#1084** work\n", [1079, 1084]),
+        (
+            "## Fix order / direct closeout children\n"
+            "- [ ] #1084 unresolved\n",
+            [1084],
+        ),
+        (
+            "## Direct children\n"
+            + chr(96) * 3 + "markdown\n- [ ] #91 example\n" + chr(96) * 3 + "\n"
+            "- #92 real\n"
+            "## Other\n- #93 unrelated\n",
+            [92],
+        ),
+        (
+            "Parent: #2311 (RETIRE) / #52 (ancestor)\n"
+            "Related: #17\nDepends on: #18\n"
+            "## Non-direct relationships\n- #44 sibling\n",
+            [],
+        ),
+    ],
+)
+def test_declared_children_only_uses_explicit_sections(gate, body, expected) -> None:
+    assert gate.declared_direct_children(body) == expected
+
+
+def test_declared_child_without_native_link_still_blocks_closure(gate, monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get(url: str, token: str):
+        calls.append(url)
+        if url.endswith("/issues/53"):
+            return {
+                "title": "untagged parent",
+                "state": "open",
+                "body": "## Direct children\n- [ ] #99 outstanding\n",
+            }
+        if "/sub_issues?" in url:
+            return []
+        if url.endswith("/issues/99"):
+            return {"state": "open"}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    target = gate.fetch_target(REPO, 53, "test-token")
+    assert target.has_open_sub_issues is True
+    assert calls[-1].endswith("/issues/99")
+
+
+def test_closed_declared_children_do_not_block(gate, monkeypatch) -> None:
+    def fake_get(url: str, token: str):
+        if url.endswith("/issues/53"):
+            return {
+                "title": "normal parent",
+                "state": "open",
+                "body": "## Direct children\n- [x] #99 done\n",
+            }
+        if "/sub_issues?" in url:
+            return []
+        if url.endswith("/issues/99"):
+            return {"state": "closed"}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    assert gate.fetch_target(REPO, 53, "test-token").has_open_sub_issues is False
+
+
+def test_missing_declared_child_fails_closed(gate, monkeypatch) -> None:
+    def fake_get(url: str, token: str):
+        if url.endswith("/issues/53"):
+            return {
+                "title": "parent",
+                "state": "open",
+                "body": "## Direct child\n- #99 missing\n",
+            }
+        if "/sub_issues?" in url:
+            return []
+        raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    with pytest.raises(gate.GitHubError, match="/issues/99"):
+        gate.fetch_target(REPO, 53, "test-token")
+
+
+@pytest.mark.parametrize(
+    "children",
+    [
+        [{"number": 99}],
+        [{"number": 99, "state": "unknown"}],
+        ["not an issue"],
+    ],
+)
+def test_malformed_native_children_fail_closed(gate, monkeypatch, children) -> None:
+    def fake_get(url: str, token: str):
+        if url.endswith("/issues/53"):
+            return {"title": "parent", "state": "open", "body": ""}
+        return children
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    with pytest.raises(gate.GitHubError, match="sub-issue state"):
+        gate.fetch_target(REPO, 53, "test-token")
+
+
+def test_native_pagination_cap_fails_closed(gate, monkeypatch) -> None:
+    def fake_get(url: str, token: str):
+        if url.endswith("/issues/53"):
+            return {"title": "parent", "state": "open", "body": ""}
+        return [{"number": i, "state": "closed"} for i in range(100)]
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    with pytest.raises(gate.GitHubError, match="pagination limit exceeded"):
+        gate.fetch_target(REPO, 53, "test-token")
+
+
+def test_self_declared_child_fails_closed(gate, monkeypatch) -> None:
+    def fake_get(url: str, token: str):
+        if url.endswith("/issues/53"):
+            return {
+                "title": "parent",
+                "state": "open",
+                "body": "## Direct children\n- #53 cycle\n",
+            }
+        return []
+
+    monkeypatch.setattr(gate, "_get_json", fake_get)
+    with pytest.raises(gate.GitHubError, match="declares itself"):
+        gate.fetch_target(REPO, 53, "test-token")
