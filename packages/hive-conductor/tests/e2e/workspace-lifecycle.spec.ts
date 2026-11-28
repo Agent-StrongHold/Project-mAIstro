@@ -40,7 +40,10 @@ test("creating a workspace confirms and selects it", async () => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
   await page.getByLabel("New workspace name", { exact: true }).fill(wsName);
-  await page.getByRole("group", { name: "Persona" }).locator('input[value="pm_fleet"]').check();
+  // #2549: the standard workspace dialog no longer offers the pm_fleet
+  // preset (picker-gated behind the `pm_tooling` optional module), so this
+  // lifecycle fixture creates from the ungated shipped persona instead.
+  await page.getByRole("group", { name: "Persona" }).locator('input[value="content_creator"]').check();
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
   await expect(page.getByRole("status").filter({ hasText: `Created workspace "${wsName}"` }))

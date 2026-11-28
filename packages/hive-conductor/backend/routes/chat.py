@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
@@ -15,7 +16,7 @@ from models.schemas import (
 )
 from pydantic import BaseModel, ConfigDict
 from services import conversation_sessions
-from services.brief_chat import brief_turn
+from services.brief_chat import BriefTurn, brief_turn
 from services.chat_completion import _execute_workflow_with_approval, build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
 from services.chat_gate import (
@@ -32,6 +33,8 @@ from services.request_principal import require_actor_id
 from maistro.capabilities.model_chat import model_execution_context
 
 router = APIRouter(tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 # The input half of #315 has landed: every conversational message crosses the
 # Warden boundary (`_gate_messages` -> `services.chat_gate`) before the model is
@@ -226,6 +229,62 @@ async def _interview_turn(req: ChatCompletionRequest, request: Request):
     return await brief_turn(user_id_from_request(request), workspace_id, last_user)
 
 
+async def _persist_brief_exchange(
+    req: ChatCompletionRequest, request: Request, turn: BriefTurn
+) -> None:
+    """Land the interview exchange in the session transcript.
+
+    The interview answers before admission, so `execute_turn`'s transcript
+    append never runs for these turns: they existed only in the client's
+    in-memory `turns` state, and a closed Workspace Agent dock (which rehydrates
+    from the SessionStore) lost them on reopen — including the commit
+    confirmation. The same seam, Workspace scoping, and idempotence-key
+    discipline as the admitted path (`chat_runs._owned_session`) keeps the
+    dock's durable session the one transcript: a session named from another
+    Workspace is refused here exactly as `execute_turn` would refuse it, so an
+    interview answered in one Workspace can never land in another Workspace's
+    transcript. Best-effort, like the admitted path: a transcript failure
+    must not turn a decided interview answer into an error the user never sees.
+    """
+    extra = req.model_extra or {}
+    session_id = extra.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    # Both call sites run behind `_interview_turn`, which returns None — so
+    # neither route reaches this seam at all — for any turn whose last user
+    # content is not a str. The extraction below therefore always lands on
+    # that str; re-guarding here would be an unreachable branch (the
+    # diff-coverage gate refuses exactly that), not defense.
+    last_user = next(
+        (m.get("content") for m in reversed(req.messages) if m.get("role") == "user"), None
+    )
+    batch = [
+        {"role": "user", "content": str(last_user)},
+        {"role": "assistant", "content": turn.text},
+    ]
+    key = extra.get("turn_id")
+    turn_id = key if isinstance(key, str) and key else str(uuid4())
+    # Same Workspace scoping as the admitted path's `_owned_session`: the
+    # session must belong to the Workspace the turn names, or it is refused
+    # (same 404 as list/get). Ownership alone is not enough — without this,
+    # an interview answered in wsA could append into a wsB session's
+    # transcript, a cross-Workspace write no admitted turn can perform.
+    raw_workspace = extra.get("workspace_id")
+    workspace_id = raw_workspace if isinstance(raw_workspace, str) and raw_workspace else None
+    try:
+        conversation_sessions.require_owned(
+            user_id_from_request(request), session_id, workspace_id=workspace_id
+        )
+        await conversation_sessions.append_turn(session_id, batch, turn_id=turn_id)
+    except Exception:
+        logger.warning(
+            "brief transcript append failed for session %s turn %s",
+            session_id,
+            turn_id,
+            exc_info=True,
+        )
+
+
 def _conversation_messages(req: ChatCompletionRequest) -> list[dict]:
     messages = list(req.messages)
     if not any(message.get("role") == "system" for message in messages):
@@ -279,6 +338,7 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
         return refusal
     turn = await _interview_turn(req, request)
     if turn is not None:
+        await _persist_brief_exchange(req, request, turn)
         return {
             "choices": [{"message": {"role": "assistant", "content": turn.text}}],
             "brief": turn.payload(),
@@ -317,6 +377,7 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
 
     turn = await _interview_turn(req, request)
     if turn is not None:
+        await _persist_brief_exchange(req, request, turn)
         return StreamingResponse(
             _brief_events(turn),
             media_type="text/event-stream",

@@ -12,6 +12,7 @@ import { WorkspaceShare } from "./WorkspaceShare";
 import { WorkspaceAgentPersonaControl } from "./WorkspaceAgentPersona";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
+import { WorkspaceAgentDock } from "./WorkspaceAgentDock";
 import {
   MessageCircle,
   Home,
@@ -317,6 +318,12 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <WorkspaceToolBindings />
           <PersonaWizard />
         </div>
+        {/* #2549: the persistent Workspace Agent is a shell-level surface —
+            mounted once here, so it is present on every page (Home, Chat,
+            Goals, Attention, Approvals, Design Studio, DAG Builder, DAG Runs,
+            Missions, Backlog, Capabilities, Quotas, Inner Temple, CLI,
+            Credentials, Audit, Settings) rather than only inside Chat. */}
+        <WorkspaceAgentDock />
         {children ?? <Outlet />}
       </main>
     </div>

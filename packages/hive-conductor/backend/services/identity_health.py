@@ -9,8 +9,28 @@ from __future__ import annotations
 
 from typing import Any
 
-_SETUP_KEY = "__hive_setup__"
+SETUP_STATE_KEY = "__hive_setup__"
 _SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
+
+
+def setup_state() -> Any:
+    """The durable setup record setup persisted.
+
+    The raw read seam for the ``sessions`` store's setup entry: setup
+    (``routes/setup.py``) writes it, and this module — the store's
+    ledger-listed consumer — owns the only other lookup, so surfaces that
+    interpret the record read it through here instead of restating an
+    ``import stores`` against a surface the Workspace cutover is retiring
+    (``quality/workspace-retirement.json`` forbids new consumers).
+
+    Returns whatever the store holds for the key (``None`` before setup)
+    and lets a dead store raise: callers map that failure to their own
+    contract — health reports ``setup_state_unreadable``, a picker gate
+    fails closed.
+    """
+    import stores
+
+    return stores.sessions.get(SETUP_STATE_KEY)
 
 
 def _validate_identity_seed(mnemonic: str, did: str) -> tuple[bool, str]:
@@ -72,9 +92,7 @@ def identity_health() -> dict[str, Any]:
         return {"status": "unavailable", "reason": "identity_runtime_missing"}
 
     try:
-        import stores
-
-        config = stores.sessions.get(_SETUP_KEY)
+        config = setup_state()
     except Exception:
         return {"status": "misconfigured", "reason": "setup_state_unreadable"}
 

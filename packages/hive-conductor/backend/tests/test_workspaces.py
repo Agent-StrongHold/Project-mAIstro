@@ -152,6 +152,12 @@ class TestListPersonaTemplates:
                 ),
             },
         )
+
+        # #2549: nothing is picker-gated here — the module gate itself is
+        # covered by test_pm_tooling_module_gate.py. This slice pins the
+        # listing shape (one option per loaded template) for ungated
+        # templates.
+        monkeypatch.setattr(workspaces_routes, "picker_hidden_template_ids", frozenset)
         r = admin_client.get("/v1/workspaces/persona-templates")
         assert r.status_code == 200
         body = r.json()
@@ -281,11 +287,18 @@ class TestRealPmFleetTemplate:
         assert "intake.skill.create_initiative" in checklist
         assert "delivery.skill.poll_jira" in checklist
 
-    def test_persona_template_list_includes_both_real_personas(self, admin_client) -> None:
+    def test_persona_picker_offers_content_creator_but_not_gated_pm_fleet(
+        self, admin_client
+    ) -> None:
+        """#2549: the shipped picker offers the ungated personas; pm_fleet is
+        picker-gated behind the `pm_tooling` optional module (covered
+        end-to-end in test_pm_tooling_module_gate.py) and must not appear in
+        a default deployment's workspace-creation dialog."""
         r = admin_client.get("/v1/workspaces/persona-templates")
         assert r.status_code == 200
         ids = {opt["id"] for opt in r.json()}
-        assert {"pm_fleet", "content_creator"} <= ids
+        assert "content_creator" in ids
+        assert "pm_fleet" not in ids
 
 
 class TestWorkspaceCreationMaterializesRealAgents:
