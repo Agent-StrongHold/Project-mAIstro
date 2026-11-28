@@ -299,19 +299,37 @@ def _router_api_key() -> str:
 def _gateway_credential(settings: Settings) -> str:
     """The credential the deployment's gateway actually authenticates (#1824).
 
-    The bundled proxy authenticates with its master key; an external gateway
-    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
-    operator states for it, `LITELLM_API_KEY` — the same derivation the
-    shipped compose file applies when it fills the containers' environment:
-    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
-    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
-    so a stack switched to an external gateway kept presenting the bundled
-    proxy's key to it and every governed call came back 401. The physical key
-    registered as the scoped `model.chat` gateway credential and the one the
-    roster-facing endpoint carries are resolved here, once, together — the
-    two doors cannot disagree (and neither value is ever logged).
+    Resolved through the one effective-key precedence matrix
+    (`maistro.config.gateway_key.effective_gateway_key`, #2247) — the same
+    contract Hive's `effective_llm_gateway_key` resolves through — so a
+    deployment that states both `MAISTRO_LLM_API_KEY` and `LITELLM_API_KEY`
+    cannot end up with the engine authenticating as one caller and Hive as
+    another. This composition has no vault, so its legs are: env
+    `MAISTRO_LLM_API_KEY` → env `LITELLM_API_KEY` → env `LITELLM_PROXY_KEY`
+    → the bundled master key (`LITELLM_MASTER_KEY`, what `LiteLLMSettings`
+    reads). The bundled proxy authenticates with its master key; an external
+    gateway (`LITELLM_BASE_URL` pointed off-stack) authenticates with the key
+    the operator states for it. Server construction used to read only the
+    bundled `LITELLM_MASTER_KEY` setting, so a stack switched to an external
+    gateway kept presenting the bundled proxy's key to it and every governed
+    call came back 401. Nothing here synthesizes a credential: an unconfigured
+    deployment resolves to `""`, which the scoped credential bootstrap treats
+    as no credential at all — fail-closed, never a placeholder. The physical
+    key registered as the scoped `model.chat` gateway credential and the one
+    the roster-facing endpoint carries are resolved here, once, together —
+    the two doors cannot disagree (and neither value is ever logged).
     """
-    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+    from maistro.config.gateway_key import effective_gateway_key
+
+    return (
+        effective_gateway_key(
+            maistro_key=os.getenv("MAISTRO_LLM_API_KEY"),
+            litellm_key=os.getenv("LITELLM_API_KEY"),
+            proxy_alias=os.getenv("LITELLM_PROXY_KEY"),
+            master_alias=settings.litellm.master_key,
+        )
+        or ""
+    )
 
 
 async def _stop_canvas_job_runner(handle: Any) -> None:

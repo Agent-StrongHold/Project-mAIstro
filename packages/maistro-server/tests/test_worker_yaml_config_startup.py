@@ -220,7 +220,27 @@ class TestInstalledGatewayCredential:
     construction used to read only the bundled `LITELLM_MASTER_KEY` setting, so
     the roster's client and the governed egress both presented the *bundled*
     proxy's key to a foreign gateway and every governed call came back 401.
+
+    Since #2247 the resolution runs through the one effective-key precedence
+    matrix (`maistro.config.gateway_key.effective_gateway_key`) — the same
+    contract Hive's `effective_llm_gateway_key` resolves through — so both
+    compositions answer an operator key the same way and cannot drift onto
+    different credentials when several aliases are set at once.
     """
+
+    #: Every alias the matrix reads, cleared so a test's result reflects only
+    #: the variables it states itself (same hygiene as Hive's matrix tests).
+    _KEY_ENV_VARS = (
+        "MAISTRO_LLM_API_KEY",
+        "LITELLM_API_KEY",
+        "LITELLM_PROXY_KEY",
+        "LITELLM_MASTER_KEY",
+    )
+
+    @pytest.fixture(autouse=True)
+    def _no_gateway_key_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in self._KEY_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
 
     def _settings(self, master_key: str) -> Settings:
         return Settings(
@@ -273,4 +293,99 @@ class TestInstalledGatewayCredential:
         endpoints = [endpoint for endpoint in built if endpoint.api_key]
         assert endpoints, "the composition point built no credentialed endpoint"
         assert {endpoint.api_key for endpoint in endpoints} == {"external-gateway-key"}
+        assert sorted(container.agents) == [main.CONDUCTOR_AGENT_NAME]
+
+    def test_an_operator_key_outranks_the_gateway_aliases(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The #2247 split-brain regression: both aliases set, differing.
+
+        The engine used to answer `LITELLM_API_KEY` while Hive answered
+        `MAISTRO_LLM_API_KEY` — one installation authenticating to its
+        gateway as two different callers. Under the one contract both
+        compositions resolve the operator's own model key."""
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "operator-model-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == "operator-model-key"
+        assert main._agent_config(settings).litellm_key == "operator-model-key"
+
+    def test_the_engine_resolves_the_same_key_the_shared_contract_names(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cross-composition parity: the engine's credential is exactly what
+        the shared core matrix resolves for the same environment — Hive's
+        `effective_llm_gateway_key` orders the same four legs through it."""
+        from maistro.config.gateway_key import effective_gateway_key
+
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "operator-model-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        monkeypatch.setenv("LITELLM_PROXY_KEY", "proxy-alias-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == effective_gateway_key(
+            maistro_key=os.environ.get("MAISTRO_LLM_API_KEY"),
+            litellm_key=os.environ.get("LITELLM_API_KEY"),
+            proxy_alias=os.environ.get("LITELLM_PROXY_KEY"),
+            master_alias=settings.litellm.master_key,
+        )
+
+    def test_a_proxy_alias_outranks_the_bundled_master_key(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deployment that only knows the proxy's own key still reaches the
+        bundled gateway, ahead of the master-key setting."""
+        monkeypatch.setenv("LITELLM_PROXY_KEY", "proxy-alias-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == "proxy-alias-key"
+        assert main._agent_config(settings).litellm_key == "proxy-alias-key"
+
+    def test_a_blanked_operator_key_falls_through_to_the_gateway_alias(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty string at any leg is *unset*: it must not shadow a
+        configured one. The shipped compose file emits
+        `MAISTRO_LLM_API_KEY=${MAISTRO_LLM_API_KEY:-}`, so an unset operator
+        key arrives as `""` while `LITELLM_API_KEY` carries the credential."""
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "")
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == "external-gateway-key"
+        assert main._agent_config(settings).litellm_key == "external-gateway-key"
+
+    def test_an_unconfigured_deployment_resolves_no_credential(self, _clean_boot_env: None) -> None:
+        """No alias, no master key: `""` — fail-closed, never a placeholder
+        key. `bootstrap_model_bindings` registers no credential from it and
+        every governed Binding refuses before dispatch."""
+        settings = self._settings(master_key="")
+
+        assert main._gateway_credential(settings) == ""
+        assert main._agent_config(settings).litellm_key == ""
+
+    async def test_the_governed_egress_carries_the_operator_key_too(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The operator-key case through the real composition point: both
+        credentialed doors built by `_build_container` carry the key the one
+        contract resolved, not the alias beneath it."""
+        monkeypatch.setenv("MAISTRO_LLM_API_KEY", "operator-model-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+        built: list[llm_gateway.GatewayEndpoint] = []
+        real_endpoint = llm_gateway.GatewayEndpoint
+
+        def _recording_endpoint(base_url: str, api_key: str = "") -> object:
+            endpoint = real_endpoint(base_url=base_url, api_key=api_key)
+            built.append(endpoint)
+            return endpoint
+
+        monkeypatch.setattr(llm_gateway, "GatewayEndpoint", _recording_endpoint)
+        container, _egress = await main._build_container(settings, pg_pool=None)
+
+        endpoints = [endpoint for endpoint in built if endpoint.api_key]
+        assert endpoints, "the composition point built no credentialed endpoint"
+        assert {endpoint.api_key for endpoint in endpoints} == {"operator-model-key"}
         assert sorted(container.agents) == [main.CONDUCTOR_AGENT_NAME]
