@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +18
+  packages/hive-conductor/backend/tests: +20
 ---
 
 # Issue #2501 — optimizer auto-promotion is gated on completed independent validation
@@ -204,3 +204,109 @@ No tree change resulted from re-validation; this section is the only edit.
 - A human accept of a `not_improving` proposal still promotes under #861
   authority (the human is the approver); that is the existing product
   contract, not changed here.
+
+## Repair round 3 (this lane, head `8d71591d9729` + this round's commits)
+
+Three P1 findings from the automated review of this PR, each re-derived from
+reachable code and closed with a test that fails against exactly the
+regression it names:
+
+1. **Measurement dedup shared another principal's execution** — the in-flight
+   dedup key omitted the acting user, so a second user could reuse the first
+   user's run and evidence even though execution authority resolves per
+   principal. Fixed on the committed head (`8d71591d9`, key now includes
+   `scope.user_id`); re-verified present in this round's tree.
+2. **A human rejection could be undone by the in-flight pass** —
+   `promote_evaluated` consulted only the pass's payload (`apply_outcome ==
+   staged`), so a rejection recorded while evaluation ran was overwritten:
+   the candidate promoted and `_record_auto_apply` stamped `accepted` over the
+   stored `rejected`. Fix (this round): `promote_evaluated` re-reads the
+   stored decision before promoting; `record_decision` serializes a rejection
+   under the same per-DAG lock as `commit_candidate` (new
+   `decision_serialization`) and merges onto the current stored row;
+   `_commit_candidate` refuses a rejected proposal inside the lock;
+   `_record_auto_apply` never overwrites a recorded decision with `pending`
+   and stamps `accepted` only for a promotion that really committed.
+3. **Annotation never reached the durable backend** — `JsonStore` persists
+   exclusively on `__setitem__`, but `_annotate` mutated the cached row in
+   place: evaluation evidence and final apply outcomes survived only in
+   memory, and a restart read the proposal back as pending/unapplied without
+   its lineage. Fix (this round): `_annotate` rebinds the stored row through
+   the store setter.
+
+### Red before / green after (both new tests, this round)
+
+```
+# with only the committed head 8d71591d9's tree + the two new tests
+uv run pytest packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py::test_rejection_during_evaluation_blocks_auto_promotion \
+  packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py::test_evaluation_and_apply_records_survive_a_restart_over_sqlite -q
+2 failed
+  (rejection test: retry promoted, apply_detail says applied — the pass ignored the recorded rejection)
+  (durability test: row['decision'] reads back 'pending' after the simulated restart)
+
+# with this round's services changes applied
+20 passed (the full promotion-gate file)
+```
+
+The durability test binds a real `PersistedStore` (SQLite `State`), runs the
+full gated pass (propose → evaluate → promote), then drops the store's
+process-local dict and re-`initialize()`s — the restart a fresh boot would
+perform — and asserts decision, applied, apply_outcome, resulting_version,
+validation status/candidate_hash, and baseline_score all read back.
+
+### CI `test` job failure this lane was reopened for
+
+CI's `test` job failed on the merge queue, and the exact drift its **#1048
+OpenAPI gate** (`git diff --exit-code` after regenerating both artifacts)
+rejects was present on the tested head `8d71591d9`: the backend changed
+`trigger_optimizer`'s description (and the gated pass changed the response
+contract) but `packages/hive-conductor/frontend/src/api/types.gen.ts` was
+never regenerated. CI's own fix instructions were followed locally:
+
+```
+uv run python scripts/dump-hive-openapi.py                      # ok, 255 paths / 155 schemas
+cd packages/hive-conductor/frontend && npm ci && npm run gen:api # regenerated
+git diff -- src/api/types.gen.ts                                 # 1 hunk: the endpoint description
+npm run lint                                                     # passes
+```
+
+The regenerated `types.gen.ts` is committed in this round; the only delta is
+the endpoint's docstring (comment-only for the frontend).
+
+### Retiring-surface ledger caught and fixed mid-round
+
+The first version of the `commit_candidate` decision fence read
+`stores.optimizer_proposals` directly from `services/optimizer_candidates.py`:
+`check-workspace-retirement.py` refused it (`NEW importer ... a retiring
+surface may not gain consumers`), and the one-process cross-tree run failed
+`tests/test_check_workspace_retirement.py::test_the_ledger_matches_the_current_repository`
+on exactly that edge. The fence now reads the row through
+`services.optimizer.stored_proposal` — the same late-bound #2469 storage seam
+`optimizer_scope` uses; it returns the live row, so the fence still decides on
+the decision as of this instant under the promotion lock. Re-run:
+`78 tolerated importers -> 78`, `89 retirement ledger entries match the tree`,
+exit 0.
+
+### Gates re-run this round (CI's arguments where CI has them)
+
+All executed in this worktree this round, all exit 0 unless stated:
+
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (3 import-order
+  findings auto-fixed first).
+- `uv run pytest packages/hive-conductor/backend/tests/test_optimizer.py
+  packages/hive-conductor/backend/tests/test_optimizer_candidate_apply.py
+  packages/hive-conductor/backend/tests/test_optimizer_promotion_gate.py
+  packages/hive-conductor/backend/tests/test_property_substrate.py
+  packages/hive-conductor/backend/tests/test_governed_model_consumers.py -q`
+  → `138 passed` (was 136; the two new tests account for the delta).
+- Full backend: `uv run pytest packages/hive-conductor/backend/tests -q
+  --timeout=300` → `4675 passed, 121 skipped`.
+- `check-workspace-retirement.py` → OK (above).
+- `check-suite-inventory.py --suite packages/hive-conductor/backend/tests`
+  → ok: 4796 collected, matches this note's `+20`.
+- `check-test-duplicates.py` → ok, 0 byte-identical files.
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60` (CI's one-process command) → `11965 passed, 264 skipped`
+  after the ledger fix (the pre-fix run was `1 failed (retirement ledger),
+  11964 passed, 264 skipped`).

@@ -925,13 +925,25 @@ def _advisory_status(annotated: dict[str, Any]) -> str:
 
 
 def _annotate(payload: dict[str, Any], **fields: Any) -> None:
-    """Write evaluation fields onto a proposal row and its stored copy."""
+    """Write evaluation fields onto a proposal row and its stored copy.
+
+    The stored copy is rebound through the store setter (#2501 review):
+    ``JsonStore`` persists exclusively on ``__setitem__``, so mutating the
+    cached row in place leaves the durable backend blind to evaluation
+    evidence and apply outcomes — a restart would resurrect the proposal as
+    pending and unapplied. Re-binding costs one ``json.dumps`` of a small row
+    and is the only write path the store honors.
+    """
     import stores
 
     payload.update(fields)
-    stored = stores.optimizer_proposals.get(str(payload.get("id", "")))
-    if stored is not None and stored is not payload:
+    proposal_id = str(payload.get("id", ""))
+    stored = stores.optimizer_proposals.get(proposal_id)
+    if stored is None:
+        return
+    if stored is not payload:
         stored.update(fields)
+    stores.optimizer_proposals[proposal_id] = stored
 
 
 async def promote_evaluated(
@@ -951,8 +963,25 @@ async def promote_evaluated(
     improving, a no-op — is reported as exactly that, and the incumbent is
     untouched. Returns the number of candidates that really promoted.
     """
+    import stores
+
     for payload in proposals:
         if payload.get("apply_outcome") != STAGED:
+            continue
+        # A rejection recorded while this pass's evaluation ran lives on the
+        # stored row (#2501 review): the in-pass payload cannot see a decision
+        # made after the pass captured the row, so re-read it before
+        # promoting. `commit_candidate`'s decision fence re-checks under the
+        # promotion lock for anything that slips past this read.
+        stored = stores.optimizer_proposals.get(str(payload.get("id", "")))
+        if stored is not None and stored.get("decision") == DECISION_REJECTED:
+            await _record_auto_apply(
+                actor,
+                payload,
+                UNEVALUATED,
+                f"rejected by {stored.get('decided_by') or 'a human'} while its "
+                "evaluation was pending; honoring the recorded decision",
+            )
             continue
         validation = payload.get("validation") or {}
         if validation.get("status") != "improved":
@@ -1022,16 +1051,26 @@ async def _record_auto_apply(
     names the version that moved the base (the CAS evidence a losing
     concurrent pass reads).
     """
+    import stores
     from routes.audit import log_audit
 
     from services.optimizer_candidates import active_template_version
 
     applied = outcome == APPLIED
+    stored = stores.optimizer_proposals.get(str(payload.get("id", "")))
     fields: dict[str, Any] = {
         "apply_outcome": outcome,
         "apply_detail": detail,
         "applied": applied,
-        "decision": DECISION_ACCEPTED if applied else DECISION_PENDING,
+        # A human decision on the stored row is never overwritten by this
+        # bookkeeping (#2501 review): a recorded rejection survives every
+        # non-applied outcome, and only a promotion that really committed
+        # stamps `accepted` (the commit fence refuses rejected proposals).
+        "decision": (
+            DECISION_ACCEPTED
+            if applied
+            else str((stored or {}).get("decision") or DECISION_PENDING)
+        ),
     }
     if outcome == STALE and payload.get("competing_version") is None:
         fields["competing_version"] = await active_template_version(str(payload.get("dag_id", "")))
@@ -1242,11 +1281,31 @@ async def record_decision(
             payload["apply_outcome"] = MANUAL
             payload["apply_detail"] = "decision recorded; author the change in the DAG editor"
 
-    stores.optimizer_proposals[proposal_id] = payload
-
-    # Track rejected edits so optimizer doesn't re-propose them (SkillOpt rejected-edit buffer)
     if decision == DECISION_REJECTED:
-        _record_rejected_edit(payload)
+        # A rejection is serialized against in-flight promotions (#2501
+        # review): under the same per-DAG lock as `commit_candidate`, and
+        # merged onto the current stored row, so it can neither interleave
+        # with a promotion's decision fence nor clobber apply fields a
+        # promotion that already committed just wrote. The rejection always
+        # stands as the human's decision.
+        from services.optimizer_candidates import decision_serialization
+
+        async with decision_serialization(str(payload.get("dag_id") or "")):
+            stored = stores.optimizer_proposals.get(proposal_id)
+            if stored is not None:
+                workspace_id = payload.get("workspace_id")
+                payload = dict(stored)
+                payload["workspace_id"] = workspace_id or payload.get("workspace_id")
+            payload["decision"] = decision
+            payload["decided_by"] = actor
+            payload["decided_at"] = datetime.now(UTC).isoformat()
+            stores.optimizer_proposals[proposal_id] = payload
+
+            # Track rejected edits so optimizer doesn't re-propose them
+            # (SkillOpt rejected-edit buffer)
+            _record_rejected_edit(payload)
+    else:
+        stores.optimizer_proposals[proposal_id] = payload
 
     log_audit(
         action="optimizer_decision",

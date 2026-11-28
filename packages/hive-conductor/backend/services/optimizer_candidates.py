@@ -356,6 +356,20 @@ async def _serial_promotion(dag_id: str) -> AsyncIterator[None]:
             _promotion_holders.pop(dag_id, None)
 
 
+@contextlib.asynccontextmanager
+async def decision_serialization(dag_id: str) -> AsyncIterator[None]:
+    """Serialize a human decision against in-flight promotions (#2501 review).
+
+    Same per-DAG lock as ``commit_candidate``: a reject endpoint and an
+    auto-promotion cannot interleave, so a rejection either lands before the
+    commit's decision fence reads it (the promotion is refused) or after the
+    commit returned — it can never slip between the fence and the store
+    transition.
+    """
+    async with _serial_promotion(dag_id):
+        yield
+
+
 async def commit_candidate(
     dag_id: str,
     candidate_snapshot: dict[str, Any],
@@ -429,6 +443,27 @@ async def _commit_candidate(
         record["policy_id"] = approval.policy_id
     if evidence:
         record["evidence"] = dict(evidence)
+
+    # A human rejection recorded on the stored row outranks the pass (#2501
+    # review): checked here, under the promotion lock, so a rejection that
+    # lands while the commit is in flight either precedes this fence or follows
+    # the commit — it can never interleave with it. A stale refusal would be
+    # the wrong answer here: the base did not move; the proposal was withdrawn.
+    # Read through services.optimizer's storage seam (#2469), late-bound like
+    # optimizer_scope's lookups: the projection is a retiring surface whose
+    # ledger entry may not gain a new importer, and the seam returns the live
+    # row, so the fence sees the decision as of this instant under the lock.
+    from services.optimizer import DECISION_REJECTED, stored_proposal
+
+    stored = stored_proposal(proposal_id)
+    if stored is not None and stored.get("decision") == DECISION_REJECTED:
+        record["outcome"] = UNEVALUATED
+        record["detail"] = (
+            f"proposal was rejected by {stored.get('decided_by') or 'a human'} "
+            "while its evaluation was pending; honoring the recorded decision"
+        )
+        _audit_apply(actor, record, severity="warning")
+        return record
 
     if candidate_hash == source_hash:
         # The mutation produced byte-identical content. Reporting this as

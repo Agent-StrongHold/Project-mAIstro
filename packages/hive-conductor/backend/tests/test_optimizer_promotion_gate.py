@@ -770,6 +770,45 @@ async def test_self_approval_by_the_authoring_path_is_refused(
     assert await _versions(dag_id) == []
 
 
+async def test_rejection_during_evaluation_blocks_auto_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proposal a human rejected while its evaluation was running is never
+    promoted (#2501 review): `promote_evaluated` re-reads the stored decision,
+    the commit fence refuses under the promotion lock, and `_record_auto_apply`
+    cannot overwrite the rejection with `accepted`."""
+    import services.optimizer as opt
+    import stores
+
+    dag_id = "d-rejected-mid-flight"
+    snapshot = _seed_dag(dag_id)
+    _seed_retry_signal(dag_id, "n1")
+    _EvaluatorHarness(baseline_total=10, candidate_total=20).install(monkeypatch)
+    out = await opt.run_optimizer(dag_id, apply_auto=True, actor="alice", workspace_id="ws")
+    out.update(
+        await opt.evaluate_staged_proposals(
+            dag_id, dict(_dag(dag_id)), out["proposals"], scope=_scope()
+        )
+    )
+    await opt.record_decision(
+        _retry_proposal(out)["id"], "rejected", actor="bob", workspace_id="ws"
+    )
+    out["auto_applied"] = await opt.promote_evaluated(
+        dag_id, out["proposals"], actor="alice", workspace_id="ws", evaluation_ran=True
+    )
+    retry = _retry_proposal(out)
+    assert out["auto_applied"] == 0
+    assert retry["applied"] is False
+    assert retry["apply_outcome"] == "unevaluated"
+    assert "rejected by bob" in retry["apply_detail"]
+    stored = stores.optimizer_proposals[retry["id"]]
+    assert stored["decision"] == "rejected"
+    assert stored["decided_by"] == "bob"
+    assert stores.dags[dag_id] == snapshot
+    assert await _versions(dag_id) == []
+    assert _promotion_audit(dag_id) == []
+
+
 async def test_promotion_failure_leaves_incumbent_untouched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -813,6 +852,64 @@ async def test_promotion_failure_leaves_incumbent_untouched(
     assert await template_store().lifecycle_of(dag_id, 1) == "candidate"
     # The contract ledger holds no record for a version that never activated.
     assert await _trace(dag_id, 1) is None
+
+
+async def test_evaluation_and_apply_records_survive_a_restart_over_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Evaluation evidence and the final apply outcome reach the durable
+    backend (#2501 review): ``JsonStore`` persists exclusively on
+    ``__setitem__``, so annotation that only mutated the cached row left a
+    restart reading the proposal back as pending, unapplied, and without the
+    lineage its promotion stood on."""
+    import services.optimizer as opt
+    import stores
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path=str(tmp_path / "conductor-state.db"))
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    stores.configure_persistence(persisted)
+    try:
+        dag_id = "d-durable-annotations"
+        _seed_dag(dag_id)
+        _seed_retry_signal(dag_id, "n1")
+        _EvaluatorHarness(baseline_total=10, candidate_total=20).install(monkeypatch)
+        out = await opt.run_optimizer(dag_id, apply_auto=True, actor="alice", workspace_id="ws")
+        out.update(
+            await opt.evaluate_staged_proposals(
+                dag_id, dict(_dag(dag_id)), out["proposals"], scope=_scope()
+            )
+        )
+        out["auto_applied"] = await opt.promote_evaluated(
+            dag_id, out["proposals"], actor="alice", workspace_id="ws", evaluation_ran=True
+        )
+        retry = _retry_proposal(out)
+        assert out["auto_applied"] == 1
+        assert retry["applied"] is True
+        assert retry["decision"] == "accepted"
+
+        # The restart: drop the process-local dicts and reload what a fresh
+        # boot would read from SQLite.
+        for store in (stores.optimizer_proposals, stores.dags):
+            store._data = {}
+            store.initialize()
+
+        row = stores.optimizer_proposals[retry["id"]]
+        assert row["decision"] == "accepted"
+        assert row["applied"] is True
+        assert row["apply_outcome"] == "applied"
+        assert row["resulting_version"] == retry["resulting_version"]
+        # The evidence the contract approval stood on survives too.
+        assert row["validation"]["status"] == "improved"
+        assert row["validation"]["candidate_hash"] == retry["validation"]["candidate_hash"]
+        assert row["baseline_score"] == retry["baseline_score"]
+        assert row["validated"] is True
+    finally:
+        stores.configure_persistence(None)
+        state.close()
 
 
 def _scope():

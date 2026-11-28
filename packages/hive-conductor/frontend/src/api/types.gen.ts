@@ -3097,9 +3097,11 @@ export interface paths {
         put?: never;
         /**
          * Trigger Optimizer
-         * @description Run optimizer. When validate=True (default), proposals are tested
-         *     against the actual DAG before being surfaced. Only strictly-improving
-         *     mutations are proposed.
+         * @description Run optimizer. When validate=True (default), the incumbent and every
+         *     candidate are measured against the actual DAG and each proposal is
+         *     returned with its verdict; with apply_auto=true nothing is promoted
+         *     unless its own evaluation completed and strictly improved on the
+         *     incumbent.
          */
         post: operations["trigger_optimizer_v1_optimizer__dag_id__run_post"];
         delete?: never;
