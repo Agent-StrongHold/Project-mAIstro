@@ -351,3 +351,38 @@ async def test_the_delete_cascade_removes_a_workspace_agent_this_process_never_c
         state.close()
 
     assert durable is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-1")
+@pytest.mark.ac("#2277/AC-5")
+@pytest.mark.contract("behavioral")
+async def test_after_delete_and_re_materialization_the_default_persona_returns() -> None:
+    """#2277/AC-5: delete + re-materialize resets the persona to the default.
+
+    The delete cascade removes the Workspace Agent row outright, so the next
+    materialization for a (new) Workspace of the same owner is born with
+    `program_manager` -- a swapped persona never ghosts onto a successor row.
+    """
+    ws = await _workspace()
+    original = await workspace_agent.resolve_workspace_agent(ws)
+    assert workspace_agent.persona_template_id(original) == "program_manager"
+    await workspace_agent.set_workspace_agent_persona(ws, "delivery")
+
+    await workspace_authority.delete_workspace(ws)
+    assert workspace_agent.workspace_agent_id(ws) not in stores.agents
+
+    successor = await _workspace(name="Successor")
+    reborn = await workspace_agent.resolve_workspace_agent(successor)
+    assert workspace_agent.persona_template_id(reborn) == "program_manager"
+    assert reborn.id != original.id
+    assert reborn.id == workspace_agent.workspace_agent_id(successor)
+
+    # "unless set again": the successor's persona swaps like any other.
+    await workspace_agent.set_workspace_agent_persona(successor, "risk_dependency")
+    assert (
+        workspace_agent.persona_template_id(
+            await workspace_agent.resolve_workspace_agent(successor)
+        )
+        == "risk_dependency"
+    )
