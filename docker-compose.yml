@@ -38,6 +38,12 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # The deployment's own model key (#2247): the engine resolves the
+      # effective gateway credential through the same precedence matrix Hive
+      # does, so an operator key stated here outranks the gateway aliases on
+      # BOTH compositions. Unset/empty falls through to LITELLM_API_KEY
+      # above -- never a second, silently different credential.
+      - MAISTRO_LLM_API_KEY=${MAISTRO_LLM_API_KEY:-}
       # Documented YAML configuration (#1824): the uvicorn worker loads and
       # validates this file before the Container is built, so operator-stated
       # `model_bindings:` / `security:` declarations reach the runtime. The
